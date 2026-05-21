@@ -16,7 +16,7 @@ for file in $(git diff --cached --name-only | grep -E '(^|/)\.env|(^|/)secret\.e
       ''|'#'*|DOTENV_PUBLIC_KEY*) continue ;;
     esac
 
-    if ! echo "$line" | grep -qE '^[A-Z0-9_]+=encrypted:'; then
+    if ! echo "$line" | grep -qE '^[A-Z0-9_]+="?encrypted:'; then
       echo "❌ Error: $file contains unencrypted value:"
       echo "  $line"
       echo "  Run: pnpm dotenvx encrypt"
