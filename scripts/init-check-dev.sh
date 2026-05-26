@@ -32,7 +32,7 @@ find . -type f \
     case "$line" in
       ''|'#'*|DOTENV_PUBLIC_KEY*) continue ;;
     esac
-    if ! echo "$line" | grep -qE '^[A-Z0-9_]+=encrypted:'; then
+    if ! echo "$line" | grep -qE '^[A-Z0-9_]+="?encrypted:'; then
       if [ "$FILE_HEADER_SHOWN" = "0" ]; then
         echo "❌ ERROR: $FILE contains unencrypted values:"
         FILE_HEADER_SHOWN=1
