@@ -1,6 +1,6 @@
 {
 	"name": "@himorogy/enclave-env",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Encrypted env management that keeps secrets out of LLM reach",
 	"packageManager": "pnpm@10.33.2",
 	"type": "module",
