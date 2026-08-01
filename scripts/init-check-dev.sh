@@ -2,6 +2,15 @@
 # dev コンテナ起動時のセキュリティチェック（devcontainer.json の initializeCommand 用）
 # ホスト側で実行されるため、exit 1 でコンテナ起動を中断できる。
 
+# Git for Windows を cmd.exe 経由で起動した場合、
+# Windows の find.exe ではなく Git Bash 付属の Unix ツールを優先する。
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    PATH="/usr/bin:$PATH"
+    ;;
+esac
+export PATH
+
 if [ ! -f "./enclave-env" ]; then
   echo "⚠️  enclave-env not found, skipping checks"
   exit 0
