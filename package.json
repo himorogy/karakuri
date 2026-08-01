@@ -2,5 +2,13 @@
 	"name": "karakuri",
 	"private": true,
 	"description": "Common",
-	"packageManager": "pnpm@10.33.2"
+	"packageManager": "pnpm@10.33.2",
+	"scripts": {
+		"format": "biome check --write .",
+		"lint": "biome ci ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.13",
+		"@changesets/cli": "^2.31.0"
+	}
 }
