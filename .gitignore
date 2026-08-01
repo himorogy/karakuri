@@ -13,5 +13,5 @@ logs
 # packages build output
 dist
 
-# Claude Code personal settings
-.claude/settings.local.json
+# Claude Code
+.claude-audit/

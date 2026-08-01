@@ -1,0 +1,56 @@
+{
+	"permissions": {
+		"defaultMode": "bypassPermissions",
+		"deny": [
+			"Read(./.env)",
+			"Read(./.env.*)",
+			"Read(**/*.pem)",
+			"Read(**/*credentials*)",
+			"Read(**/.dev.vars)",
+			"Edit(./.env)",
+			"Edit(./.env.*)",
+			"Edit(.claude/**)",
+			"Edit(.claude-audit/**)",
+			"Bash(git push --force)",
+			"Bash(git push --force *)",
+			"Bash(git push --force-with-lease)",
+			"Bash(git push --force-with-lease *)",
+			"Bash(git push -f)",
+			"Bash(git push -f *)",
+			"Bash(npm publish)",
+			"Bash(npm publish *)",
+			"Bash(pnpm publish)",
+			"Bash(pnpm publish *)",
+			"Bash(gh pr merge)",
+			"Bash(gh pr merge *)",
+			"Bash(gh release *)"
+		],
+		"ask": [
+			"Bash(git reset --hard)",
+			"Bash(git reset --hard *)",
+			"Bash(git clean -f*)"
+		]
+	},
+	"hooks": {
+		"PostToolUse": [
+			{
+				"matcher": "Bash|Edit|Write|MultiEdit",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "mkdir -p \"$CLAUDE_PROJECT_DIR/.claude-audit\" && jq -c '{ts:(now|todate),sid:.session_id,cwd:.cwd,tool:.tool_name,cmd:(.tool_input.command // null),file:(.tool_input.file_path // null)}' >> \"$CLAUDE_PROJECT_DIR/.claude-audit/tools.$(date -u +%Y%m).jsonl\""
+					}
+				]
+			},
+			{
+				"matcher": "Read|WebFetch|WebSearch|Grep|Glob|Task|mcp__.*",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "mkdir -p \"$CLAUDE_PROJECT_DIR/.claude-audit\" && jq -c '{ts:(now|todate),sid:.session_id,kind:\"in\",tool:.tool_name,src:(.tool_input.file_path // .tool_input.url // .tool_input.pattern // .tool_input.query // null)}' >> \"$CLAUDE_PROJECT_DIR/.claude-audit/inputs.$(date -u +%Y%m).jsonl\""
+					}
+				]
+			}
+		]
+	}
+}
