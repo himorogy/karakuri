@@ -1,0 +1,41 @@
+{
+	"name": "@himorogy/enclave-env",
+	"version": "0.2.1",
+	"description": "Encrypted env management that keeps secrets out of LLM reach",
+	"packageManager": "pnpm@10.33.2",
+	"type": "module",
+	"bin": {
+		"enclave-env": "dist/cli.js"
+	},
+	"scripts": {
+		"build": "tsup",
+		"prepare": "pnpm run build",
+		"typecheck": "tsc --noEmit",
+		"format": "biome check --write .",
+		"lint": "biome ci .",
+		"test": "pnpm test:ts && pnpm test:sh",
+		"test:ts": "tsc -p tsconfig.test.json && node --test dist/test/tests/config.test.js dist/test/tests/security.test.js",
+		"test:sh": "sh tests/check.test.sh && sh tests/init-check-dev.test.sh && sh tests/init-check-prod.test.sh",
+		"release": "sh release.sh"
+	},
+	"dependencies": {
+		"@dotenvx/dotenvx": "^1.63.0",
+		"commander": "^14.0.3"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.13",
+		"@changesets/cli": "^2.31.0",
+		"@types/node": "^25.6.0",
+		"tsup": "^8.5.1",
+		"typescript": "^6.0.3"
+	},
+	"files": [
+		"dist",
+		"scripts",
+		"templates",
+		"README.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	}
+}
