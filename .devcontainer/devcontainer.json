@@ -1,5 +1,5 @@
 {
-	"name": "@himorogy/enclave-env development container",
+	"name": "@himorogy/karakuri development container",
 	"build": {
 		"dockerfile": "Dockerfile",
 		"args": {
@@ -9,10 +9,13 @@
 		}
 	},
 	"runArgs": [
-		"--name=enclave-env-dev-container",
+		"--name=karakuri-dev-container",
 		"--cap-add=NET_ADMIN",
 		"--cap-add=NET_RAW"
 	],
+	"features": {
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+	},
 	"customizations": {
 		"vscode": {
 			"extensions": ["anthropic.claude-code", "biomejs.biome"],
@@ -30,21 +33,22 @@
 			}
 		}
 	},
+	"shutdownAction": "none",
 	"remoteUser": "node",
 	"mounts": [
 		// ターミナルの履歴を永続化。前回のAI実行コマンドを Ctrl+R で即座に呼び出せる
 		"source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
 		// 認証情報や設定を永続化。再ビルドしても再ログイン不要
-		"source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume"
+		"source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume",
+		"source=codex-config-${devcontainerId},target=/home/node/.codex,type=volume"
 	],
 	"containerEnv": {
 		"NODE_OPTIONS": "--max-old-space-size=2048",
-		"CLAUDE_CONFIG_DIR": "/home/node/.claude",
-		"POWERLEVEL9K_DISABLE_GITSTATUS": "true" // シェルの描画負荷を軽減
+		"CLAUDE_CONFIG_DIR": "/home/node/.claude"
 	},
-	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-	"workspaceFolder": "/workspace",
-	"postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash && echo \"alias claude='/home/node/.local/bin/claude --plugin-dir ~/.claude-personal-plugin'\" >> ~/.zshrc",
-	"postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
+	"workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=delegated",
+	"workspaceFolder": "/workspace/${localWorkspaceFolderBasename}",
+	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
+	// "postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
 	"waitFor": "postStartCommand"
 }

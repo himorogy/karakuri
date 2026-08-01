@@ -43,8 +43,8 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 ENV DEVCONTAINER=true
 
 # Create workspace and config directories and set permissions
-RUN mkdir -p /workspace /home/node/.claude && \
-  chown -R node:node /workspace /home/node/.claude
+RUN mkdir -p /workspace /home/node/.claude /home/node/.codex && \
+  chown -R node:node /workspace /home/node/.claude /home/node/.codex 
 
 WORKDIR /workspace
 
@@ -53,6 +53,16 @@ RUN ARCH=$(dpkg --print-architecture) && \
   wget "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
   sudo dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
   rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
+
+# Install
+## Starship prompt
+RUN curl -sS https://starship.rs/install.sh | sh -s -- --yes
+## ax
+RUN set -eu; \
+  curl -fsSL https://ax.yusuke.run/install -o /tmp/ax-install; \
+  AX_INSTALL_DIR=/usr/local/bin sh /tmp/ax-install; \
+  rm /tmp/ax-install; \
+  ax --version
 
 # Set up non-root user
 USER node
@@ -80,9 +90,11 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -x
 
 # Copy and set up firewall script
-COPY init-firewall.sh /usr/local/bin/
+COPY init-project-firewall.sh /usr/local/bin/
 USER root
-RUN chmod +x /usr/local/bin/init-firewall.sh && \
-  echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
+RUN chown root:root /usr/local/bin/init-project-firewall.sh && \
+  chmod 755 /usr/local/bin/init-project-firewall.sh && \
+  echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
+
 USER node
