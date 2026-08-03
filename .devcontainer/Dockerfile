@@ -89,7 +89,12 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-# Copy and set up firewall script
+# Copy and set up firewall script.
+#
+# This is a copy of packages/egress-guard/scripts/init-project-firewall.sh, kept
+# in sync by hand. sudoers has to name a fixed path outside the workspace, so it
+# cannot point into node_modules and the package cannot be consumed as a
+# dependency until it is published.
 COPY init-project-firewall.sh /usr/local/bin/
 
 # The policy that is actually enforced. It has to live outside the workspace and
@@ -99,6 +104,10 @@ COPY init-project-firewall.sh /usr/local/bin/
 #
 # Editing this file therefore means rebuilding the image, which is a step a human
 # performs. See packages/egress-guard/docs/spec.md section 2.1.
+#
+# It allows chatgpt.com, api.openai.com and auth.openai.com for the codex CLI,
+# and nodejs.org because node-gyp fetches headers there during setup. Drop what
+# this project does not use.
 COPY firewall.json /etc/egress-guard/firewall.json
 
 USER root

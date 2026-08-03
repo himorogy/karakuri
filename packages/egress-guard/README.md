@@ -415,6 +415,20 @@ ipset flush egress-audit-v4
 
 `fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません**（コンテナ内の `dmesg` は `CAP_SYSLOG` が無く読めない。`net.netfilter.nf_log_all_netns` が既定 `0` のためホストからも読めない）。**運用の前提にしないでください。** 経緯と却下した回避策は [`docs/design.md`](./docs/design.md) §2.11。
 
+## 適用されているか確かめる
+
+**`postStartCommand` が成功して見えても、適用されていないことがあります。** イメージが古いままだと旧版のスクリプトが残り、それが正常終了します。2026-08-03 に実際に起きました。
+
+```sh
+# 遮断されていること。到達できたら適用されていない
+curl --connect-timeout 5 https://example.com
+
+# 入っているスクリプトがパッケージ側と同じサイズか
+ls -l /usr/local/bin/init-project-firewall.sh
+```
+
+> **コンテナを取り違えないでください。** `shutdownAction: none` を使っていると、他プロジェクトの devcontainer が同時に動いたままになります。`ipset` を読むときは `docker ps` でコンテナ ID を確かめてから `docker exec -u root <id> ...` としてください。**起動時刻より前のエントリが混ざっていたら、それは別のコンテナです。**
+
 ## 再適用
 
 allowlist は起動時の名前解決に基づくため、CDN の IP 変動で許可先に到達できなくなることがあります。
@@ -572,3 +586,19 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 * **CI ランナー / クラウド開発環境 / rootless Docker**
 
 詳細と、それぞれ何が問題になり得るかは [`docs/known-issues.md`](./docs/known-issues.md) を参照してください。
+
+---
+
+## このパッケージを直す場合
+
+このリポジトリのルートで、CI が回すのと同じ 3 つを実行します。
+
+```sh
+pnpm lint          # biome
+pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
+pnpm test          # 設定 95 件 + ルール 145 件
+```
+
+> **egress-guard を導入した devcontainer の中で実行すると `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、その 5 件が何も検査できないためです。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §5。
+
+> **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。GitHub は基底プロファイルに入っているため `enforce` のままでも取得できます。
