@@ -1,6 +1,6 @@
 {
 	"version": 1,
 	"profile": "default",
-	"mode": "enforce",
+	"mode": "audit",
 	"allowDomains": ["chatgpt.com", "api.openai.com", "auth.openai.com"]
 }

@@ -32,19 +32,66 @@ npx biome check .
 
 ## 1. 次にやること（優先度順）
 
-### 1.1 devcontainer イメージの再ビルド（最優先）
+### 1.1 Orca remote の下で enforce に戻す（進行中・最優先）
 
-**このリポジトリのコンテナに egress-guard が適用されていません。** コミット 4477ba0 の devcontainer 変更がイメージに反映されていないためです。2026-08-03 時点の症状:
+**再ビルドは完了しています。** egress-guard 版のスクリプトが入り、ユーザー定義ネットワーク（`172.21.0.2/16`）で動いています。
 
-* `curl https://example.com` が 200 を返す（遮断されていない）
-* コンテナの IP が `172.17.0.3` = デフォルトブリッジ。`egress-guard-karakuri` 網ではない
-* `/usr/local/bin/init-project-firewall.sh` が 4.6 KB の**旧 anthropic 版**（`allowed-domains`）。egress-guard 版（49 KB）は入っていない
+**ただし `enforce` にすると Orca remote からアクセスできなくなり、いったん `postStartCommand` をコメントアウトして戻した経緯があります**（2026-08-03）。原因を調べ、`mode: "audit"` で洗い出す段階まで進めてあります。
 
-つまり**現在このコンテナで動くエージェントは外部へ無制限に出られます。** Dev Containers: Rebuild Container で解消します。
+#### 分かっていること
 
-再ビルド後、続けて次の 2 つを実施してください。
+**Orca の制御チャネルは iptables の影響を受けません。** ここを疑う必要はありません。
 
-* [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）
+* sshd は **`docker exec` 由来**（コンテナ内から見た PPID が 0、TCP 22 の listener 無し）。SSH は stdio に載っています
+* relay は **Unix ソケット**のみ。TCP listener は全て `127.0.0.1` で、`-A INPUT -i lo -j ACCEPT` を通ります
+
+**原因は relay のセットアップです。** `~/.orca-remote/relay-*/package.json` の依存に `node-pty` があり、**prebuild が darwin と win32 しか無いためソースビルドになります。**
+
+```
+node_modules/node-pty/prebuilds/  → darwin-arm64, darwin-x64, win32-arm64, win32-x64
+2026-08-03 00:25:52  ~/.cache/node-gyp/24.18.0/       ← node-gyp が Node ヘッダを取得
+2026-08-03 00:25:54  node-pty/build/Release/pty.node  ← 2 秒後にビルド完了
+```
+
+ヘッダの取得先は `nodejs.org`（`npm config get disturl` が未設定なので既定）。**基底プロファイルにも `allowDomains` にも入っていないため、`enforce` では取得できません。**
+
+さらに **`~/.orca-remote` と `~/.cache` はどちらもボリュームに載っていません**（永続化されるのは `/commandhistory`・`/home/node/.claude`・`/home/node/.codex` だけ）。**再ビルドのたびにこの取得が走ります。**
+
+#### いまの状態と、次にやること
+
+`.devcontainer/firewall.json` を **`mode: "audit"`** にし、`postStartCommand` を戻してあります。audit は OUTPUT を遮断しないため、Orca は正常に起動するはずです。
+
+1. **Dev Containers: Rebuild Container を実行する**
+2. Orca が起動したら、ホストから遮断候補を読む（`node` からは `ipset` を実行できません）
+
+   ```sh
+   # [ホスト]
+   docker exec -u root karakuri-dev-container ipset list egress-audit-v4
+   ```
+
+3. 記録された IP をドメインに戻す。逆引きが効かない相手（Cloudflare など）は TLS 証明書の SAN で特定する
+
+   ```sh
+   openssl s_client -connect <ip>:443 </dev/null 2>/dev/null | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
+   ```
+
+4. 出てきたドメインを `allowDomains` に追加し、`mode` を `enforce` に戻して再ビルド
+5. 通ったら [`verification-record.md`](./verification-record.md) に項目を起こす（**Orca remote は新しい未検証環境です**。[`known-issues.md`](./known-issues.md) 項目 8）
+
+> **`nodejs.org` はほぼ確実に出ます。** 出なければ audit の記録が機能していないと考えてください。
+
+> **再現には再ビルドが要ります。** relay は `~/.orca-remote` に残るため、**接続し直すだけでは再インストールが走らず、何も記録されません。**
+
+> **戻し方。** コンテナが起動しなくなったら、ホストから `.devcontainer/devcontainer.json` の `postStartCommand` を再びコメントアウトして再ビルドしてください。ワークスペースはバインドマウントなので、コンテナが上がらなくても編集できます。
+
+#### ついでに分かったこと
+
+* **`allowHostPorts` が空のため、ホスト（`192.168.65.254`）へは一切到達できません。** 意図した既定です（スクリプトのコメント: ホストに Tailscale 網が繋がっている可能性がある）。Orca には不要でしたが、ホスト上のサービスを使う構成では効いてきます
+* 常駐ピア `34.149.66.165` は allowlist 外です。`statsig.com` の解決結果は `34.128.128.0` で一致しません。**[`spec.md`](./spec.md) §9.1 の CDN drift が基底プロファイルで実際に起きている例**です（Claude Code のテレメトリなので実害はありません）
+
+#### 再ビルド後の積み残し
+
+* [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）。**enforce に戻してからでないと測れません**
 * §6.2 の 2.1〜2.5 — 適用そのものの確認
 
 ### 1.2 WebFetch の扱いの確定（再ビルド直後・5 分）
@@ -108,6 +155,7 @@ npx biome check .
 | 5 | WebFetch が遮断されたときのフォールバック挙動 | 未検証（→ §1.2） |
 | 6 | CI ランナー / クラウド開発環境 / rootless Docker | 未検証 |
 | 7 | Dev Container Feature 化 | 保留（着手条件を記載済み） |
+| 8 | Orca remote から使うコンテナで `enforce` にできない | 未検証（→ §1.1） |
 
 加えて [`verification-record.md`](./verification-record.md) §2 の「未確認」表に、上記に載らないものが 3 件あります。
 

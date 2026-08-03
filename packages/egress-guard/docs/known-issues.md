@@ -197,3 +197,19 @@ RUN chown -R root:root /etc/egress-guard && chmod 644 /etc/egress-guard/firewall
 ### 着手する条件
 
 `egress-guard` を他プロジェクトで実際に再利用する段階になったら、**案 C** で再検討します。それまでは README の `Dockerfile` スニペットを複製する方式のほうが、監査可能性と `docker build` 互換の両方を保てます。
+
+---
+
+## 8. Orca remote から使うコンテナ
+
+**分類:** 未検証
+
+**`enforce` にすると Orca remote から接続できなくなります**（2026-08-03、このリポジトリの devcontainer で発生）。切り分けは進んでいますが、必要なドメインを確定させて `enforce` に戻すところまでは終わっていません。手順は [`HANDOFF.md`](./HANDOFF.md) §1.1。
+
+**制御チャネルは無関係です。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。iptables の INPUT / OUTPUT を通らないため、ここを疑う必要はありません。
+
+**原因は relay のセットアップです。** 依存の `node-pty` に linux 向け prebuild が無いためソースビルドになり、node-gyp が **`nodejs.org`** から Node ヘッダを取得します。このドメインは基底プロファイルにも `allowDomains` にも入っていません。
+
+`~/.orca-remote` と `~/.cache` はどちらもボリュームに載っていないため、**再ビルドのたびにこの取得が走ります。** 逆に言えば、この 2 つを永続化すれば取得自体を無くせます（初回は必要）。
+
+**この項目が閉じるのは、Orca の起動に要るドメインを列挙して `enforce` で通ったときです。** 「`nodejs.org` を足せば済む」はまだ仮説で、audit モードでの洗い出しが済んでいません。
