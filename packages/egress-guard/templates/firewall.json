@@ -1,0 +1,8 @@
+{
+	"version": 1,
+	"profile": "default",
+	"mode": "enforce",
+	"allowDomains": [],
+	"allowCidrs": [],
+	"allowHostPorts": []
+}

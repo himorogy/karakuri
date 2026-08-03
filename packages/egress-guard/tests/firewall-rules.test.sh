@@ -1,0 +1,931 @@
+#!/usr/bin/env bash
+#
+# Rule application tests for init-project-firewall.sh.
+#
+# The script is run end to end against recording stubs for iptables, ipset, dig
+# and friends, so the generated filter tables and the command sequence can be
+# asserted without root and without touching the host's netfilter state. What
+# this covers is exactly what the config validator tests cannot: rule ordering,
+# policy handling, the atomic swap, audit mode and repeated runs.
+#
+# SC2016: stub bodies are single quoted on purpose - they must reach the stub
+# file unexpanded and only run when the script under test invokes them.
+# shellcheck disable=SC2016
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/../scripts" && pwd)"
+FIREWALL_SH="$SCRIPT_DIR/init-project-firewall.sh"
+
+PASS=0
+FAIL=0
+
+ok() {
+	PASS=$((PASS + 1))
+	printf '  ok   %s\n' "$1"
+}
+
+ng() {
+	FAIL=$((FAIL + 1))
+	printf '  FAIL %s\n' "$1" >&2
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+BIN="$WORK/bin"
+mkdir -p "$BIN"
+
+# --- stubs -------------------------------------------------------------------
+#
+# Every stub appends its argv to $FW_LOG. State that has to survive across
+# invocations (which ipsets exist) lives in $FW_STATE.
+
+make_stub() { # <name> <body>
+	local name="$1" body="$2"
+	{
+		printf '%s\n' '#!/usr/bin/env bash'
+		printf '%s\n' 'printf "%s\n" "$(basename "$0") $*" >>"$FW_LOG"'
+		printf '%s\n' "$body"
+	} >"$BIN/$name"
+	chmod +x "$BIN/$name"
+}
+
+make_stub id 'if [ "${1:-}" = "-u" ]; then echo 0; fi; exit 0'
+
+make_stub ip '
+case "$*" in
+	*"route show default"*)
+		[ -n "${FW_NO_GATEWAY:-}" ] || echo "default via 172.17.0.1 dev eth0"
+		;;
+	*"-6 addr show"*) : ;;
+esac
+exit 0'
+
+make_stub iptables 'exit 0'
+
+# A strict `aggregate`. The Debian build silently discards address families it
+# does not understand, so the host's copy would hide an IPv6 prefix reaching it;
+# this one refuses the input instead, which is the behaviour the jq filter in
+# add_github_meta_ranges has to make impossible to trigger.
+make_stub aggregate '
+buf=""
+while IFS= read -r line; do
+	case "$line" in
+		[0-9]*.*) buf="$buf$line
+" ;;
+		*) echo "aggregate: unsupported prefix: $line" >&2; exit 1 ;;
+	esac
+done
+printf "%s" "$buf"
+exit 0'
+
+# Every IPv4 table is kept separately so the bootstrap, the final and the panic
+# table can each be asserted: filter-v4.<tag>.1, .2, ... with filter-v4.<tag>
+# holding the last one.
+make_stub iptables-restore '
+run="$(cat "$FW_STATE/run")"
+n=$(( $(cat "$FW_STATE/v4count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" >"$FW_STATE/v4count"
+cat >"$FW_STATE/filter-v4.$run.$n"
+cp "$FW_STATE/filter-v4.$run.$n" "$FW_STATE/filter-v4.$run"
+case ",${FW_FAIL_RESTORE:-}," in *",$n,"*) exit 1 ;; esac
+exit 0'
+
+make_stub ip6tables 'exit 0'
+
+make_stub ip6tables-restore '
+cat >"$FW_STATE/filter-v6.$(cat "$FW_STATE/run")"
+exit 0'
+
+make_stub iptables-save '
+echo "-A OUTPUT -d 127.0.0.11/32 -p udp -m udp --dport 53 -j DOCKER_OUTPUT"
+exit 0'
+
+make_stub ipset '
+case "${1:-}" in
+	create)
+		name="$2"; [ "$name" = "-exist" ] && name="$3"
+		touch "$FW_STATE/set.$name"
+		;;
+	destroy) rm -f "$FW_STATE/set.${2:-}" ;;
+	swap)
+		[ -f "$FW_STATE/set.$2" ] || exit 1
+		[ -f "$FW_STATE/set.$3" ] || exit 1
+		;;
+	add)
+		for a; do last="$a"; done
+		echo "$last" >>"$FW_STATE/entries"
+		;;
+	list) echo "Number of entries: 7" ;;
+	test)
+		# Approximates real ipset membership: an exact hit, or the network
+		# address of a CIDR that was added (self_verify tests a CIDR by its
+		# network address).
+		for a; do last="$a"; done
+		[ -f "$FW_STATE/entries" ] || exit 1
+		while IFS= read -r e; do
+			[ "$e" = "$last" ] && exit 0
+			[ "${e%%/*}" = "$last" ] && exit 0
+		done <"$FW_STATE/entries"
+		exit 1
+		;;
+esac
+exit 0'
+
+# Stubbed so the resolver fallback inside resolve_domain can never reach the
+# real network and make these tests depend on the host's DNS.
+#
+# host.docker.internal is answered here rather than by `dig`, which is what
+# happens on the default bridge: Docker Desktop writes it into /etc/hosts, so it
+# resolves through NSS and not through the nameserver.
+make_stub getent '
+case "$*" in
+	*host.docker.internal*)
+		[ -n "${FW_NO_HOST_INTERNAL:-}" ] && exit 2
+		if [ -n "${FW_HOST_INTERNAL_PUBLIC:-}" ]; then
+			echo "8.8.8.8 STREAM host.docker.internal"
+			exit 0
+		fi
+		echo "192.168.65.2 STREAM host.docker.internal"
+		exit 0
+		;;
+esac
+exit 2'
+
+# A healthy network: name resolution works, the meta API answers, and the
+# unlisted host is unreachable. Reinstallable, because the failure scenarios
+# below replace these stubs.
+healthy_net_stubs() {
+	# Answers for anything except a pinned external-DNS probe, which must look
+	# like a blocked query.
+	#
+	# Several addresses on purpose: a single-line answer hides the SIGPIPE that a
+	# `... | head -n1` consumer causes under `set -o pipefail`.
+	make_stub dig '
+name=""
+for arg in "$@"; do
+	case "$arg" in
+		@*) exit 9 ;;
+		+*|-*|A) ;;
+		*) name="$arg" ;;
+	esac
+done
+case "$name" in
+	example.com) echo "198.51.100.1" ;;
+	example.net) echo "198.51.100.2" ;;
+	example.org) echo "198.51.100.3" ;;
+	host.docker.internal) ;;
+	private.example.com)
+		# A zone that answers with addresses inside FORBIDDEN_CIDRS. Only the
+		# public one may reach the allowlist.
+		echo "169.254.169.254"; echo "192.168.1.5"; echo "203.0.113.55"
+		;;
+	allprivate.example.com) echo "169.254.169.254" ;;
+	rotate.example.com)
+		# A CDN behind DNS round robin: the answer set moves between the run
+		# that builds the allowlist and the run that verifies it, keeping only
+		# one address in common.
+		n=$(( $(cat "$FW_STATE/rotate" 2>/dev/null || echo 0) + 1 ))
+		echo "$n" >"$FW_STATE/rotate"
+		if [ "$n" = "1" ]; then
+			echo "203.0.113.20"; echo "203.0.113.21"; echo "203.0.113.22"
+		else
+			echo "203.0.113.90"; echo "203.0.113.91"; echo "203.0.113.22"
+		fi
+		;;
+	*) echo "203.0.113.7"; echo "203.0.113.8"; echo "203.0.113.9" ;;
+esac
+exit 0'
+
+	# The meta API answers with IPv6 prefixes too. They must never reach
+	# `aggregate` or ipset.
+	make_stub curl '
+case "$*" in
+	*api.github.com/meta*)
+		echo "{\"web\":[\"140.82.112.0/20\",\"2606:50c0:8000::/40\"],\"api\":[\"192.30.252.0/22\"],\"git\":[\"143.55.64.0/20\"]}"
+		exit 0
+		;;
+	*example.*) exit 7 ;;
+esac
+exit 0'
+}
+
+healthy_net_stubs
+
+# --- driver ------------------------------------------------------------------
+
+run_firewall() { # <run-tag> [config-json]
+	local tag="$1" config="${2:-}"
+	FW_STATE="$WORK/state"
+	mkdir -p "$FW_STATE"
+	printf '%s' "$tag" >"$FW_STATE/run"
+	rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
+	FW_LOG="$WORK/log.$tag"
+	: >"$FW_LOG"
+
+	local -a env_args=(
+		"FW_LOG=$FW_LOG" "FW_STATE=$FW_STATE" "PATH=$BIN:$PATH"
+		"FW_FAIL_RESTORE=${FW_FAIL_RESTORE:-}"
+		"FW_NO_GATEWAY=${FW_NO_GATEWAY:-}"
+		"FW_NO_HOST_INTERNAL=${FW_NO_HOST_INTERNAL:-}"
+		"FW_HOST_INTERNAL_PUBLIC=${FW_HOST_INTERNAL_PUBLIC:-}"
+	)
+	local -a opts=("--resolv-conf" "${FW_RESOLV_CONF:-$WORK/resolv.conf}")
+	if [ -n "$config" ]; then
+		printf '%s' "$config" >"$WORK/firewall.json"
+		opts+=("--config" "$WORK/firewall.json")
+	fi
+	env "${env_args[@]}" bash "$FIREWALL_SH" "${opts[@]}" >"$WORK/out.$tag" 2>&1
+	printf '%s' "$?" >"$WORK/rc.$tag"
+}
+
+# The default bridge case: the container is handed the host's resolver rather
+# than the Docker embedded one. This is what a devcontainer started without
+# --network actually gets, so it is the default for these tests.
+printf 'nameserver 192.168.65.7\n' >"$WORK/resolv.conf"
+printf 'nameserver 127.0.0.11\n' >"$WORK/resolv.embedded.conf"
+printf 'nameserver fd00::1\n' >"$WORK/resolv.v6only.conf"
+: >"$WORK/resolv.empty.conf"
+
+v4_table() { cat "$WORK/state/filter-v4.$1" 2>/dev/null; }
+v4_table_n() { cat "$WORK/state/filter-v4.$1.$2" 2>/dev/null; }
+v6_table() { cat "$WORK/state/filter-v6.$1" 2>/dev/null; }
+
+# line_of <table-file-content> <pattern> -> 1-based line number, or empty
+line_of() {
+	printf '%s\n' "$1" | grep -n -- "$2" | head -n1 | cut -d: -f1
+}
+
+# The arity checks are not pedantry: an extra argument (a stray `--` meant for
+# grep, say) silently shifts the pattern out of position and turns the assertion
+# into one that passes on anything.
+assert_contains() { # <label> <haystack> <pattern>
+	[ "$#" -eq 3 ] || {
+		ng "assert_contains got $# arguments, expected 3: ${1:-?}"
+		return
+	}
+	if printf '%s\n' "$2" | grep -q -- "$3"; then
+		ok "$1"
+	else
+		ng "$1 (missing: $3)"
+	fi
+}
+
+assert_absent() { # <label> <haystack> <pattern>
+	[ "$#" -eq 3 ] || {
+		ng "assert_absent got $# arguments, expected 3: ${1:-?}"
+		return
+	}
+	if printf '%s\n' "$2" | grep -q -- "$3"; then
+		ng "$1 (unexpectedly present: $3)"
+	else
+		ok "$1"
+	fi
+}
+
+# Structural check on a generated iptables-restore table.
+#
+# This is what catches a rule that got split across several lines - the failure
+# mode that "$*" under IFS=$'\n\t' produces and that a grep for one expected
+# substring will happily miss.
+assert_well_formed_table() { # <label> <table>
+	[ "$#" -eq 2 ] || {
+		ng "assert_well_formed_table got $# arguments, expected 2: ${1:-?}"
+		return
+	}
+	local label="$1" table="$2" line n=0 problems=""
+
+	while IFS= read -r line; do
+		n=$((n + 1))
+		[ -n "$line" ] || continue
+		case "$line" in
+		'*'* | ':'* | 'COMMIT') continue ;;
+		'-A '*)
+			case "$line" in
+			*' -j '*) ;;
+			*) problems="$problems line $n has no target: '$line';" ;;
+			esac
+			;;
+		*) problems="$problems line $n is not a table directive or rule: '$line';" ;;
+		esac
+	done < <(printf '%s\n' "$table")
+
+	if [ "$n" -eq 0 ]; then
+		ng "$label (table is empty)"
+	elif [ -n "$problems" ]; then
+		ng "$label ($problems)"
+	else
+		ok "$label"
+	fi
+}
+
+assert_before() { # <label> <haystack> <first> <second>
+	[ "$#" -eq 4 ] || {
+		ng "assert_before got $# arguments, expected 4: ${1:-?}"
+		return
+	}
+	local a b
+	a="$(line_of "$2" "$3")"
+	b="$(line_of "$2" "$4")"
+	if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then
+		ok "$1"
+	else
+		ng "$1 (first=${a:-none} second=${b:-none})"
+	fi
+}
+
+# --- enforce mode ------------------------------------------------------------
+
+echo "enforce mode"
+run_firewall enforce '{"version":1,"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
+
+RC="$(cat "$WORK/rc.enforce")"
+if [ "$RC" = "0" ]; then
+	ok "exits 0"
+else
+	ng "exits 0 (got $RC)"
+	sed 's/^/    /' "$WORK/out.enforce" >&2
+fi
+
+LOG_ENFORCE="$WORK/log.enforce"
+T4="$(v4_table enforce)"
+assert_well_formed_table "every rule in the IPv4 table is a single well-formed line" "$T4"
+assert_contains "INPUT policy is DROP" "$T4" '^:INPUT DROP'
+assert_contains "FORWARD policy is DROP" "$T4" '^:FORWARD DROP'
+assert_contains "OUTPUT policy is DROP" "$T4" '^:OUTPUT DROP'
+assert_contains "loopback is accepted" "$T4" '^-A OUTPUT -o lo -j ACCEPT'
+assert_contains "the assigned resolver is accepted on udp/53" "$T4" '-d 192.168.65.7/32 -p udp --dport 53 -j ACCEPT'
+assert_contains "the assigned resolver is accepted on tcp/53" "$T4" '-d 192.168.65.7/32 -p tcp --dport 53 -j ACCEPT'
+assert_absent "no resolver is hardcoded" "$T4" '127.0.0.11'
+assert_contains "other udp/53 is dropped" "$T4" '-A OUTPUT -p udp --dport 53 -j DROP'
+assert_contains "other tcp/53 is dropped" "$T4" '-A OUTPUT -p tcp --dport 53 -j DROP'
+assert_before "DNS pinning precedes the OUTPUT ESTABLISHED accept" "$T4" \
+	'^-A OUTPUT -p udp --dport 53 -j DROP' \
+	'^-A OUTPUT -m conntrack --ctstate ESTABLISHED'
+assert_before "the allowlist accept precedes the final REJECT" "$T4" \
+	'match-set egress-allow-v4 dst -j ACCEPT' \
+	'^-A OUTPUT -j REJECT'
+assert_contains "unmatched egress is rejected" "$T4" '^-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited'
+assert_contains "blocked destinations are recorded" "$T4" \
+	'^-A OUTPUT -j SET --add-set egress-audit-v4 dst --exist'
+assert_before "the allowlist accept precedes the recorder" "$T4" \
+	'match-set egress-allow-v4 dst -j ACCEPT' \
+	'^-A OUTPUT -j SET --add-set egress-audit-v4'
+assert_before "the recorder precedes the REJECT" "$T4" \
+	'^-A OUTPUT -j SET --add-set egress-audit-v4' \
+	'^-A OUTPUT -j REJECT'
+assert_contains "the audit set is created but never destroyed" "$(cat "$LOG_ENFORCE")" \
+	'^ipset create -exist egress-audit-v4 hash:ip family inet timeout 604800'
+assert_absent "the audit set survives across runs" "$(cat "$LOG_ENFORCE")" \
+	'^ipset destroy egress-audit-v4$'
+assert_contains "drops are logged" "$T4" 'fw-drop: '
+# A LOG rule with no match would log every packet on the chain and spend the
+# rate limit on ordinary traffic instead of on the drops it exists to record.
+assert_contains "the DNS drop log is scoped to udp/53" "$T4" \
+	'-A OUTPUT -p udp --dport 53 -m limit .* --log-prefix "fw-dns-drop: "'
+assert_contains "the DNS drop log is scoped to tcp/53" "$T4" \
+	'-A OUTPUT -p tcp --dport 53 -m limit .* --log-prefix "fw-dns-drop: "'
+assert_contains "the sshd port is reachable" "$T4" '-A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT'
+assert_contains "the configured host port is allowed" "$T4" '-A OUTPUT -d 172.17.0.1/32 -p tcp --dport 5432 -j ACCEPT'
+# Docker Desktop answers on an address that is not the default gateway, so the
+# gateway alone would leave a host-local database unreachable.
+assert_contains "host.docker.internal is allowed on the same port" "$T4" \
+	'-A OUTPUT -d 192.168.65.2/32 -p tcp --dport 5432 -j ACCEPT'
+assert_absent "the host network is not allowed wholesale" "$T4" '172.17.0.0/24'
+
+# The DNS DROPs sit in front of the allowlist, so an attempt to reach an
+# external nameserver never reaches the recorder at the bottom of the chain.
+# Without a recorder of its own, the clearest tunnelling signal there is would
+# leave no trace anywhere a container can read.
+assert_contains "external DNS attempts are recorded (udp)" "$T4" \
+	'^-A OUTPUT -p udp --dport 53 -j SET --add-set egress-audit-v4 dst --exist'
+assert_contains "external DNS attempts are recorded (tcp)" "$T4" \
+	'^-A OUTPUT -p tcp --dport 53 -j SET --add-set egress-audit-v4 dst --exist'
+assert_before "the resolver accept precedes the DNS recorder" "$T4" \
+	'-d 192.168.65.7/32 -p udp --dport 53 -j ACCEPT' \
+	'^-A OUTPUT -p udp --dport 53 -j SET'
+assert_before "the DNS recorder precedes the DNS drop" "$T4" \
+	'^-A OUTPUT -p udp --dport 53 -j SET' \
+	'^-A OUTPUT -p udp --dport 53 -j DROP'
+
+T6="$(v6_table enforce)"
+assert_well_formed_table "every rule in the IPv6 table is a single well-formed line" "$T6"
+assert_contains "IPv6 OUTPUT policy is DROP" "$T6" '^:OUTPUT DROP'
+assert_contains "IPv6 INPUT policy is DROP" "$T6" '^:INPUT DROP'
+assert_contains "IPv6 drops are logged" "$T6" 'fw-drop6: '
+assert_absent "IPv6 has no allowlist accept" "$T6" 'match-set'
+
+echo "close before build"
+# The bootstrap table is the first thing installed; nothing may touch the
+# network before it is in place.
+TB="$(v4_table_n enforce 1)"
+assert_well_formed_table "every rule in the bootstrap table is a single well-formed line" "$TB"
+assert_contains "the bootstrap table drops OUTPUT" "$TB" '^:OUTPUT DROP'
+assert_contains "the bootstrap table drops INPUT" "$TB" '^:INPUT DROP'
+assert_contains "the bootstrap table pins DNS" "$TB" '-A OUTPUT -p udp --dport 53 -j DROP'
+assert_contains "the bootstrap table allows the assigned resolver" "$TB" \
+	'-d 192.168.65.7/32 -p udp --dport 53 -j ACCEPT'
+assert_absent "the bootstrap table has no allowlist" "$TB" 'match-set'
+assert_absent "the bootstrap table does not open the host gateway" "$TB" '172.17.0.1'
+# The SET target depends on an optional kernel module. The final table has a
+# fallback for a rejected transaction; a rejected bootstrap is fatal, so it must
+# not carry the rule at all.
+assert_absent "the bootstrap table has no recorder" "$TB" 'SET --add-set'
+
+LOG="$WORK/log.enforce"
+assert_contains "the staging set is built, not the live one" "$(cat "$LOG")" \
+	'^ipset add -exist egress-allow-v4-stg'
+assert_contains "the allowlist is swapped in atomically" "$(cat "$LOG")" \
+	'^ipset swap egress-allow-v4-stg egress-allow-v4$'
+assert_contains "the configured CIDR reaches the set" "$(cat "$LOG")" \
+	'^ipset add -exist egress-allow-v4-stg 203.0.113.0/24$'
+assert_absent "no per-rule iptables mutation is used" "$(cat "$LOG")" '^iptables -[AFPX]'
+assert_before "IPv6 is closed before anything else is applied" "$(cat "$LOG")" \
+	'^ip6tables-restore' \
+	'^iptables-restore'
+assert_before "IPv4 is closed before the first name resolution" "$(cat "$LOG")" \
+	'^iptables-restore' \
+	'^dig '
+assert_before "IPv4 is closed before the first outbound fetch" "$(cat "$LOG")" \
+	'^iptables-restore' \
+	'^curl '
+assert_before "the allowlist is complete before the swap" "$(cat "$LOG")" \
+	'^ipset add -exist egress-allow-v4-stg 203.0.113.0/24$' \
+	'^ipset swap'
+assert_before "the bootstrap table is installed before the swap" "$(cat "$LOG")" \
+	'^iptables-restore' \
+	'^ipset swap'
+assert_contains "the second table is the one carrying the allowlist" \
+	"$(v4_table_n enforce 2)" 'match-set egress-allow-v4 dst -j ACCEPT'
+assert_contains "the GitHub meta ranges are added to the live set" "$(cat "$LOG")" \
+	'^ipset add -exist egress-allow-v4 140.82.112.0/20$'
+# `select(test("^[0-9]"))` would let these through to `aggregate`, whose
+# behaviour on IPv6 input depends on which build is installed.
+assert_absent "IPv6 meta prefixes never reach the set" "$(cat "$LOG")" '2606:'
+assert_before "the meta API is only fetched after the final table is live" "$(cat "$LOG")" \
+	'^ipset swap' \
+	'^curl .*api.github.com/meta'
+
+# --- idempotency -------------------------------------------------------------
+
+echo "idempotency"
+run_firewall second '{"version":1,"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
+if [ "$(cat "$WORK/rc.second")" = "0" ]; then
+	ok "a second consecutive run exits 0"
+else
+	ng "a second consecutive run exits 0 (got $(cat "$WORK/rc.second"))"
+	sed 's/^/    /' "$WORK/out.second" >&2
+fi
+if [ "$(v4_table enforce)" = "$(v4_table second)" ]; then
+	ok "the second run produces an identical IPv4 table"
+else
+	ng "the second run produces an identical IPv4 table"
+fi
+if [ "$(v6_table enforce)" = "$(v6_table second)" ]; then
+	ok "the second run produces an identical IPv6 table"
+else
+	ng "the second run produces an identical IPv6 table"
+fi
+
+# --- audit mode --------------------------------------------------------------
+
+echo "audit mode"
+run_firewall audit '{"version":1,"mode":"audit"}'
+if [ "$(cat "$WORK/rc.audit")" = "0" ]; then
+	ok "audit mode exits 0"
+else
+	ng "audit mode exits 0 (got $(cat "$WORK/rc.audit"))"
+	sed 's/^/    /' "$WORK/out.audit" >&2
+fi
+TA="$(v4_table audit)"
+assert_well_formed_table "every rule in the audit table is a single well-formed line" "$TA"
+assert_contains "audit leaves OUTPUT on ACCEPT" "$TA" '^:OUTPUT ACCEPT'
+assert_contains "audit logs what would be dropped" "$TA" 'fw-audit: '
+assert_absent "audit does not REJECT" "$TA" '^-A OUTPUT -j REJECT'
+assert_contains "audit keeps INPUT on DROP" "$TA" '^:INPUT DROP'
+assert_contains "audit still pins DNS" "$TA" '-A OUTPUT -p udp --dport 53 -j DROP'
+assert_contains "audit still drops IPv6" "$(v6_table audit)" '^:OUTPUT DROP'
+assert_contains "audit records blocked destinations too" "$TA" \
+	'^-A OUTPUT -j SET --add-set egress-audit-v4 dst --exist'
+
+# --- failure path ------------------------------------------------------------
+
+echo "panic on a failed self verification"
+# The rules go in, but an unlisted host stays reachable: the environment is not
+# what the policy assumes, so the run must not be reported as a success.
+make_stub curl '
+case "$*" in
+	*api.github.com/meta*)
+		echo "{\"web\":[\"140.82.112.0/20\"],\"api\":[\"192.30.252.0/22\"],\"git\":[\"143.55.64.0/20\"]}"
+		;;
+esac
+exit 0'
+run_firewall verifyfail '{"version":1}'
+if [ "$(cat "$WORK/rc.verifyfail")" != "0" ]; then
+	ok "a failed self verification exits non-zero"
+else
+	ng "a failed self verification exits non-zero"
+fi
+assert_contains "the unlisted host check is what failed" "$(cat "$WORK/out.verifyfail")" \
+	'verify FAILED: unlisted host is blocked'
+assert_contains "a failed self verification falls back to the panic table" \
+	"$(v4_table verifyfail)" '^:OUTPUT DROP'
+
+echo "recorder fallback"
+healthy_net_stubs
+# The SET target needs a kernel module that may be missing. When the table is
+# rejected the run must drop the recorder and carry on, not fail.
+FW_FAIL_RESTORE=2
+run_firewall recorderfallback '{"version":1}'
+unset FW_FAIL_RESTORE
+if [ "$(cat "$WORK/rc.recorderfallback")" = "0" ]; then
+	ok "a rejected recorder rule falls back instead of failing"
+else
+	ng "a rejected recorder rule falls back instead of failing (got $(cat "$WORK/rc.recorderfallback"))"
+	sed 's/^/    /' "$WORK/out.recorderfallback" >&2
+fi
+assert_contains "the fallback is reported" "$(cat "$WORK/out.recorderfallback")" \
+	'retrying without the blocked-destination recorder'
+assert_contains "the rejected table did carry the recorder" \
+	"$(v4_table_n recorderfallback 2)" '^-A OUTPUT -j SET --add-set egress-audit-v4'
+assert_absent "the retried table has no recorder" \
+	"$(v4_table_n recorderfallback 3)" 'SET --add-set'
+assert_contains "the retried table is otherwise complete" \
+	"$(v4_table_n recorderfallback 3)" '^-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited'
+
+echo "panic on a rejected filter table"
+# When even the table without the recorder is refused, the run must not leave
+# the bootstrap table in place as if it had succeeded.
+FW_FAIL_RESTORE=2,3
+run_firewall restorefail '{"version":1}'
+unset FW_FAIL_RESTORE
+if [ "$(cat "$WORK/rc.restorefail")" != "0" ]; then
+	ok "a rejected filter table exits non-zero"
+else
+	ng "a rejected filter table exits non-zero"
+fi
+assert_contains "the rejection is reported" "$(cat "$WORK/out.restorefail")" \
+	'iptables-restore rejected the generated filter table'
+assert_contains "a rejected filter table falls back to the panic table" \
+	"$(v4_table restorefail)" '^-A OUTPUT -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED -j ACCEPT'
+
+echo "panic on a failed rebuild"
+# No resolver at all: the allowlist cannot be built, and the run must end closed
+# rather than leaving whatever policy happened to be in place.
+make_stub dig 'exit 9'
+make_stub curl 'exit 7'
+run_firewall panic '{"version":1}'
+if [ "$(cat "$WORK/rc.panic")" != "0" ]; then
+	ok "a rebuild failure exits non-zero"
+else
+	ng "a rebuild failure exits non-zero"
+fi
+assert_contains "the rebuild failure is reported" "$(cat "$WORK/out.panic")" \
+	'none of the required base domains resolved'
+TP="$(v4_table panic)"
+assert_well_formed_table "every rule in the panic table is a single well-formed line" "$TP"
+assert_contains "the panic table drops OUTPUT" "$TP" '^:OUTPUT DROP'
+assert_contains "the panic table drops INPUT" "$TP" '^:INPUT DROP'
+assert_absent "the panic table keeps no outbound ESTABLISHED" "$TP" \
+	'^-A OUTPUT -m conntrack'
+assert_absent "the panic table has no allowlist" "$TP" 'match-set'
+assert_contains "the panic table is applied to IPv6 too" "$(v6_table panic)" '^:OUTPUT DROP'
+
+# --- probe selection ----------------------------------------------------------
+
+echo "self verification probes"
+healthy_net_stubs
+# Allowing the default egress probe host must not break verification: the check
+# has to fall through to a probe that really is outside the allowlist.
+run_firewall probeallowed '{"version":1,"allowDomains":["example.com"]}'
+if [ "$(cat "$WORK/rc.probeallowed")" = "0" ]; then
+	ok "allowing the default egress probe still verifies"
+else
+	ng "allowing the default egress probe still verifies (got $(cat "$WORK/rc.probeallowed"))"
+	sed 's/^/    /' "$WORK/out.probeallowed" >&2
+fi
+assert_contains "verification falls through to another probe host" \
+	"$(cat "$WORK/out.probeallowed")" 'unlisted host is blocked (example.net)'
+assert_absent "the allowed probe host is not used" \
+	"$(cat "$WORK/out.probeallowed")" 'unlisted host is blocked (example.com)'
+
+# --- DNS rotation --------------------------------------------------------------
+
+echo "self verification under DNS rotation"
+# A large CDN hands out a different subset of its addresses on every query. If
+# verification compares one address picked at build time against one picked at
+# verify time, a perfectly correct policy fails at random - and a failed
+# verification takes the container down with it.
+run_firewall rotation '{"version":1,"allowDomains":["rotate.example.com"]}'
+if [ "$(cat "$WORK/rc.rotation")" = "0" ]; then
+	ok "a rotating answer set still verifies"
+else
+	ng "a rotating answer set still verifies (got $(cat "$WORK/rc.rotation"))"
+	sed 's/^/    /' "$WORK/out.rotation" >&2
+fi
+assert_contains "the domain check passed on an overlapping address" \
+	"$(cat "$WORK/out.rotation")" \
+	'verify OK: firewall.json domain rotate.example.com is in the allowlist'
+
+# --- host gateway --------------------------------------------------------------
+
+echo "host gateway detection"
+# No default route, but host.docker.internal resolves: allowHostPorts must still
+# reach the host rather than abort the run.
+FW_NO_GATEWAY=1
+run_firewall nogw '{"version":1,"allowHostPorts":[5432]}'
+unset FW_NO_GATEWAY
+if [ "$(cat "$WORK/rc.nogw")" = "0" ]; then
+	ok "a missing default route falls back to host.docker.internal"
+else
+	ng "a missing default route falls back to host.docker.internal (got $(cat "$WORK/rc.nogw"))"
+	sed 's/^/    /' "$WORK/out.nogw" >&2
+fi
+assert_contains "the fallback opens the resolved host address" "$(v4_table nogw)" \
+	'-A OUTPUT -d 192.168.65.2/32 -p tcp --dport 5432 -j ACCEPT'
+assert_contains "the fallback is reported" "$(cat "$WORK/out.nogw")" \
+	'falling back to host.docker.internal'
+
+# Neither route nor name: allowHostPorts cannot be honoured, and silently
+# dropping a requested allowance would be worse than failing.
+FW_NO_GATEWAY=1
+FW_NO_HOST_INTERNAL=1
+run_firewall nohost '{"version":1,"allowHostPorts":[5432]}'
+unset FW_NO_GATEWAY FW_NO_HOST_INTERNAL
+if [ "$(cat "$WORK/rc.nohost")" != "0" ]; then
+	ok "an unresolvable host exits non-zero"
+else
+	ng "an unresolvable host exits non-zero"
+fi
+assert_contains "the unresolvable host is reported" "$(cat "$WORK/out.nohost")" \
+	'neither the default gateway nor host.docker.internal'
+
+# --- forbidden addresses from DNS -----------------------------------------------
+
+echo "forbidden addresses from DNS"
+# allowCidrs is checked against FORBIDDEN_CIDRS, but a DNS answer was not. An
+# allowed domain whose zone is attacker controlled could therefore answer
+# 169.254.169.254 and put the cloud metadata service into the allowlist - and
+# the agent picks the moment to re-apply, so it also picks the rebinding window.
+run_firewall dnsprivate '{"version":1,"allowDomains":["private.example.com"]}'
+if [ "$(cat "$WORK/rc.dnsprivate")" = "0" ]; then
+	ok "a domain with mixed public and private answers exits 0"
+else
+	ng "a domain with mixed public and private answers exits 0 (got $(cat "$WORK/rc.dnsprivate"))"
+	sed 's/^/    /' "$WORK/out.dnsprivate" >&2
+fi
+assert_contains "the public address from that domain is allowed" \
+	"$(cat "$WORK/log.dnsprivate")" '^ipset add -exist egress-allow-v4-stg 203.0.113.55$'
+# Anchored on `ipset add`: the log also records the `ipset test` calls that self
+# verification makes, and a bare grep for the address would match those instead.
+assert_absent "the metadata service address is not allowed" \
+	"$(cat "$WORK/log.dnsprivate")" '^ipset add .* 169\.254\.169\.254$'
+assert_absent "the RFC1918 address is not allowed" \
+	"$(cat "$WORK/log.dnsprivate")" '^ipset add .* 192\.168\.1\.5$'
+assert_contains "the rejected addresses are reported" "$(cat "$WORK/out.dnsprivate")" \
+	'which is in a forbidden range'
+
+# A domain that resolves to nothing but forbidden addresses is the same case as
+# one that does not resolve: warn and carry on, do not fail the run.
+run_firewall dnsallprivate '{"version":1,"allowDomains":["allprivate.example.com"]}'
+if [ "$(cat "$WORK/rc.dnsallprivate")" = "0" ]; then
+	ok "a domain with only private answers does not fail the run"
+else
+	ng "a domain with only private answers does not fail the run (got $(cat "$WORK/rc.dnsallprivate"))"
+	sed 's/^/    /' "$WORK/out.dnsallprivate" >&2
+fi
+assert_contains "the all-forbidden domain is reported" "$(cat "$WORK/out.dnsallprivate")" \
+	'resolved only to forbidden addresses'
+assert_absent "nothing from the all-forbidden domain reaches the set" \
+	"$(cat "$WORK/log.dnsallprivate")" '^ipset add .* 169\.254\.169\.254$'
+# Self verification must not turn a warn-and-continue case into a panic: the
+# domain has no allowlistable address, so there is nothing to check.
+assert_contains "the all-forbidden domain is skipped by self verification" \
+	"$(cat "$WORK/out.dnsallprivate")" 'verify SKIP: none of the 1 firewall.json domains resolved'
+
+# --- host address sanity ---------------------------------------------------------
+
+echo "host address sanity"
+# host.docker.internal is the one name whose answer may be a private address, so
+# it cannot go through the check above. It still must not open a port on an
+# arbitrary internet host: a public answer means the name was intercepted.
+FW_HOST_INTERNAL_PUBLIC=1
+run_firewall hostpublic '{"version":1,"allowHostPorts":[5432]}'
+unset FW_HOST_INTERNAL_PUBLIC
+if [ "$(cat "$WORK/rc.hostpublic")" = "0" ]; then
+	ok "a public host.docker.internal answer does not fail the run"
+else
+	ng "a public host.docker.internal answer does not fail the run (got $(cat "$WORK/rc.hostpublic"))"
+	sed 's/^/    /' "$WORK/out.hostpublic" >&2
+fi
+assert_absent "no port is opened on the public address" "$(v4_table hostpublic)" \
+	'8.8.8.8'
+assert_contains "the gateway is still opened" "$(v4_table hostpublic)" \
+	'-A OUTPUT -d 172.17.0.1/32 -p tcp --dport 5432 -j ACCEPT'
+assert_contains "the refusal is reported" "$(cat "$WORK/out.hostpublic")" \
+	'not a private address'
+
+# --- panic on a preflight failure -------------------------------------------------
+
+echo "panic on a preflight failure"
+# The apply phase starts before the configuration is read. On a first boot the
+# "previous" policy is ACCEPT everything, so exiting on a config error without
+# applying anything would leave the container wide open.
+run_firewall badconfig '{"version":1,"allowCidrs":["0.0.0.0/0"]}'
+if [ "$(cat "$WORK/rc.badconfig")" != "0" ]; then
+	ok "a rejected configuration exits non-zero"
+else
+	ng "a rejected configuration exits non-zero"
+fi
+assert_contains "the rejection is reported" "$(cat "$WORK/out.badconfig")" \
+	'rejected allowCidrs entry'
+assert_contains "a rejected configuration falls back to the panic table" \
+	"$(v4_table badconfig)" '^:OUTPUT DROP'
+assert_absent "the panic table after a config error has no allowlist" \
+	"$(v4_table badconfig)" 'match-set'
+assert_contains "IPv6 is closed too after a config error" \
+	"$(v6_table badconfig)" '^:OUTPUT DROP'
+
+# allowHostPorts that cannot be honoured is a failure inside the apply phase and
+# must end closed rather than with the bootstrap table still live.
+FW_NO_GATEWAY=1
+FW_NO_HOST_INTERNAL=1
+run_firewall nohostpanic '{"version":1,"allowHostPorts":[5432]}'
+unset FW_NO_GATEWAY FW_NO_HOST_INTERNAL
+assert_contains "an unresolvable host falls back to the panic table" \
+	"$(v4_table nohostpanic)" '^-A OUTPUT -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED -j ACCEPT'
+assert_absent "that panic table has no allowlist" \
+	"$(v4_table nohostpanic)" 'match-set'
+
+# --- configuration source -------------------------------------------------------
+
+echo "configuration source"
+# The adversary in this threat model is the agent inside the container, and it
+# can re-apply the policy whenever it likes. A firewall.json under the workspace
+# is therefore source, not policy: if the apply path read it, an injected agent
+# could write {"mode":"audit"} and disable enforcement in two steps without ever
+# obtaining root.
+WS="$WORK/fakeworkspace"
+mkdir -p "$WS/.devcontainer"
+printf '%s' '{"version":1,"mode":"audit","allowDomains":["attacker.example"]}' \
+	>"$WS/.devcontainer/firewall.json"
+
+# The repo copy is checked by naming it. There is no search: a script that went
+# looking would have to assume a workspace layout, and every location it agreed
+# to look in would be another place the agent could plant a policy.
+rc=0
+out="$(bash "$FIREWALL_SH" --check-config --config "$WS/.devcontainer/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "--check-config validates a named repo copy"
+else
+	ng "--check-config validates a named repo copy (rc=$rc)"
+fi
+assert_contains "--check-config says which file it read" "$out" \
+	"reading $WS/.devcontainer/firewall.json"
+
+# Run from inside the workspace with no --config at all: still nothing found,
+# because there is no search to find it with.
+rc=0
+out="$(cd "$WS" && bash "$FIREWALL_SH" --check-config 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "--check-config without --config exits 0"
+else
+	ng "--check-config without --config exits 0 (rc=$rc)"
+fi
+assert_contains "--check-config does not search the working directory" "$out" \
+	'no firewall.json found'
+
+FW_STATE="$WORK/state"
+mkdir -p "$FW_STATE"
+printf '%s' srcsplit >"$FW_STATE/run"
+rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
+: >"$WORK/log.srcsplit"
+rc=0
+out="$(cd "$WS" && env "FW_LOG=$WORK/log.srcsplit" "FW_STATE=$FW_STATE" "PATH=$BIN:$PATH" \
+	bash "$FIREWALL_SH" --resolv-conf "$WORK/resolv.conf" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "applying from a workspace with a firewall.json exits 0"
+else
+	ng "applying from a workspace with a firewall.json exits 0 (rc=$rc)"
+	printf '%s\n' "$out" | sed 's/^/    /' >&2
+fi
+assert_contains "the apply path ignores the workspace copy" "$out" \
+	'no firewall.json found'
+assert_absent "the workspace copy is never read while applying" "$out" \
+	"reading $WS/.devcontainer/firewall.json"
+# The decisive check: mode=audit from the workspace file would have left OUTPUT
+# on ACCEPT.
+assert_contains "the workspace copy cannot relax the policy" "$(v4_table srcsplit)" \
+	'^:OUTPUT DROP'
+assert_absent "the workspace allowlist entry is never allowed" "$out" \
+	'allowed attacker.example'
+
+# --- resolver detection -------------------------------------------------------
+
+echo "resolver detection"
+healthy_net_stubs
+
+# User defined network: the Docker embedded resolver is present and should be
+# the one pinned.
+FW_RESOLV_CONF="$WORK/resolv.embedded.conf"
+run_firewall embedded '{"version":1}'
+if [ "$(cat "$WORK/rc.embedded")" = "0" ]; then
+	ok "the embedded resolver case exits 0"
+else
+	ng "the embedded resolver case exits 0 (got $(cat "$WORK/rc.embedded"))"
+	sed 's/^/    /' "$WORK/out.embedded" >&2
+fi
+assert_contains "the embedded resolver is pinned" "$(v4_table embedded)" \
+	'-d 127.0.0.11/32 -p udp --dport 53 -j ACCEPT'
+assert_absent "the embedded resolver case does not warn about the network" \
+	"$(cat "$WORK/out.embedded")" 'not on a user defined Docker network'
+
+# Default bridge: the host resolver is pinned and the weaker setup is called out.
+FW_RESOLV_CONF="$WORK/resolv.conf"
+assert_contains "the default bridge case warns about the network" \
+	"$(cat "$WORK/out.enforce")" 'not on a user defined Docker network'
+
+# No usable resolver: fail closed rather than leave DNS open.
+FW_RESOLV_CONF="$WORK/resolv.v6only.conf"
+run_firewall v6only '{"version":1}'
+if [ "$(cat "$WORK/rc.v6only")" != "0" ]; then
+	ok "an IPv6-only resolv.conf exits non-zero"
+else
+	ng "an IPv6-only resolv.conf exits non-zero"
+fi
+assert_contains "the IPv6-only case explains itself" "$(cat "$WORK/out.v6only")" \
+	'only non-IPv4 nameservers'
+
+FW_RESOLV_CONF="$WORK/resolv.empty.conf"
+run_firewall noresolver '{"version":1}'
+if [ "$(cat "$WORK/rc.noresolver")" != "0" ]; then
+	ok "a resolv.conf with no nameserver exits non-zero"
+else
+	ng "a resolv.conf with no nameserver exits non-zero"
+fi
+assert_contains "the missing resolver case explains itself" \
+	"$(cat "$WORK/out.noresolver")" 'no nameserver found'
+
+# The apply phase now starts before the resolver check, so a missing resolver
+# closes the container instead of leaving whatever policy was there. On a first
+# boot that previous policy is ACCEPT everything.
+assert_contains "a missing resolver falls back to the panic table" \
+	"$(v4_table noresolver)" '^:OUTPUT DROP'
+assert_absent "the panic table after a resolver failure has no allowlist" \
+	"$(v4_table noresolver)" 'match-set'
+
+FW_RESOLV_CONF="$WORK/resolv.conf"
+
+# --- argument handling under sudo --------------------------------------------
+
+echo "options under sudo"
+# A sudoers Cmnd written without an argument list permits any arguments, so the
+# script has to refuse the development options itself rather than trust it.
+for opt in "--config /tmp/attacker.json" "--check-config"; do
+	rc=0
+	# shellcheck disable=SC2086 # the option string is split on purpose
+	out="$(SUDO_USER=node SUDO_UID=1000 bash "$FIREWALL_SH" $opt 2>&1)" || rc=$?
+	if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "not accepted through sudo"; then
+		ok "'$opt' is refused when invoked through sudo"
+	else
+		ng "'$opt' is refused when invoked through sudo (rc=$rc)"
+	fi
+done
+
+# --- script placement ----------------------------------------------------------
+
+echo "script placement under sudo"
+# The sudoers entry names a fixed path. If that entry pointed into node_modules,
+# the unprivileged user could rewrite the script and have it run as root. The
+# check replaces a manual `ls -l` after every rebuild, so it has to fire on the
+# real production path: sudo, no arguments.
+FW_STATE="$WORK/state"
+mkdir -p "$FW_STATE"
+printf '%s' placement >"$FW_STATE/run"
+rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
+: >"$WORK/log.placement"
+rc=0
+out="$(env "FW_LOG=$WORK/log.placement" "FW_STATE=$FW_STATE" "PATH=$BIN:$PATH" \
+	SUDO_USER=node SUDO_UID=1000 bash "$FIREWALL_SH" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ]; then
+	ok "a script the unprivileged user owns is refused under sudo"
+else
+	ng "a script the unprivileged user owns is refused under sudo (rc=$rc)"
+fi
+assert_contains "the refusal names the escalation path" "$out" \
+	'privilege escalation path'
+
+# Without sudo it is a development run from a checkout, which must keep working.
+run_firewall placementdev '{"version":1}'
+if [ "$(cat "$WORK/rc.placementdev")" = "0" ]; then
+	ok "the same script runs fine when not invoked through sudo"
+else
+	ng "the same script runs fine when not invoked through sudo (got $(cat "$WORK/rc.placementdev"))"
+	sed 's/^/    /' "$WORK/out.placementdev" >&2
+fi
+
+# --- result ------------------------------------------------------------------
+
+printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

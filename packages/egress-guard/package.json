@@ -11,5 +11,18 @@
 		"allowlist",
 		"network-policy"
 	],
-	"type": "module"
+	"type": "module",
+	"scripts": {
+		"test": "bash tests/firewall-config.test.sh && bash tests/firewall-rules.test.sh",
+		"lint:sh": "shellcheck -x --shell=bash --severity=style scripts/*.sh tests/*.sh"
+	},
+	"files": [
+		"scripts",
+		"templates",
+		"docs",
+		"README.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	}
 }
