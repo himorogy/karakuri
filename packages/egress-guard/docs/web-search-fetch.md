@@ -1,32 +1,48 @@
-# egress 規制下での Claude Code Web Search / Fetch
+# Claude Code の Web Search / Fetch と egress 規制
 
-egress-guard は allowlist に無いドメインへの通信を遮断します。「では Claude Code の Web 検索・Web 取得は使えなくなるのか」という疑問に答えるための文書です。
+egress-guard は allowlist に無いドメインへの通信を遮断します。「では Claude Code の Web 検索・Web 取得は使えなくなるのか」に答えるための**外部ツールの挙動に関する参考文書**です。egress-guard の仕様ではありません。
 
-結論を先に書きます。
+**根拠の強さが節によって違います。** 混同しないよう最初に示します。
 
-* **使えます。** allowlist を広げる必要はありません
-* しかも、**取得内容が Haiku の要約を経由するため、prompt injection のリスクはむしろ低くなっています**
-* 代償として、**長文ページでは情報が落ちます**。これは egress 規制の副作用ではなく、Claude Code 側の仕様です
-* 「どうしても原文をそのまま読ませたい」ケース以外は、これで十分です
+| 節 | 内容 | 根拠 |
+|---|---|---|
+| §1 | コンテナから直接 egress しない | **未実測の推論。** 参照元の記事は発信元について記述していない |
+| §2〜§4 | Haiku 要約とそのトレードオフ | 参照元の記事（Claude Code v2.1.126 のソース調査） |
 
-参照元: [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)（zhizhiarv、Claude Code v2.1.126 の調査、2026-05-04 時点）
+したがって現時点で言えるのは次のとおりです。
+
+* **おそらく使えます。** ただし §1 は**まだ実測していません**。確認手順は §1 にあります
+* 取得内容は Haiku の要約を経由するため、**prompt injection のリスクは低くなります**（無効化ではありません）
+* 代償として、**長文ページでは情報が落ちます**。egress 規制の副作用ではなく Claude Code 側の仕様です
+* 「どうしても原文をそのまま読ませたい」ケース以外は、これで十分と考えられます
+
+参照元: [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)（zhizhiarv、Claude Code v2.1.126 の調査、2026-05-04 時点）。**バージョン依存の情報です。**
 
 ---
 
-## 1. なぜ allowlist を広げなくてよいのか
+## 1. コンテナから直接 egress しない（**未実測**）
 
-Claude Code の Web 検索・Web 取得は、コンテナから任意のドメインへ直接 HTTP を投げる仕組みではありません。処理は Anthropic 側で完結し、コンテナから見た通信先は `api.anthropic.com` だけです。`api.anthropic.com` は egress-guard の基底プロファイルに含まれているため、追加設定は不要です。
-
-つまり、次の 2 つは別物です。
+Claude Code の Web 検索・Web 取得は、コンテナから任意のドメインへ直接 HTTP を投げる仕組みではない、と考えられます。処理が Anthropic 側で完結するなら、コンテナから見た通信先は `api.anthropic.com` だけです。これは egress-guard の基底プロファイルに含まれるため、追加設定は不要ということになります。
 
 | | 通信先 | allowlist |
 |---|---|---|
-| Claude Code の WebSearch / WebFetch | `api.anthropic.com` | 基底プロファイルに含まれる（設定不要） |
+| Claude Code の WebSearch / WebFetch | `api.anthropic.com`（と考えられる） | 基底プロファイルに含まれる（設定不要） |
 | `curl https://example.com` などの自前の取得 | そのドメイン | `allowDomains` への追加が必要 |
+
+### この節の根拠は弱い
+
+**参照元の記事は、リクエストの発信元について記述していません。** 記事が扱っているのは Haiku 要約の仕組み（§2〜§3）であり、「どこから HTTP が出るか」ではありません。
+
+上の記述は次からの推論です。
+
+* WebSearch は Anthropic 側のサーバーサイド実行として提供されている
+* WebFetch も同じ経路で処理されるなら、コンテナは `api.anthropic.com` としか話さないはず
+
+**バージョンや設定で変わり得ますし、そもそも推論が誤っている可能性もあります。**
 
 ### 実測で確かめる
 
-上記は仕様の理解であり、環境やバージョンで変わり得ます。**遮断先の記録（`egress-audit-v4`）で実際に確認できます。**
+`egress-audit-v4`（遮断先の記録）で確認できます。
 
 ```sh
 # コンテナ内・root（ホストからは docker exec -u root <container> ...）
@@ -40,9 +56,9 @@ ipset flush egress-audit-v4
 ipset list egress-audit-v4
 ```
 
-`enforce` モードのまま実行して `egress-audit-v4` に何も溜まらなければ、コンテナから外部ドメインへの直接 egress は発生していない、ということです。
+`enforce` モードのまま実行して `egress-audit-v4` に何も溜まらなければ、コンテナから外部ドメインへの直接 egress は発生していないことになります。**逆に何か記録されれば、この節の推論は誤りです。**
 
-> **検証状況:** 本パッケージの実機検証（2026-08-02）ではこの手順は未実施です。実施したら結果をここに追記してください。
+> **検証状況: 未実施。** 実施したら結果をここに追記し、[`known-issues.md`](./known-issues.md) の項目 5 を消してください。
 
 ---
 
@@ -111,12 +127,13 @@ WebFetch は取得した HTML をそのままモデルに渡しません。Markd
 
 **このとき緩衝材は無くなります。** 取得した内容はそのままコンテキストに入るため、prompt injection の危険は元に戻ります。信頼できるドメインに限って追加してください。
 
-`firewall.json` の反映にはイメージの再ビルドが必要です（理由は [`spec.md`](./spec.md) の §2.1）。
+`firewall.json` の反映にはイメージの再ビルドが必要です（理由は [`design.md`](./design.md) §2.1）。
 
 ---
 
 ## 参考
 
-* [`spec.md`](./spec.md) — §2.1 権限モデル、§3 firewall.json、§4.10 遮断先の記録
-* [`known-issues.md`](./known-issues.md) — 項目 2「GET を全ドメイン許可」ができない理由
+* [`spec.md`](./spec.md) §9.2 — 「GET を全ドメイン許可」ができない理由。**この文書の §1 が正しければ、その要求の大半はそもそも成立しません**
+* [`known-issues.md`](./known-issues.md) 項目 5 — §1 の実測が未実施であることの記録
+* [`README.md`](../README.md) — `egress-audit-v4` の読み方
 * [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)

