@@ -23,4 +23,8 @@ jobs:
 
       - run: pnpm lint
 
+      # シェルスクリプトはこのリポジトリの成果物そのもの（egress-guard）。
+      # biome は触れないため別に走らせる。shellcheck は ubuntu-latest に同梱。
+      - run: pnpm lint:sh
+
       - run: pnpm test

@@ -22,15 +22,15 @@
 検証:
 
 ```sh
-cd packages/egress-guard
-pnpm test          # 設定 95 件 + ルール 145 件
-pnpm lint:sh
-npx biome check .
+# リポジトリのルートで。CI が回すのと同じ 3 つ。
+pnpm lint          # biome
+pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
+pnpm test          # 同上。設定 95 件 + ルール 145 件
 ```
 
 > **導入済みの devcontainer の中では `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、その 5 件が何も検査できないためです（[`verification-record.md`](./verification-record.md) §5）。CI では全件実行されます。
 
-> `pnpm lint:sh` はこのコンテナでは動きません（shellcheck が未導入）。
+> `pnpm lint:sh` はこのコンテナでは動きません（shellcheck が未導入）。**CI では走ります**（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。GitHub は基底プロファイルに入っているため `enforce` のままでも取得できます。
 
 ---
 

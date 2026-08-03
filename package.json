@@ -5,7 +5,9 @@
 	"packageManager": "pnpm@10.33.2",
 	"scripts": {
 		"format": "biome check --write .",
-		"lint": "biome ci ."
+		"lint": "biome ci .",
+		"lint:sh": "pnpm -r lint:sh",
+		"test": "pnpm -r test"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.13",
