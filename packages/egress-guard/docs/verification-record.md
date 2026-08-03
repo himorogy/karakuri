@@ -27,6 +27,7 @@
 | 同上、デフォルトブリッジ | 2026-08-03 | 項目 14〜16、18 | 18.4 を除き合格 |
 | 同上、デフォルトブリッジ、**egress-guard 未適用**（Claude Code v2.1.220） | 2026-08-03 | 項目 19 | WebFetch は直接 egress する。**文書の推論を否定** |
 | 同上（実装の静的解析。環境非依存） | 2026-08-03 | 項目 20 | 参照元記事の主張を再現。**打ち切りの「サイレント」のみ食い違い** |
+| 同上、ユーザー定義ネットワーク、**audit モード** | 2026-08-03 | 項目 21 | 起動後セットアップに要る 2 ドメインを特定（[known-issues #8](./known-issues.md)）。**`enforce` での確認は未実施** |
 
 **未実施の環境**は [`known-issues.md`](./known-issues.md) を参照してください（IPv6 が有効なコンテナ、Linux ホスト、CI ランナー、rootless Docker）。
 
@@ -215,6 +216,28 @@
 | 13 の `gh auth status` が疎通確認にならない | ネットワークに触れない |
 | 15.2 / 15.3 がゲートウェイアドレスを直書き | ネットワーク構成を変えると古いアドレスを叩く（項目 17 で実際に発生） |
 | 18.4 が `/etc/hosts` で名前解決を細工できる前提 | `resolve_domain` は `dig` を先に試すため `getent` に到達しない |
+| **ユニットテストの「configuration source」3 件がホスト環境に依存する** | 下記 |
+
+### ユニットテストがホスト環境に依存している（未修正）
+
+**`tests/firewall-rules.test.sh` の「configuration source」ブロックは、`/etc/egress-guard/firewall.json` が存在しない環境でしか通りません。** egress-guard を導入した devcontainer の中で `pnpm test` を実行すると 3 件落ちます（2026-08-03 に発生）。
+
+```
+FAIL --check-config does not search the working directory (missing: no firewall.json found)
+FAIL the apply path ignores the workspace copy (missing: no firewall.json found)
+FAIL the workspace copy cannot relax the policy (missing: ^:OUTPUT DROP)
+```
+
+`PROD_CONFIG="/etc/egress-guard/firewall.json"` は固定パスで、上書き手段がありません（[`design.md`](./design.md) の「見に行く場所を増やすほど攻撃面が増える」に基づく意図的な設計）。**したがってテスト側で環境を分岐させる必要があります。**
+
+**防御そのものは壊れていません。** 同じブロックの安全側の 2 件は通ります。
+
+* `the workspace copy is never read while applying`（`assert_absent`）
+* `the workspace allowlist entry is never allowed`
+
+落ちているのは「実効設定が存在しない」ことを前提にした期待値だけです。CI には `/etc/egress-guard` が無いため緑のままで、**この依存は導入済みコンテナの中でしか表面化しません。**
+
+> **修正方針。** `PROD_CONFIG` の存在で期待値を分岐させます。存在する場合は `reading /etc/egress-guard/firewall.json` を期待し、`^:OUTPUT DROP` の判定は実効設定の `mode` に左右されるため落とします。**`PROD_CONFIG` にテスト用の上書きを足すのは避けてください** — sudo の `env_reset` で無効化されるとはいえ、固定パスであること自体が設計判断です。
 
 ### ここから読み取れるパターン
 
@@ -590,3 +613,25 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 > **20.7 の `prompt` の作り方が肝です。** 「1 語で答えろ」のような指示にしてください。要約された場合と原文が返った場合を、出力の長さだけで区別できます。
 
 > 測定時は `code.claude.com/docs/en/overview`（16,445 バイト）で確認しました。**このサイトが将来も `text/markdown` を返す保証はありません。** 候補は `curl -sI -H 'Accept: text/markdown, text/html, */*'` の `content-type` で選び直してください。
+
+### 6.21 audit モードで、起動後セットアップに要るドメインを洗い出す
+
+**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** 2026-08-03 に Orca remote の接続不能を追ったときの手順で（[known-issues #8](./known-issues.md)）、同種の構成に使えます。
+
+| # | 手順 | 注意 |
+|---|---|---|
+| 21.1 | `firewall.json` を `mode: "audit"` にして**再ビルドする** | **再接続では駄目です。** 導入物がホームに残っていると再インストールが走らず、何も記録されません |
+| 21.2 | 問題の操作を一通り行う | — |
+| 21.3 | `[ホスト] docker exec -u root <container> ipset list egress-audit-v4` | **コンテナを取り違えないこと。** 21.7 参照 |
+| 21.4 | 各 IP を名前に戻す | 21.5・21.6 |
+| 21.5 | 逆引き | CDN では引けないか、CDN 事業者名しか返りません |
+| 21.6 | TLS 証明書で確認 | `openssl s_client -connect <ip>:443 -servername <候補>` で候補を当てる。SNI 無しでは Cloudflare は証明書を返しません |
+| 21.7 | `timeout` の残量から追加時刻を逆算する | `追加時刻 = 現在 - (604800 - 残量)`。**`--exist` で再追加されると残量がリセットされるため、これは「最後に接触した時刻」です** |
+
+> **21.6 が記録を汚染します。** `openssl` で候補 IP を叩くと、**その接続自体が `egress-audit-v4` に記録されます。** 実際にこれをやってしまい、別コンテナから取った 17 件を全て自分のコンテナに書き込みました。21.7 の時刻で切り分けられますが、**名前解決は別のコンテナか、記録が済んでから行ってください。**
+
+> **21.7 が効きます。** 「コンテナ起動時刻より前のエントリがある」ことから、取得先のコンテナを取り違えていると気付けました。`docker ps` でコンテナ ID を確認してから 21.3 を実行してください。
+
+> **`example.com` と `8.8.8.8` が 2 秒差で並んでいたら、それは §5 の自己検証です**（未許可ホストの到達確認と外部 DNS の確認）。`audit` では前者がスキップされるため、**この組が出ていればそのコンテナは `enforce` で動いています。** 取り違えの判別にも使えます。
+
+結果は [known-issues #8](./known-issues.md)・[#9](./known-issues.md)。

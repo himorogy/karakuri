@@ -1,6 +1,12 @@
 {
 	"version": 1,
 	"profile": "default",
-	"mode": "audit",
-	"allowDomains": ["chatgpt.com", "api.openai.com", "auth.openai.com"]
+	"mode": "enforce",
+	"allowDomains": [
+		"chatgpt.com",
+		"api.openai.com",
+		"auth.openai.com",
+		"deb.debian.org",
+		"nodejs.org"
+	]
 }

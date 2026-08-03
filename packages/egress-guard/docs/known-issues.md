@@ -200,16 +200,40 @@ RUN chown -R root:root /etc/egress-guard && chmod 644 /etc/egress-guard/firewall
 
 ---
 
-## 8. Orca remote から使うコンテナ
+## 8. コンテナ起動後にセットアップを行う構成
 
 **分類:** 未検証
 
-**`enforce` にすると Orca remote から接続できなくなります**（2026-08-03、このリポジトリの devcontainer で発生）。切り分けは進んでいますが、必要なドメインを確定させて `enforce` に戻すところまでは終わっていません。手順は [`HANDOFF.md`](./HANDOFF.md) §1.1。
+**`enforce` にすると Orca remote から接続できなくなりました**（2026-08-03、このリポジトリの devcontainer）。audit モードでの洗い出しにより**原因は特定済み**です。`allowDomains` に `deb.debian.org` と `nodejs.org` を追加しましたが、**`enforce` で通ることの確認が残っています。**
 
-**制御チャネルは無関係です。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。iptables の INPUT / OUTPUT を通らないため、ここを疑う必要はありません。
+**制御チャネルは無関係でした。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。iptables の INPUT / OUTPUT を通らないため、ここを疑う必要はありません。
 
-**原因は relay のセットアップです。** 依存の `node-pty` に linux 向け prebuild が無いためソースビルドになり、node-gyp が **`nodejs.org`** から Node ヘッダを取得します。このドメインは基底プロファイルにも `allowDomains` にも入っていません。
+**原因は「firewall 適用後に走るセットアップ」です。** `postStartCommand` で適用したあとに、コンテナ内で導入作業が続きます。
 
-`~/.orca-remote` と `~/.cache` はどちらもボリュームに載っていないため、**再ビルドのたびにこの取得が走ります。** 逆に言えば、この 2 つを永続化すれば取得自体を無くせます（初回は必要）。
+1. **`deb.debian.org`** — 個人セットアップの `apt-get install openssh-server ...`。**`openssh-server` はイメージに入っておらず、起動後に導入されます。** ここが落ちると sshd が無く、Orca は接続そのものができません
+2. **`nodejs.org`** — relay の依存 `node-pty` に linux 向け prebuild が無いためソースビルドになり、node-gyp が Node ヘッダを取得します
 
-**この項目が閉じるのは、Orca の起動に要るドメインを列挙して `enforce` で通ったときです。** 「`nodejs.org` を足せば済む」はまだ仮説で、audit モードでの洗い出しが済んでいません。
+**1 が先に倒れます。** `nodejs.org` は 2 番目の障害点で、1 を直すまで表に出ません。
+
+`~/.orca-remote`・`~/.cache`・`~/.vscode-server` はいずれもボリュームに載っていないため、**再ビルドのたびに 1 と 2 の両方が走ります。** 同じ構成でも**再ビルドを跨がなければ再現しません**（別プロジェクトのコンテナは、適用前に導入が済んでいたため `enforce` のまま動き続けていました）。
+
+**一般化するとこうです。** egress-guard は「起動時点で必要なものが揃っている」構成を想定しています。**起動後に導入を行う構成では、その導入が要求する先を全て `allowDomains` に列挙する必要があります。** README にこの前提を書くべきかは未決です。
+
+洗い出しの手順は [`verification-record.md`](./verification-record.md) §6.21。
+
+---
+
+## 9. VS Code 拡張の配信 CDN を allowlist できない
+
+**分類:** 未検証（回避策なし）
+
+拡張のカタログは `marketplace.visualstudio.com`（基底プロファイル）ですが、**実体を配るのは `*.gallerycdn.vsassets.io`** です。ここが遮断されると**拡張のインストールが失敗します**。`~/.vscode-server/extensions` はボリュームに載っていないため、**再ビルドのたびに再ダウンロードが必要**です。
+
+allowlist に載せる手段が両方とも塞がっています。
+
+* **ワイルドカードは受理されません**（[`spec.md`](./spec.md) §9.1）
+* publisher 別の具体名（`anthropic.gallerycdn.vsassets.io` など）なら書けますが、**いずれも同じ Akamai プロパティへの CNAME で、IP が回ります。** 2026-08-03 の観測では 2 コンテナで **6 つの異なる IP**（`23.52.106.50` / `23.52.128.81` / `23.52.128.85` / `23.62.21.90` / `23.11.39.161` / `23.208.85.184`）に散りました
+
+**起動時スナップショット方式の弱点（§9.1 の CDN drift）が実害として出た最初の例です。** [`spec.md`](./spec.md) §10.2 の DNS 連動 allowlist を採れば構造ごと解消します。**この項目は §10.2 の採否を判断する材料として扱ってください。**
+
+現状は「拡張はイメージビルド時に入れておく」か「拡張の更新を諦める」かの二択です。
