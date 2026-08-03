@@ -26,6 +26,7 @@
 | 同上、**ユーザー定義ネットワーク**（`egress-guard-toganashi`） | 2026-08-03 | 項目 17（2〜3・6・15 の再実施を含む） | 全項目合格 |
 | 同上、デフォルトブリッジ | 2026-08-03 | 項目 14〜16、18 | 18.4 を除き合格 |
 | 同上、デフォルトブリッジ、**egress-guard 未適用**（Claude Code v2.1.220） | 2026-08-03 | 項目 19 | WebFetch は直接 egress する。**文書の推論を否定** |
+| 同上（実装の静的解析。環境非依存） | 2026-08-03 | 項目 20 | 参照元記事の主張を再現。**打ち切りの「サイレント」のみ食い違い** |
 
 **未実施の環境**は [`known-issues.md`](./known-issues.md) を参照してください（IPv6 が有効なコンテナ、Linux ホスト、CI ランナー、rootless Docker）。
 
@@ -69,6 +70,7 @@
 | — | 実利用（`git fetch` / `pnpm install` / GitHub API）が成立する | 13 | — |
 | — | **WebFetch はコンテナから直接 egress する**（従来の推論の否定） | 19.1 | `209.51.188.20:443 users:(("claude",pid=32345,fd=14))` |
 | — | WebSearch はコンテナから egress しない | 19.2 | 検索 2 回で新規 peer なし（常駐テレメトリ 2 件を baseline に含めた上で） |
+| — | **事前承認 91 ドメインでは要約がバイパスされ原文が返る** | 20.4、20.7 | `prompt` が無視され、`curl` と一致する 16,445 バイトが返った |
 | — | shellcheck クリーン / ユニットテスト全通過 | CI | — |
 | — | nat テーブルが変更されない | 2.4、**17.3** | 適用前後の `iptables-save -t nat` が `IDENTICAL` |
 
@@ -554,3 +556,37 @@ done
 > WebFetch の応答は URL ごとに 15 分キャッシュされます。**再測定では別の URL を使ってください。**
 
 結果は §1・§2 と [`web-search-fetch.md`](./web-search-fetch.md) §1。
+
+### 6.20 WebFetch の要約と打ち切りの確認（実装の静的解析）
+
+**egress-guard の検証ではありません。** [`web-search-fetch.md`](./web-search-fetch.md) §2・§3 の主張がバージョンを跨いで生き続けるための、再実行手順です。**Claude Code が上がったら実行し直してください。**
+
+配布物は Bun の単一実行ファイルで、JS が平文で埋め込まれています。読める領域を切り出してから grep します。
+
+```sh
+# [node] JS 領域の位置を掴む
+B=$(readlink -f "$(command -v claude)")
+grep -abo "Fetches a URL" "$B" | head -1        # 測定時は 248440257
+
+# その周辺を切り出す（測定時は 236 MiB から 32 MiB で全部入った）
+dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
+```
+
+| # | 確かめること | 手順 | 測定時（v2.1.220）の値 |
+|---|---|---|---|
+| 20.1 | 要約バイパスの分岐 | `grep -aob 'text/markdown' js.bin` の各位置を `dd` で読む | `if(_&&f.includes("text/markdown")&&u.length<ymr)T=u;else T=await Iin(...)` |
+| 20.2 | 打ち切りの 3 定数 | 上の分岐の近傍にまとまっている | `RHy=10485760` / `ogd=1048576` / `ymr=1e5` |
+| 20.3 | 打ち切りが無言か | `grep -a 'Content truncated' js.bin` | **2 箇所でマーカーを付加**。記事の「サイレント」と食い違う |
+| 20.4 | 事前承認ドメイン | `grep -aob 'function Bpd' js.bin` から `dd` で読む | 92 エントリ（`learn.microsoft.com` 重複、実質 91）。うち 7 件はパス接頭辞付き |
+| 20.5 | 引用 125 文字の制限 | `grep -aob 'function TCu' js.bin` から `dd` で読む | **`isPreapprovedDomain` が偽のときだけ**課される |
+| 20.6 | 取得前のブロックリスト照会 | 同上の近傍 | `api.anthropic.com/api/web/domain_info?domain=...` |
+
+バイパスは実際に踏ませて確認します。
+
+| # | 確かめること | 手順 | 判定 |
+|---|---|---|---|
+| 20.7 | 事前承認ドメインで原文が返る | 20.4 のリストから `Accept: text/markdown` に応じるものを選び、`curl` で保存してから、**要約されれば絶対に長文にならない `prompt`** で WebFetch する | **`prompt` が無視され、`curl` の内容と一致する原文が返る** |
+
+> **20.7 の `prompt` の作り方が肝です。** 「1 語で答えろ」のような指示にしてください。要約された場合と原文が返った場合を、出力の長さだけで区別できます。
+
+> 測定時は `code.claude.com/docs/en/overview`（16,445 バイト）で確認しました。**このサイトが将来も `text/markdown` を返す保証はありません。** 候補は `curl -sI -H 'Accept: text/markdown, text/html, */*'` の `content-type` で選び直してください。

@@ -500,7 +500,11 @@ L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` �
 
 Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic 側で完結し、コンテナから egress しません）。
 
-**WebFetch はコンテナ内から取得先へ直接接続します。** したがって `allowDomains` に無いドメインは取得できません。よく参照するドキュメントサイトは `firewall.json` に列挙してください。実測の結果と手順は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md)。
+**WebFetch はコンテナ内から取得先へ直接接続します。** したがって `allowDomains` に無いドメインは取得できません。よく参照するドキュメントサイトは `firewall.json` に列挙してください。
+
+取得内容はふつう小型モデルの要約を経由するため、prompt injection の緩衝材になります。**ただし Claude Code が事前承認している 91 のドキュメントドメインでは要約がバイパスされ、原文がそのままコンテキストに入ります。** それらを `allowDomains` に入れるときは、遮断の可否だけでなくこの点も勘定に入れてください。
+
+実測の結果と、バージョンが上がったときの再確認手順は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md)。
 
 ## 未検証の環境
 

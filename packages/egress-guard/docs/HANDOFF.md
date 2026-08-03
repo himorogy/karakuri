@@ -15,7 +15,7 @@
 | [`known-issues.md`](./known-issues.md) | 未解決のもの（未実装 1・未検証 5・保留 1） |
 | [`verification-record.md`](./verification-record.md) | 受け入れ検証の記録。**§2 のカバレッジ表で「どの不変条件が未確認か」が引けます** |
 | [`../README.md`](../README.md) | 使い方 |
-| [`web-search-fetch.md`](./web-search-fetch.md) | 外部ツールの挙動に関する参考。**§1 は実測済み**（WebFetch は直接 egress する） |
+| [`web-search-fetch.md`](./web-search-fetch.md) | 外部ツールの挙動に関する参考。**§1〜§3 は Claude Code v2.1.220 で確認済み**（WebFetch は直接 egress する / 91 ドメインで要約がバイパスされる） |
 
 文書の役割分担は意図的に分けてあります。**理由は design、規範は spec、未解決は known-issues。** 同じ内容を 2 箇所に書かないでください（以前それで重複が膨らみ、整理に 1 セッション使いました）。
 
@@ -59,6 +59,13 @@ npx biome check .
 残っているのは 1 点だけです。**測定は egress-guard 未適用の状態で行ったため、直接接続が REJECT されたときの挙動を観測していません。** フォールバックするなら文書の記述を緩める必要があります。判定は §6.19 の 19.3（WebFetch を 1 回実行するだけ）。
 
 > **1.2 の結論が出るまで、`allowDomains` 外の WebFetch に依存する作業を計画しないでください。** 下記 1.3 の dnsmasq 調査がこれに該当します。
+
+あわせて [`web-search-fetch.md`](./web-search-fetch.md) §2・§3（要約と打ち切り）も v2.1.220 の実装で確認済みです。**参照元記事の主張はおおむね再現しましたが、2 点違います。**
+
+* **事前承認 91 ドメインでは要約がバイパスされ、原文がそのままコンテキストに入る** — `allowDomains` に入れる判断に効きます
+* 打ち切りは無言ではなく `[Content truncated due to length...]` が付く
+
+> **これはバージョン依存の情報です。** Claude Code が上がったら [`verification-record.md`](./verification-record.md) §6.20 を実行し直してください。実装の静的解析なので 10 分程度で終わります。
 
 ### 1.3 論点 2 — DNS 連動 allowlist（dnsmasq + `ipset=`）の調査
 
