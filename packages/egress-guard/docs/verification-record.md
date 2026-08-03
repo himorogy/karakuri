@@ -89,7 +89,7 @@
 | **`SET` ターゲットが使えないカーネルでのフォールバック** | 検証環境のカーネルでは常に使える | 同 `recorderfallback` |
 | **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし（[known-issues #2](./known-issues.md)） |
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
-| **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証 | なし |
+| **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証。**手順と一式は §6.22 に用意済み** | なし |
 | **I3: GitHub meta API 不達でも適用が成立すること** | 検証環境では meta API に常に到達できた。ネットワークを部分的に落とす手順が無い | `tests/firewall-rules.test.sh` の `panic` ケースが近いが、そこでは DNS も落ちるため meta 単独の不達は未確認 |
 
 > **最後の行に注意。** README が第一に推奨している構成が未検証、という優先度の反転が再び起きています。項目 17 で一度解消したのと同じ種類の問題です。
@@ -660,3 +660,42 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 > **`example.com` と `8.8.8.8` が 2 秒差で並んでいたら、それは §5 の自己検証です**（未許可ホストの到達確認と外部 DNS の確認）。`audit` では前者がスキップされるため、**この組が出ていればそのコンテナは `enforce` で動いています。** 取り違えの判別にも使えます。
 
 結果は §1・§2 と [README](../README.md) の「コンテナ起動後にセットアップを行う場合」、[known-issues #7](./known-issues.md)。
+
+### 6.22 Docker Compose 構成（README の第一推奨・**未実施**）
+
+**README が案 A として第一に推奨している構成です。** 項目 17 は案 B（`initializeCommand`）で実施したため、こちらは未検証のまま残っています（§2 の「未確認」）。
+
+このリポジトリに検証用の一式を置いてあります。**既定の構成は案 B のままで、入れ替えたときだけ有効になります。**
+
+* `.devcontainer/docker-compose.yml`
+* `.devcontainer/devcontainer.compose.json`
+
+#### 実施前に
+
+> **既存コンテナを止めてください。** `container_name` を案 B と同じ `karakuri-dev-container` に揃えてあるため、動いたままだと名前が衝突します。`shutdownAction: none` なので自動では止まりません。
+
+> **`claude` と `codex` の再ログインが要ります。** `devcontainer.json` の `mounts` は `${devcontainerId}` を含む名前でボリュームを作りますが、**`${devcontainerId}` は Compose では使えません。** そのため固定名の別ボリュームになります。既存のボリュームを引き継ぎたい場合は `docker volume ls | grep claude-code-config` で実名を調べ、`docker-compose.yml` の当該ボリュームを `external: true` にして名前を合わせてください。
+
+| # | 確かめること | コマンド | 判定 |
+|---|---|---|---|
+| 22.1 | 入れ替え | `[ホスト] cd .devcontainer && mv devcontainer.json devcontainer.runargs.json && mv devcontainer.compose.json devcontainer.json` | — |
+| 22.2 | 起動する | `[ホスト] provision-devcontainer.sh -w <repo>`（または Rebuild Container） | `postStartCommand` が成功して起動が完了する |
+| 22.3 | ネットワーク | `[ホスト] docker inspect -f '{{json .NetworkSettings.Networks}}' karakuri-dev-container \| jq 'keys'` | Compose が作った 1 本のみ。**`bridge` を含まない** |
+| 22.4 | **`cap_add` が効いている** | 22.2 が成功していること自体 | `iptables` を触れなければ適用が失敗する。**これが案 A の成否そのもの** |
+| 22.5 | 埋め込みリゾルバ | `[node] grep nameserver /etc/resolv.conf` | `127.0.0.11`。適用ログの警告 2 行が**出ない** |
+| 22.6 | **nat の DNS DNAT が壊れない** | §6.2 の 2.4 と同じ手順 | `IDENTICAL`。`iptables -S -t nat \| grep DOCKER_OUTPUT` に `127.0.0.11` 宛 DNAT が残る |
+| 22.7 | 名前解決 | `[node] dig +short api.anthropic.com` | アドレスが返る |
+| 22.8 | 主要項目の再実施 | §6.2 / §6.3 / §6.6 / §6.15 | **§6.15 は特に注意。** ゲートウェイのアドレスが案 B と変わる |
+| 22.9 | 戻せる | 22.1 を逆に行って再ビルド | 案 B で起動し、警告 2 行が出ない（どちらもユーザー定義ネットワークのため） |
+
+> **22.6 がこの項目の本命です。** §6.18 と同じ理由で、「nat を触らない」という設計判断はユーザー定義ネットワーク上でしか検証できません。**案 A と案 B でネットワークの作られ方が違うため、案 B で通ったことは案 A の保証になりません。**
+
+#### `runArgs` が無視されることの確認（任意）
+
+README は「`dockerComposeFile` を使うと `runArgs` は無視される」と書いています。**これは主張であって、検証項目がありません。** 確かめるなら次を足してください。
+
+| # | 確かめること | 手順 | 判定 |
+|---|---|---|---|
+| 22.10 | `runArgs` が無視される | `devcontainer.json` に `"runArgs": ["--label=egress-guard-runargs-test=1"]` を足して再ビルド → `[ホスト] docker inspect -f '{{json .Config.Labels}}' karakuri-dev-container \| jq 'has("egress-guard-runargs-test")'` | `false`。**`true` なら README の記述が誤り** |
+
+**確かめたら `runArgs` は消してください。** 残しても効きませんが、効くように見える記述を構成に残すのは避けます。

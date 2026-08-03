@@ -112,7 +112,9 @@ services:
 }
 ```
 
-**注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。
+**注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。**`${devcontainerId}` は Compose では使えません**（ボリューム名を固定名にする必要があります）。
+
+> **この構成はまだ実機で検証していません。** 動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。手順は [`docs/verification-record.md`](./docs/verification-record.md) §6.22。
 
 ### 案 B: `initializeCommand` でネットワークを用意する
 

@@ -1,0 +1,48 @@
+# 案 A（Docker Compose）の検証用。既定の構成は devcontainer.json（案 B）のままで、
+# こちらは devcontainer.compose.json と組で使う。手順は
+# packages/egress-guard/docs/verification-record.md §6.22。
+#
+# Compose はプロジェクトごとにユーザー定義ネットワーク（<project>_default）を
+# 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
+# だけなので、案 B の initializeCommand と --network はまるごと不要になる。
+
+name: egress-guard-karakuri
+
+services:
+  dev:
+    # runArgs は dockerComposeFile を使うと無視される。--name はここで指定する。
+    # provision-devcontainer.sh がコンテナ名を <ワークスペース名>-dev-container で
+    # 引くため、案 B と同じ名前に揃えておく。
+    container_name: karakuri-dev-container
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # devcontainer.json の ${localEnv:TZ:...} に相当。ホストの TZ を引き継ぎ、
+        # 未設定なら既定値を使う。
+        TZ: ${TZ:-America/Los_Angeles}
+        GIT_DELTA_VERSION: "0.18.2"
+        ZSH_IN_DOCKER_VERSION: "1.2.0"
+    # --cap-add の置き換え。egress-guard が iptables と ipset を触るために要る。
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      NODE_OPTIONS: --max-old-space-size=2048
+      CLAUDE_CONFIG_DIR: /home/node/.claude
+    volumes:
+      # workspaceMount の置き換え。リポジトリの親を /workspace に載せる。
+      - ../..:/workspace:cached
+      # devcontainer.json の mounts の置き換え。**${devcontainerId} は Compose では
+      # 使えない**ため固定名にしてある。案 B のボリュームとは別物になるので、
+      # 初回は claude / codex の再ログインが要る（§6.22 の注意を参照）。
+      - karakuri-bashhistory:/commandhistory
+      - karakuri-claude-config:/home/node/.claude
+      - karakuri-codex-config:/home/node/.codex
+    # ベースイメージの CMD は node なので、そのままだと即終了する。
+    command: sleep infinity
+
+volumes:
+  karakuri-bashhistory:
+  karakuri-claude-config:
+  karakuri-codex-config:

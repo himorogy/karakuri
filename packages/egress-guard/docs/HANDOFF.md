@@ -42,7 +42,14 @@ pnpm test          # 同上。設定 95 件 + ルール 145 件
 
 **README の第一推奨（案 A）が未検証**です。項目 17 は案 B（`initializeCommand`）で実施しました。
 
-これは**優先度の反転が再発している状態**です。項目 17 で一度解消したのと同じ種類の問題なので、放置しないでください。手順は [`verification-record.md`](./verification-record.md) §6.18 がそのまま使えます（`--network` の確認だけ読み替え）。
+これは**優先度の反転が再発している状態**です。項目 17 で一度解消したのと同じ種類の問題なので、放置しないでください。
+
+**手順と一式は用意済みです。** [`verification-record.md`](./verification-record.md) §6.22 と、`.devcontainer/docker-compose.yml` / `.devcontainer/devcontainer.compose.json`。**入れ替えて起動するだけ**の状態にしてあります。
+
+* **ホスト側の作業です。** コンテナ内からは完結しません
+* 既存コンテナを先に止めてください（`container_name` が衝突します）
+* **`claude` と `codex` の再ログインが要ります**（`${devcontainerId}` が Compose では使えないため、ボリュームが別になります）
+* 本命は 22.6（nat の DNS DNAT が壊れないこと）。**案 B で通ったことは案 A の保証になりません**
 
 ### 1.2 L7 proxy 移行（[`spec.md`](./spec.md) §10.1）の検討
 
