@@ -116,6 +116,10 @@ services:
 
 > **この構成はまだ実機で検証していません。** 動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。手順は [`docs/verification-record.md`](./docs/verification-record.md) §6.22。
 
+> **`volumes` のマウント先と `workspaceFolder` を必ず一致させてください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A ではマウント先が `docker-compose.yml`、作業ディレクトリが `devcontainer.json` に分かれ、両者の整合は誰も検査しません。**
+>
+> ずれると `postCreateCommand` が **exit 127** で落ちます。`docker exec -w` は存在しない作業ディレクトリを黙って作るため、空のディレクトリの中でコマンドが走り、「スクリプトが見つからない」としか分かりません。**2026-08-03 に `/workspaces`（複数形）と `/workspace`（単数形）の取り違えで実際に踏みました。**
+
 ### 案 B: `initializeCommand` でネットワークを用意する
 
 Compose に移行しない場合はこちらです。ネットワーク名にプロジェクト名を含めることで、**設定文字列を全プロジェクトで同一にしたまま**分離できます。

@@ -678,6 +678,7 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 
 | # | 確かめること | コマンド | 判定 |
 |---|---|---|---|
+| 22.0 | **マウント先と `workspaceFolder` が一致している** | `docker-compose.yml` の `volumes` と `devcontainer.json` の `workspaceFolder` を目で突き合わせる | 前者が `<親>:/X`、後者が `/X/<リポジトリ名>` になっていること |
 | 22.1 | 入れ替え | `[ホスト] cd .devcontainer && mv devcontainer.json devcontainer.runargs.json && mv devcontainer.compose.json devcontainer.json` | — |
 | 22.2 | 起動する | `[ホスト] provision-devcontainer.sh -w <repo>`（または Rebuild Container） | `postStartCommand` が成功して起動が完了する |
 | 22.3 | ネットワーク | `[ホスト] docker inspect -f '{{json .NetworkSettings.Networks}}' karakuri-dev-container \| jq 'keys'` | Compose が作った 1 本のみ。**`bridge` を含まない** |
@@ -687,6 +688,13 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 | 22.7 | 名前解決 | `[node] dig +short api.anthropic.com` | アドレスが返る |
 | 22.8 | 主要項目の再実施 | §6.2 / §6.3 / §6.6 / §6.15 | **§6.15 は特に注意。** ゲートウェイのアドレスが案 B と変わる |
 | 22.9 | 戻せる | 22.1 を逆に行って再ビルド | 案 B で起動し、警告 2 行が出ない（どちらもユーザー定義ネットワークのため） |
+
+> **22.0 を飛ばさないでください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A では別ファイルに分かれ、整合を検査する仕組みがありません。** ずれると `postCreateCommand` が **exit 127** で落ちます。`docker exec -w` が存在しない作業ディレクトリを黙って作るため、空のディレクトリでコマンドが走り、原因が「スクリプトが見つからない」までしか辿れません。**2026-08-03 に `/workspaces` と `/workspace` の取り違えで実際に踏みました。** 再現と切り分けはこうです。
+>
+> ```sh
+> # [ホスト] 失敗したコマンドをそのまま再現する
+> docker exec -w <workspaceFolder の値> <container> /bin/sh -c 'bash ./.devcontainer/post-create.sh'
+> ```
 
 > **22.6 がこの項目の本命です。** §6.18 と同じ理由で、「nat を触らない」という設計判断はユーザー定義ネットワーク上でしか検証できません。**案 A と案 B でネットワークの作られ方が違うため、案 B で通ったことは案 A の保証になりません。**
 
