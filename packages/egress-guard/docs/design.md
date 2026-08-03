@@ -2,9 +2,13 @@
 
 `init-project-firewall.sh` を**なぜそう作ったか**の記録です。
 
-* **何が成り立つか**（規範記述）は [`spec.md`](./spec.md)
-* **まだ解決していないこと**は [`known-issues.md`](./known-issues.md)
-* **使い方**は [`../README.md`](../README.md)
+| 文書 | 内容 |
+|---|---|
+| [`../README.md`](../README.md) | **使い方**（セットアップと運用） |
+| [`spec.md`](./spec.md) | **何が成り立つか**（規範記述。不変条件・スクリプト仕様・受け入れ基準） |
+| [`known-issues.md`](./known-issues.md) | **まだ解決していないこと**（未実装・未検証・保留） |
+| [`verification-record.md`](./verification-record.md) | 受け入れ検証の記録（カバレッジ・見逃した欠陥・手順） |
+| [`web-search-fetch.md`](./web-search-fetch.md) | 参考: Claude Code の WebSearch / WebFetch と egress の関係（本パッケージの設計判断ではありません） |
 
 この文書には、決定の根拠・検討した代替案・却下の理由を置きます。実装を変えたときに更新するのは `spec.md` で、こちらは判断が変わったときにだけ触ります。
 

