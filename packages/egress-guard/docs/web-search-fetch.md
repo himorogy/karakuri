@@ -276,6 +276,6 @@ let a = t.length > ymr ? t.slice(0, ymr) + `\n\n[Content truncated due to length
 
 * [`spec.md`](./spec.md) §9.2 — 「GET を全ドメイン許可」ができない理由
 * [`verification-record.md`](./verification-record.md) §2 — 遮断時にフォールバックしないことの記録
-* [`verification-record.md`](./verification-record.md) §6.19 — §1〜§3 の確認手順（接続のサンプリングと、実装の静的解析）
+* [`verification-record.md`](./verification-record.md) §6.19 — 本書 §1〜§3 の確認手順（接続のサンプリングと、実装の静的解析）
 * [`README.md`](../README.md) — `egress-audit-v4` の読み方
 * [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)
