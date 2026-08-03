@@ -19,6 +19,7 @@ FIREWALL_SH="$SCRIPT_DIR/init-project-firewall.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 
 ok() {
 	PASS=$((PASS + 1))
@@ -28,6 +29,14 @@ ok() {
 ng() {
 	FAIL=$((FAIL + 1))
 	printf '  FAIL %s\n' "$1" >&2
+}
+
+# Skipped cases are counted and reported. A case that quietly disappears reads
+# as coverage that is not there - the same failure mode this suite has had
+# before (see docs/verification-record.md section 5).
+skip() { # <label> <reason>
+	SKIP=$((SKIP + 1))
+	printf '  SKIP %s (%s)\n' "$1" "$2"
 }
 
 WORK="$(mktemp -d)"
@@ -786,6 +795,26 @@ mkdir -p "$WS/.devcontainer"
 printf '%s' '{"version":1,"mode":"audit","allowDomains":["attacker.example"]}' \
 	>"$WS/.devcontainer/firewall.json"
 
+# These cases can only run where /etc/egress-guard/firewall.json is absent.
+#
+# The apply path takes the installed policy the moment it exists, and the path
+# is fixed on purpose - there is no override to point it somewhere else for a
+# test run. So on a machine that has egress-guard installed, the workspace copy
+# is never reached no matter what the script does with the working directory,
+# and every assertion below would pass without testing anything. That was
+# confirmed by mutation: a build patched to search ./.devcontainer/firewall.json
+# still passed all of them here.
+#
+# Rewriting the expectations to match the installed config does not help - it
+# turns the block green while leaving it just as blind. Skipping is the honest
+# option, and CI runs without the file, so the coverage is not lost there.
+PROD_CONFIG="/etc/egress-guard/firewall.json"
+prod_config_present=0
+[ -r "$PROD_CONFIG" ] && prod_config_present=1
+skip_installed() { # <label>
+	skip "$1" "$PROD_CONFIG exists, so the workspace copy is unreachable either way"
+}
+
 # The repo copy is checked by naming it. There is no search: a script that went
 # looking would have to assume a workspace layout, and every location it agreed
 # to look in would be another place the agent could plant a policy.
@@ -808,8 +837,12 @@ if [ "$rc" -eq 0 ]; then
 else
 	ng "--check-config without --config exits 0 (rc=$rc)"
 fi
-assert_contains "--check-config does not search the working directory" "$out" \
-	'no firewall.json found'
+if [ "$prod_config_present" -eq 1 ]; then
+	skip_installed "--check-config does not search the working directory"
+else
+	assert_contains "--check-config does not search the working directory" "$out" \
+		'no firewall.json found'
+fi
 
 FW_STATE="$WORK/state"
 mkdir -p "$FW_STATE"
@@ -825,16 +858,23 @@ else
 	ng "applying from a workspace with a firewall.json exits 0 (rc=$rc)"
 	printf '%s\n' "$out" | sed 's/^/    /' >&2
 fi
-assert_contains "the apply path ignores the workspace copy" "$out" \
-	'no firewall.json found'
-assert_absent "the workspace copy is never read while applying" "$out" \
-	"reading $WS/.devcontainer/firewall.json"
-# The decisive check: mode=audit from the workspace file would have left OUTPUT
-# on ACCEPT.
-assert_contains "the workspace copy cannot relax the policy" "$(v4_table srcsplit)" \
-	'^:OUTPUT DROP'
-assert_absent "the workspace allowlist entry is never allowed" "$out" \
-	'allowed attacker.example'
+if [ "$prod_config_present" -eq 1 ]; then
+	skip_installed "the apply path ignores the workspace copy"
+	skip_installed "the workspace copy is never read while applying"
+	skip_installed "the workspace copy cannot relax the policy"
+	skip_installed "the workspace allowlist entry is never allowed"
+else
+	assert_contains "the apply path ignores the workspace copy" "$out" \
+		'no firewall.json found'
+	assert_absent "the workspace copy is never read while applying" "$out" \
+		"reading $WS/.devcontainer/firewall.json"
+	# The decisive check: mode=audit from the workspace file would have left
+	# OUTPUT on ACCEPT.
+	assert_contains "the workspace copy cannot relax the policy" "$(v4_table srcsplit)" \
+		'^:OUTPUT DROP'
+	assert_absent "the workspace allowlist entry is never allowed" "$out" \
+		'allowed attacker.example'
+fi
 
 # --- resolver detection -------------------------------------------------------
 
@@ -942,5 +982,9 @@ fi
 
 # --- result ------------------------------------------------------------------
 
-printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+if [ "$SKIP" -gt 0 ]; then
+	printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
+else
+	printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
+fi
 [ "$FAIL" -eq 0 ]

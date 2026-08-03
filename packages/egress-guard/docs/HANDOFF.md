@@ -28,7 +28,7 @@ pnpm lint:sh
 npx biome check .
 ```
 
-> **導入済みの devcontainer の中で `pnpm test` を実行すると、ルール側が 2〜3 件落ちます。** 実装の不具合ではなく、テストが `/etc/egress-guard/firewall.json` の不在を前提にしているためです。詳細と修正方針は [`verification-record.md`](./verification-record.md) §5。**未修正です。**
+> **導入済みの devcontainer の中では `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、その 5 件が何も検査できないためです（[`verification-record.md`](./verification-record.md) §5）。CI では全件実行されます。
 
 > `pnpm lint:sh` はこのコンテナでは動きません（shellcheck が未導入）。
 
@@ -63,15 +63,7 @@ npx biome check .
 
 **L7 proxy（§10.1）を導入するなら不要になる可能性が高い**ため、位置づけの判断も含めて検討してください。
 
-### 1.2 ユニットテストの環境依存を直す
-
-**導入済みの devcontainer の中で `pnpm test` を実行すると、ルール側が 2〜3 件落ちます。** テストが `/etc/egress-guard/firewall.json` の不在を前提にしているためで、CI では緑のままです。実装の不具合ではありません。
-
-修正方針は [`verification-record.md`](./verification-record.md) §5 に書いてあります。**`PROD_CONFIG` にテスト用の上書きを足すのは避けてください** — 固定パスであること自体が設計判断です。テスト側で分岐させます。
-
-**小さい割に効きます。** 検証コマンドが赤いままだと、次にここへ来た人が本物の失敗と区別できません。
-
-### 1.3 Docker Compose 構成での検証
+### 1.2 Docker Compose 構成での検証
 
 **README の第一推奨（案 A）が未検証**です。項目 17 は案 B（`initializeCommand`）で実施しました。
 
@@ -95,7 +87,7 @@ npx biome check .
 
 * **I3: GitHub meta API 不達でも適用が成立すること** — meta 単独の不達を再現する手順が無い
 * **`SET` ターゲットが使えないカーネルでのフォールバック** — ユニットテストのみ
-* **Docker Compose 構成** — §1.3
+* **Docker Compose 構成** — §1.2
 
 ---
 
@@ -120,6 +112,7 @@ npx biome check .
 * **同じ検査を要する入力経路を列挙する**（設定ファイル / DNS 応答 / meta API / `ip route` / `resolv.conf`）
 * **許可機能は「許可されること」まで確認する。** 遮断の確認だけでは機能が使えるか分からない
 * **文書の主張と検証項目を突き合わせる。** 対応する項目が無い主張はしない
+* **落ちているテストを緑にするときは、緑にした版が変異を捕まえるか確かめる。** 期待値を環境に合わせて書き換えると、赤は消えても検査は消えたままになります。実際にそれをやりかけました（[`verification-record.md`](./verification-record.md) §5）。**確かめられない項目は緑にせず `SKIP` として件数に出してください**
 * **診断そのものが記録を汚染しないか確かめる。** `egress-audit-v4` の中身を名前に戻そうとして `openssl s_client` で候補 IP を叩き、**その接続を全て自分のコンテナに記録してしまいました**（[`verification-record.md`](./verification-record.md) §6.21）。観測対象と観測手段が同じ経路を通る項目では、先に切り分け手段（ここでは `timeout` 残量からの時刻逆算）を用意してください
 
 ### 3.4 テストの落とし穴

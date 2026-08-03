@@ -218,9 +218,9 @@
 | 13 の `gh auth status` が疎通確認にならない | ネットワークに触れない |
 | 15.2 / 15.3 がゲートウェイアドレスを直書き | ネットワーク構成を変えると古いアドレスを叩く（項目 17 で実際に発生） |
 | 18.4 が `/etc/hosts` で名前解決を細工できる前提 | `resolve_domain` は `dig` を先に試すため `getent` に到達しない |
-| **ユニットテストの「configuration source」3 件がホスト環境に依存する** | 下記 |
+| **ユニットテストの「configuration source」がホスト環境に依存していた** | 下記。修正済み |
 
-### ユニットテストがホスト環境に依存している（未修正）
+### ユニットテストがホスト環境に依存していた（修正済み）
 
 **`tests/firewall-rules.test.sh` の「configuration source」ブロックは、`/etc/egress-guard/firewall.json` が存在しない環境でしか通りません。** egress-guard を導入した devcontainer の中で `pnpm test` を実行すると落ちます（2026-08-03 に発生）。
 
@@ -234,14 +234,35 @@ FAIL the workspace copy cannot relax the policy (missing: ^:OUTPUT DROP)
 
 `PROD_CONFIG="/etc/egress-guard/firewall.json"` は固定パスで、上書き手段がありません（[`design.md`](./design.md) の「見に行く場所を増やすほど攻撃面が増える」に基づく意図的な設計）。**したがってテスト側で環境を分岐させる必要があります。**
 
-**防御そのものは壊れていません。** 同じブロックの安全側の 2 件は通ります。
+CI には `/etc/egress-guard` が無いため緑のままで、**この依存は導入済みコンテナの中でしか表面化しません。**
 
-* `the workspace copy is never read while applying`（`assert_absent`）
-* `the workspace allowlist entry is never allowed`
+#### 最初に書いた修正方針は誤りだった
 
-落ちているのは「実効設定が存在しない」ことを前提にした期待値だけです。CI には `/etc/egress-guard` が無いため緑のままで、**この依存は導入済みコンテナの中でしか表面化しません。**
+当初ここには「`PROD_CONFIG` の存在で**期待値を分岐**させる」と書いていました。**これは間違いです。**
 
-> **修正方針。** `PROD_CONFIG` の存在で期待値を分岐させます。存在する場合は `reading /etc/egress-guard/firewall.json` を期待し、`^:OUTPUT DROP` の判定は実効設定の `mode` に左右されるため落とします。**`PROD_CONFIG` にテスト用の上書きを足すのは避けてください** — sudo の `env_reset` で無効化されるとはいえ、固定パスであること自体が設計判断です。
+`CONFIG_FILE` は `PROD_CONFIG` が存在した時点で確定します（`init-project-firewall.sh` の `[ -n "$CONFIG_FILE" ] || { [ -f "$PROD_CONFIG" ] && ... }`）。**そのためワークスペース側のコピーは、スクリプトが作業ディレクトリを探そうが探すまいが、そもそも到達されません。** 期待値を差し替えれば緑にはなりますが、**ブロック全体が何も検査していない状態**になります。
+
+変異解析で確認しました。`./.devcontainer/firewall.json` を探すよう改造したビルドを、期待値を分岐させた版のテストに掛けても **5 件すべて `ok` のまま通過**しました。[§3](#3-検証で見つかった実装の欠陥) の欠陥 2・4 と同じ「テストが空振りしている」状態です。
+
+#### 実際の修正: 観測できない項目は skip する
+
+`PROD_CONFIG` が存在する環境では、当該 5 件を **`SKIP` にして件数を集計に出す**ようにしました。緑にするより、**その環境では確かめられないと表示するほう**が正確です。
+
+```
+140 passed, 0 failed, 5 skipped
+```
+
+CI（`/etc/egress-guard` が無い）では従来どおり全件実行されます。同じ変異を CI 相当の条件で掛けると **3 件が落ちます**。検査は生きています。
+
+**副産物として、防御が二段になっていることも確認できました。** 変異版は「作業ディレクトリを探した」ところで止まらず、その次の配置検査で弾かれます。
+
+```
+[firewall] ERROR: ./.devcontainer must be owned by root (found uid 1000);
+                  a writable directory lets the file be replaced
+[firewall] ERROR: applying panic policy (egress DROP) after failure
+```
+
+> **`PROD_CONFIG` にテスト用の上書きを足す案は採りませんでした。** sudo の `env_reset` で無効化されるとはいえ、固定パスであること自体が設計判断です（[`design.md`](./design.md) §2.1）。
 
 ### ここから読み取れるパターン
 
