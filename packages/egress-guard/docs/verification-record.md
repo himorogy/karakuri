@@ -29,6 +29,7 @@
 | 同上（実装の静的解析。環境非依存） | 2026-08-03 | 項目 20 | 参照元記事の主張を再現。**打ち切りの「サイレント」のみ食い違い** |
 | 同上、ユーザー定義ネットワーク、**audit モード** | 2026-08-03 | 項目 21 | 起動後セットアップに要る 2 ドメインを特定 |
 | 同上、ユーザー定義ネットワーク、**enforce** | 2026-08-03 | 項目 19.3、21 の再実施 | 合格。プロビジョニング中だけ audit にする運用で起動後セットアップが成立した |
+| 同上、**Docker Compose**（`egress-guard-toganashi_default`、gw `172.22.0.1`） | 2026-08-03 | 項目 22（2〜3・6・15 の再実施を含む） | **全項目合格。** README の第一推奨がこれで検証済みになった |
 
 **未実施の環境**は [`known-issues.md`](./known-issues.md) を参照してください（IPv6 が有効なコンテナ、Linux ホスト、CI ランナー、rootless Docker）。
 
@@ -76,7 +77,9 @@
 | — | **遮断された WebFetch はフォールバックせず失敗する** | 19.3 | `allowDomains` 外は出力なしで失敗、`allowDomains` 内と WebSearch は成功 |
 | — | 起動後セットアップが成立する（プロビジョニング中だけ audit） | 21 | `enforce` 復帰後に `example.com` 到達不可・`openssh-server` 導入済み |
 | — | shellcheck クリーン / ユニットテスト全通過 | CI | — |
-| — | nat テーブルが変更されない | 2.4、**17.3** | 適用前後の `iptables-save -t nat` が `IDENTICAL` |
+| — | nat テーブルが変更されない | 2.4、**17.3**、**22.6** | 適用前後の `iptables-save -t nat` が `IDENTICAL`。Compose 構成でも `DOCKER_OUTPUT` の `127.0.0.11` 宛 DNAT が残存 |
+| **I6** | Compose 構成でも `allowHostPorts` が両アドレスに開く | 22.8d | gw が `172.22.0.1` に変わっても両アドレスの ACCEPT が出る。到達は `host.docker.internal` 側 |
+| — | `dockerComposeFile` 下で `runArgs` が無視される | 22.10 | 仕込んだラベルが `docker inspect` に現れない |
 
 ### 未確認
 
@@ -89,10 +92,9 @@
 | **`SET` ターゲットが使えないカーネルでのフォールバック** | 検証環境のカーネルでは常に使える | 同 `recorderfallback` |
 | **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし（[known-issues #2](./known-issues.md)） |
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
-| **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証。**手順と一式は §6.22 に用意済み** | なし |
 | **I3: GitHub meta API 不達でも適用が成立すること** | 検証環境では meta API に常に到達できた。ネットワークを部分的に落とす手順が無い | `tests/firewall-rules.test.sh` の `panic` ケースが近いが、そこでは DNS も落ちるため meta 単独の不達は未確認 |
 
-> **最後の行に注意。** README が第一に推奨している構成が未検証、という優先度の反転が再び起きています。項目 17 で一度解消したのと同じ種類の問題です。
+> **優先度の反転は解消しました。** README が第一に推奨する Docker Compose 構成は、2026-08-03 に項目 22 で検証済みです。残っている 6 行は、いずれも**環境か再現手段が無くて確かめられないもの**であり、後回しにしているものではありません。
 
 ---
 
@@ -574,7 +576,7 @@ grep -v 'metadata.test' /etc/hosts > /tmp/h && cat /tmp/h > /etc/hosts
 
 > **18.3 がこの項目の本命です。** デフォルトブリッジには DNS DNAT ルールが存在しないため、「nat を触らない」という設計判断はこの構成でしか検証できません。
 
-> **未実施:** Docker Compose 構成（README の第一推奨）での再検証。上記は `initializeCommand` 構成で実施したものです。
+> Docker Compose 構成（README の第一推奨）での再検証は §6.22 で実施済みです。上記は `initializeCommand` 構成で実施したものです。
 
 ### 6.19 Claude Code の WebSearch / WebFetch が egress するか
 
@@ -661,9 +663,11 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 
 結果は §1・§2 と [README](../README.md) の「コンテナ起動後にセットアップを行う場合」、[known-issues #7](./known-issues.md)。
 
-### 6.22 Docker Compose 構成（README の第一推奨・**未実施**）
+### 6.22 Docker Compose 構成（README の第一推奨）
 
-**README が案 A として第一に推奨している構成です。** 項目 17 は案 B（`initializeCommand`）で実施したため、こちらは未検証のまま残っています（§2 の「未確認」）。
+**README が案 A として第一に推奨している構成です。** 項目 17 は案 B（`initializeCommand`）で実施したため、長らく未検証のまま残っていました。
+
+> **2026-08-03 に toganashi で実施し、全項目合格しました。** 判定を決めた出力は §1・§2。本命の 22.6 は `IDENTICAL` かつ `DOCKER_OUTPUT` の `127.0.0.11` 宛 DNAT（tcp→33353 / udp→36049）が残存。22.8d はゲートウェイが `172.22.0.1` に変わったうえで両アドレスの ACCEPT が出て `host.docker.internal` 側が `200`。22.10 は `false` で、README の「`runArgs` は無視される」が裏付けられました。
 
 このリポジトリに検証用の一式を置いてあります。**既定の構成は案 B のままで、入れ替えたときだけ有効になります。**
 

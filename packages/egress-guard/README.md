@@ -114,7 +114,13 @@ services:
 
 **注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。**`${devcontainerId}` は Compose では使えません**（ボリューム名を固定名にする必要があります）。
 
-> **この構成はまだ実機で検証していません。** 動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。手順は [`docs/verification-record.md`](./docs/verification-record.md) §6.22。
+> **2026-08-03 に実機で検証しました**（[`docs/verification-record.md`](./docs/verification-record.md) §6.22）。動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。
+
+> **案 B から案 A へ切り替えるときは、先に既存コンテナを消してください。** `container_name:` を固定しているため名前が衝突します。**Compose は自分のプロジェクトに属さないコンテナを片付けない**ので、案 B のコンテナは残ったままになります。逆向き（案 A → 案 B）は問題ありません。
+>
+> ```sh
+> docker rm -f <container>
+> ```
 
 > **`volumes` のマウント先と `workspaceFolder` を必ず一致させてください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A ではマウント先が `docker-compose.yml`、作業ディレクトリが `devcontainer.json` に分かれ、両者の整合は誰も検査しません。**
 >

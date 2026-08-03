@@ -36,22 +36,9 @@ pnpm test          # 同上。設定 95 件 + ルール 145 件
 
 ## 1. 次にやること（優先度順）
 
-**2026-08-03 に enforce での常用が成立しました。** `example.com` 到達不可・`api.github.com` 到達可・起動後セットアップ完了、を確認済みです。ここから先は残っている未確認の消化です。
+**2026-08-03 に enforce での常用が成立し、Docker Compose 構成の検証も完了しました。** 環境が要る未検証項目（IPv6 有効コンテナ・Linux ホスト・CI ランナー・rootless）を除けば、**残っているのは L7 proxy への移行だけ**です。
 
-### 1.1 Docker Compose 構成での検証
-
-**README の第一推奨（案 A）が未検証**です。項目 17 は案 B（`initializeCommand`）で実施しました。
-
-これは**優先度の反転が再発している状態**です。項目 17 で一度解消したのと同じ種類の問題なので、放置しないでください。
-
-**手順と一式は用意済みです。** [`verification-record.md`](./verification-record.md) §6.22 と、`.devcontainer/docker-compose.yml` / `.devcontainer/devcontainer.compose.json`。**入れ替えて起動するだけ**の状態にしてあります。
-
-* **ホスト側の作業です。** コンテナ内からは完結しません
-* 既存コンテナを先に止めてください（`container_name` が衝突します）
-* **`claude` と `codex` の再ログインが要ります**（`${devcontainerId}` が Compose では使えないため、ボリュームが別になります）
-* 本命は 22.6（nat の DNS DNAT が壊れないこと）。**案 B で通ったことは案 A の保証になりません**
-
-### 1.2 L7 proxy 移行（[`spec.md`](./spec.md) §10.1）の検討
+### 1.1 L7 proxy 移行（[`spec.md`](./spec.md) §10.1）の検討
 
 **実現層の交代はこれ一本になりました。** 中間段として枠だけ置いてあった DNS 連動 allowlist（dnsmasq + `ipset=`）は、2026-08-03 に調査して**却下しました**（[`design.md`](./design.md) §2.20）。
 
@@ -81,13 +68,14 @@ pnpm test          # 同上。設定 95 件 + ルール 145 件
 | 4 | `host.docker.internal` が公開アドレスを返すケース | 未検証（ユニットテストで担保） |
 | 5 | CI ランナー / クラウド開発環境 / rootless Docker | 未検証 |
 | 6 | Dev Container Feature 化 | 保留（着手条件を記載済み） |
-| 7 | VS Code 拡張の配信 CDN を allowlist できない | 保留（→ §1.2） |
+| 7 | VS Code 拡張の配信 CDN を allowlist できない | 保留（→ §1.1） |
 
-加えて [`verification-record.md`](./verification-record.md) §2 の「未確認」表に、上記に載らないものが 3 件あります。
+加えて [`verification-record.md`](./verification-record.md) §2 の「未確認」表に、上記に載らないものが 2 件あります。
 
 * **I3: GitHub meta API 不達でも適用が成立すること** — meta 単独の不達を再現する手順が無い
 * **`SET` ターゲットが使えないカーネルでのフォールバック** — ユニットテストのみ
-* **Docker Compose 構成** — §1.1
+
+**Docker Compose 構成（README の第一推奨）は 2026-08-03 に検証済みです**（[`verification-record.md`](./verification-record.md) §6.22）。長く続いていた優先度の反転は解消しました。
 
 ---
 
