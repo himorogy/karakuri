@@ -11,7 +11,7 @@
 | 文書 | 役割 |
 |---|---|
 | [`spec.md`](./spec.md) | **規範記述。§1 の不変条件 I1〜I7 が中核** |
-| [`design.md`](./design.md) | なぜそう作ったか（設計判断 20 件、受容した残余リスク 5 件、却下した案の一覧） |
+| [`design.md`](./design.md) | なぜそう作ったか（設計判断 21 件、受容した残余リスク 5 件、却下した案の一覧） |
 | [`known-issues.md`](./known-issues.md) | 未解決のもの（未実装 1・未検証 4・保留 2） |
 | [`verification-record.md`](./verification-record.md) | 受け入れ検証の記録。**§2 のカバレッジ表で「どの不変条件が未確認か」が引けます** |
 | [`../README.md`](../README.md) | 使い方 |
@@ -38,36 +38,29 @@ npx biome check .
 
 **2026-08-03 に enforce での常用が成立しました。** `example.com` 到達不可・`api.github.com` 到達可・起動後セットアップ完了、を確認済みです。ここから先は残っている未確認の消化です。
 
-### 1.1 論点 2 — DNS 連動 allowlist（dnsmasq + `ipset=`）の調査
-
-[`spec.md`](./spec.md) §10.2 に「採否未決」として枠だけ入っています。**外部レビューからの提案で、3 つの課題を同時に緩めます。**
-
-* **§9.1 の部分解消** — `ipset=/neon.tech/egress-allow-v4` はサブドメイン解決のたびに IP を注入するため、ワイルドカードが本来の意味で機能する
-* **I4 の強化** — 非許可名は NXDOMAIN で返すため「経路の固定」が実質的な遮断に近づく。クエリログで試行の可視化もできる（現行の recorder に映らない唯一のシグナル）
-* **§9.7 が構造ごと消える** — 解決時に TTL の新鮮な IP が set に入るため、起動時スナップショット方式の弱点が無くなる
-
-**ここが一番効きます。** しかも 2026-08-03 に、**実害が 2 件出ました**。もう理論上の弱点ではありません。
-
-* **`deb.debian.org`** — TTL 25 秒の Fastly。`allowDomains` に書いても通らない（[`spec.md`](./spec.md) §9.7）
-* **`*.gallerycdn.vsassets.io`** — VS Code 拡張の配信 CDN。ワイルドカードで書けず、publisher 別の具体名でも Akamai の IP が回る（[`known-issues.md`](./known-issues.md) #7）
-
-現状は起動時スナップショットの弱点を「再適用運用」（[`spec.md`](./spec.md) §6.4）と「verify のいずれか判定」（§5.2）という 2 つの緩和策で埋めているだけで、どちらも本質的な解決ではありません。
-
-調査が要る点:
-
-* dnsmasq 自体の attack surface。**コンテナ内に常駐プロセスが 1 つ増える**
-* `ipset=` の実際の挙動（TTL、set の maxelem、削除されないエントリの扱い）
-* コンテナ内常駐プロセスの管理（誰が起動するか、死んだらどうなるか。**dnsmasq が死ぬと名前解決が全部止まる**）
-* `resolv.conf` の向き先を変えることと [`design.md`](./design.md) §2.7 の整合。**現在は「Docker が書いた resolv.conf を読む」ことが非特権ユーザーの介入を排除する根拠**になっています。自分で書き換えるならその根拠を作り直す必要があります
-* 設定生成が I5 を保つか（検証済み `firewall.json` の値のみから生成すること）
-
-**L7 proxy（§10.1）を導入するなら不要になる可能性が高い**ため、位置づけの判断も含めて検討してください。
-
-### 1.2 Docker Compose 構成での検証
+### 1.1 Docker Compose 構成での検証
 
 **README の第一推奨（案 A）が未検証**です。項目 17 は案 B（`initializeCommand`）で実施しました。
 
 これは**優先度の反転が再発している状態**です。項目 17 で一度解消したのと同じ種類の問題なので、放置しないでください。手順は [`verification-record.md`](./verification-record.md) §6.18 がそのまま使えます（`--network` の確認だけ読み替え）。
+
+### 1.2 L7 proxy 移行（[`spec.md`](./spec.md) §10.1）の検討
+
+**実現層の交代はこれ一本になりました。** 中間段として枠だけ置いてあった DNS 連動 allowlist（dnsmasq + `ipset=`）は、2026-08-03 に調査して**却下しました**（[`design.md`](./design.md) §2.20）。
+
+* **常駐する `CAP_NET_ADMIN` プロセスが、エージェントの選んだ名前に対する上流応答を処理し続ける構造になる。** 現行設計には常駐する特権プロセスが 1 つもありません
+* **期待していた「TTL 連動」が実装として存在しない。** dnsmasq は `IPSET_ATTR_TIMEOUT` も `IPSET_FLAG_EXIST` も送らず、追加は上流応答の解析時だけです
+
+**§10.1 を急ぐ動機は増えています。** 2026-08-03 に、現行方式では表現できない実害が 2 件出ました。
+
+* **`deb.debian.org`** — TTL 25 秒。`allowDomains` に書いても通らない（[`spec.md`](./spec.md) §9.7）
+* **`*.gallerycdn.vsassets.io`** — VS Code 拡張の配信 CDN（[`known-issues.md`](./known-issues.md) #7）
+
+**どちらも「名前で判定する層」に移せば消えます。** 逆に言えば、現行の L3 実現層に留まる限り、この 2 つは回避策がありません。
+
+大きい変更なので、着手前に「ホスト側 proxy をどう配布・起動するか」を決める必要があります。`provision-devcontainer.sh` のようなホスト側スクリプトが既にあるなら、そこに寄せられるかもしれません。
+
+---
 
 ## 2. 未解決の一覧
 
@@ -81,13 +74,13 @@ npx biome check .
 | 4 | `host.docker.internal` が公開アドレスを返すケース | 未検証（ユニットテストで担保） |
 | 5 | CI ランナー / クラウド開発環境 / rootless Docker | 未検証 |
 | 6 | Dev Container Feature 化 | 保留（着手条件を記載済み） |
-| 7 | VS Code 拡張の配信 CDN を allowlist できない | 保留（→ §1.1） |
+| 7 | VS Code 拡張の配信 CDN を allowlist できない | 保留（→ §1.2） |
 
 加えて [`verification-record.md`](./verification-record.md) §2 の「未確認」表に、上記に載らないものが 3 件あります。
 
 * **I3: GitHub meta API 不達でも適用が成立すること** — meta 単独の不達を再現する手順が無い
 * **`SET` ターゲットが使えないカーネルでのフォールバック** — ユニットテストのみ
-* **Docker Compose 構成** — §1.2
+* **Docker Compose 構成** — §1.1
 
 ---
 
@@ -153,3 +146,4 @@ npx biome check .
 | sudo 経由でのみ固定パス、`--check-config` には探索を残す | 見に行く場所を増やすほど攻撃面が増える |
 | 設定エラーではルールを変更しない | 初回起動時は全 ACCEPT が残る |
 | IPv6 を実測してから REJECT を判断する | 実測は 1 環境・1 クライアントの結果にしかならない |
+| DNS 連動 allowlist（dnsmasq + `ipset=`） | 常駐の `CAP_NET_ADMIN` プロセスに敵が選んだ入力を食わせ続けることになる。TTL 連動も実装として存在しない |
