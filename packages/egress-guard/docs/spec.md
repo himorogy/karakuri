@@ -188,7 +188,7 @@ live set（`egress-allow-v4`）に禁止レンジ（§3.2 の表）のアドレ�
 
 パスは環境変数からも導出しません（sudo 下の環境変数は信用できないため）。
 
-全フィールドを埋めた記入例は [`../README.md`](../README.md) の「スキーマ」（同じ内容が `templates/firewall.example.json` にあります）。
+全フィールドを埋めた記入例は [`../README.md`](../README.md) の「記入例」（同じ内容が `templates/firewall.example.json` にあります）。
 
 | フィールド | 型 | 必須 | 説明 |
 |---|---|---|---|

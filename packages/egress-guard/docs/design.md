@@ -373,7 +373,7 @@ data->effective |= (1 << CAP_NET_ADMIN);
 
 **なぜ:** 得られるのは導入側 `Dockerfile` 約 25 行の削減だけで、**セキュリティ機構の実体がリポジトリの外へ出ます。** `firewall.json` を root 所有の固定パスへ渡す経路も、テストの無いシェルスクリプトに移るか、書き忘れが静かに通る形になります。
 
-現在は `Dockerfile` がパッケージ導入の全てを担っています（`iptables` 等の apt 導入、スクリプトの `/usr/local/bin` への配置、`firewall.json` の `/etc/egress-guard` への配置、sudoers の生成）。これを Feature にすれば、導入側の `Dockerfile` を短くできます。**実現は可能ですが、現時点では採用しません。**
+現在は `Dockerfile` がパッケージ導入の全てを担っています（`iptables` 等の apt 導入、スクリプトの `/usr/local/bin` への配置、`firewall.json` の `/etc/egress-guard` への配置、sudoers の生成）。これを Feature にすれば、導入側の `Dockerfile` を短くできます。
 
 #### Feature 側に移せるもの
 

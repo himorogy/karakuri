@@ -295,7 +295,7 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 
 **JSON にコメントは書けません。** `jq` でパースするため、コメント付きの JSON5 / JSONC 形式は「不正な JSON」として拒否されます。
 
-## スキーマ
+## 記入例
 
 ```json
 {
@@ -423,7 +423,7 @@ sudo /usr/local/bin/init-project-firewall.sh
 
 再実行すれば回復します。何度実行しても同じ結果になります（冪等）。
 
-sudoers の設定上、**エージェント自身も再適用できます。** これは意図した設計です。再適用が行うのは `/etc/egress-guard/firewall.json`（root 所有）の再解決だけで、ポリシーそのものは変えられません。「再解決は自由、ポリシー変更は再ビルド」という分離になっています。
+sudoers の設定上、**エージェント自身も再適用できます。** これは意図した設計です。再適用が行うのは `/etc/egress-guard/firewall.json`（root 所有）の再解決だけで、ポリシーそのものは変えられません（この分離については[なぜこの置き方なのか](#なぜこの置き方なのか)）。
 
 ---
 
