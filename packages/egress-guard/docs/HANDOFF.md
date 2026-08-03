@@ -38,33 +38,44 @@ npx biome check .
 
 ### 1.1 enforce に戻して確認する（進行中・最優先）
 
-**原因は特定済みです。** `enforce` にすると Orca remote から接続できなくなっていた件は、audit モードでの洗い出しで決着しました（手順は [`verification-record.md`](./verification-record.md) §6.21、結論は [`known-issues.md`](./known-issues.md) #8）。
+**原因は特定済みで、対処も入れてあります。あとは `enforce` で通ることの確認だけです。**
 
-**制御チャネルは無関係でした。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。ここは二度と疑う必要がありません。
+`enforce` で Orca remote から接続できなくなっていた件は、audit モードでの洗い出しで決着しました（手順は [`verification-record.md`](./verification-record.md) §6.21、結論は [`known-issues.md`](./known-issues.md) #8）。
+
+**制御チャネルは無関係でした。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。**ここは二度と疑う必要がありません。**
 
 **倒れていたのは「firewall 適用後に走るセットアップ」です。**
 
-1. **`deb.debian.org`** — 起動後の `apt-get install openssh-server ...`。**`openssh-server` はイメージに入っていません。** ここが落ちると sshd が無く、Orca は接続そのものができません
-2. **`nodejs.org`** — relay の依存 `node-pty` に linux 向け prebuild が無く、node-gyp が Node ヘッダを取得します
+1. **`apt-get install openssh-server ...`** — `openssh-server` はイメージに入っていませんでした。ここが落ちると sshd が無く、Orca は接続そのものができません
+2. **node-gyp の Node ヘッダ取得** — relay の依存 `node-pty` に linux 向け prebuild が無くソースビルドになります
 
-**1 が先に倒れるため、2 は表に出ていませんでした。** `.devcontainer/firewall.json` に両方を追加し、`mode` を `enforce` に戻してあります（`--check-config` は通過済み）。
+**1 が先に倒れるため、2 は表に出ていませんでした。**
+
+#### 入れた対処と、その理由
+
+* **`nodejs.org` を `allowDomains` に追加** — 2 はこれで通ります（実測済み）
+* **`deb.debian.org` は追加しても直りませんでした。** Fastly 上で **TTL 25 秒**、起動時のスナップショットと `apt` の接続先がずれます（[`spec.md`](./spec.md) §9.7）。**「書いてあるのに落ちる」状態を残さないため `allowDomains` から外し**、該当パッケージ（`openssh-server` / `ripgrep` / `fd-find` / `bat`）を `.devcontainer/Dockerfile` に移しました
+
+> **起動後に `apt` を使う構成は、この方式と根本的に相性が悪いと考えてください。** 起動後に外から取ってくる作業は、イメージビルド時に移すのが第一選択です。
 
 #### 次にやること
 
-1. **Dev Containers: Rebuild Container**
+1. **Dev Containers: Rebuild Container**（`.devcontainer/firewall.json` は `enforce`。`--check-config` は通過済み）
 2. Orca が繋がったら、§6.2 の 2.1〜2.5 で適用そのものを確認する
-3. [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）。`enforce` でないと測れません
-4. `ls ~/.vscode-server/extensions` — **拡張が 3 つ揃うか**（[`known-issues.md`](./known-issues.md) #9 の判定）
-5. 通ったら [`known-issues.md`](./known-issues.md) #8 を閉じ、§1 実施状況に `enforce` の行を足す
+3. **セットアップスクリプトの `apt` が通るか。** パッケージがイメージに入っているので取得は起きないはずですが、`apt-get update` の警告は出ます。**`E:` が出たらまだ何か起動後に取りに行っています**
+4. [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）。`enforce` でないと測れません
+5. `ls ~/.vscode-server/extensions` — 拡張の数（[`known-issues.md`](./known-issues.md) #9。`enforce` で 2 個・`audit` で 4 個が既知の差）
+6. 通ったら [`known-issues.md`](./known-issues.md) #8 を閉じ、§1 実施状況に `enforce` の行を足す
 
 > **戻し方。** 繋がらなくなったら、ホストから `.devcontainer/devcontainer.json` の `postStartCommand` をコメントアウトして再ビルドしてください。ワークスペースはバインドマウントなので、コンテナが上がらなくても編集できます。
 
-> **`~/.orca-remote`・`~/.cache`・`~/.vscode-server` はボリュームに載っていません。** そのため 1 と 2 は**再ビルドのたびに走ります**。逆に言えば、再ビルドを跨がない限りこの問題は再現しません（別プロジェクトのコンテナが `enforce` のまま動き続けていたのはこのためです）。
+> **`~/.orca-remote`・`~/.cache`・`~/.vscode-server` はボリュームに載っていません。** そのため起動後のセットアップは**再ビルドのたびに走ります**。逆に言えば、再ビルドを跨がない限りこの問題は再現しません（別プロジェクトのコンテナが `enforce` のまま動き続けていたのはこのためです）。
 
 #### 残っている宿題
 
-**VS Code 拡張が入りません**（[`known-issues.md`](./known-issues.md) #9）。実体を配る `*.gallerycdn.vsassets.io` はワイルドカードのため列挙できず、publisher 別の具体名で書いても Akamai の IP が回ります。**[`spec.md`](./spec.md) §9.1 の CDN drift が実害として出た最初の例で、下記 1.3 を採る動機になります。**
+**VS Code 拡張が一部入りません**（[`known-issues.md`](./known-issues.md) #9）。実体を配る `*.gallerycdn.vsassets.io` はワイルドカードのため列挙できず、publisher 別の具体名で書いても Akamai の IP が回ります。
 
+**`deb.debian.org` と併せて、[`spec.md`](./spec.md) §9.7 の「アドレスが動くドメインは `allowDomains` で表現できない」が実害として出た 2 例目です。下記 1.3 を採る動機がこれです。**
 ### 1.2 WebFetch の扱いの確定（再ビルド直後・5 分）
 
 **WebSearch / WebFetch の egress は実測済みです**（2026-08-03、Claude Code v2.1.220）。結果は当初の推論と逆でした。

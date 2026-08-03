@@ -215,6 +215,22 @@ RUN chown -R root:root /etc/egress-guard && chmod 644 /etc/egress-guard/firewall
 
 **1 が先に倒れます。** `nodejs.org` は 2 番目の障害点で、1 を直すまで表に出ません。
 
+### `deb.debian.org` は `allowDomains` では直せなかった
+
+**両方を `allowDomains` に入れて `enforce` にしたところ、`nodejs.org` は通り、`deb.debian.org` は落ちました。**
+
+```
+W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease
+   Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
+   - connect (113: No route to host)
+```
+
+`No route to host` は egress-guard の `icmp-admin-prohibited` です。**書いてあるのに遮断されています。** 原因は [`spec.md`](./spec.md) §9.7 — Fastly 上にあり TTL が 25 秒で、起動時に解決した IP と `apt` の接続先がずれます。同じ日の audit 記録に `146.75.114.132`（`deb.debian.org`）が載っていることが裏付けです。**allowlist に入っていれば記録されません。**
+
+**そのため `deb.debian.org` は `allowDomains` から外し、当該パッケージを `Dockerfile` に移しました。** 「書いてあるが通ったり通らなかったりする」状態を残すほうが、確実に落ちるより悪いためです。`nodejs.org` は Cloudflare 上でアドレスが安定しており、そのまま残しています。
+
+**起動後に `apt` を使う構成は、この方式とは根本的に相性が悪いと考えてください。**
+
 `~/.orca-remote`・`~/.cache`・`~/.vscode-server` はいずれもボリュームに載っていないため、**再ビルドのたびに 1 と 2 の両方が走ります。** 同じ構成でも**再ビルドを跨がなければ再現しません**（別プロジェクトのコンテナは、適用前に導入が済んでいたため `enforce` のまま動き続けていました）。
 
 **一般化するとこうです。** egress-guard は「起動時点で必要なものが揃っている」構成を想定しています。**起動後に導入を行う構成では、その導入が要求する先を全て `allowDomains` に列挙する必要があります。** README にこの前提を書くべきかは未決です。
@@ -264,4 +280,15 @@ dig +noall +answer A '*.gallerycdn.vsassets.io'   → 184.85.102.26  184.85.102.
 
 現状は「拡張はイメージビルド時に入れておく」か「拡張の更新を諦める」かの二択です。
 
-> **まだ「入らない」ことを確かめていません。** 観測したのは audit モードで**コンテナが `gallerycdn` に接続した**ことだけです。VS Code がクライアント側で VSIX を取得してトンネル越しに導入する経路を持つ可能性を潰していません。**`enforce` に戻したら、`~/.vscode-server/extensions` に 3 つ揃うかどうかで判定してください。**
+### `enforce` で実際に減ることを確認した
+
+2026-08-03、同じワークスペースで両モードを比べた結果です（VS Code の UI 上での確認）。
+
+| モード | 入った拡張 |
+|---|---|
+| `enforce` | `anthropic.claude-code`、`biomejs.biome` |
+| `audit` | 上記に加えて `ms-vscode.js-debug-companion`、`ms-ceintl.vscode-language-pack-ja` |
+
+**`enforce` では 2 つ足りません。** `gallerycdn` の遮断と整合します。
+
+**ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、この差がどこから来るのかは未確認です（別経路で取得しているのか、キャッシュから復元されたのか）。**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
