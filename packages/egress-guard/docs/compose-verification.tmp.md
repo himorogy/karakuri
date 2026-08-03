@@ -8,25 +8,37 @@
 
 ## 0. 環境
 
-| 項目 | 値 |
-|---|---|
-| 実施日 | |
-| 対象リポジトリ | toganashi |
-| ホスト OS / Docker | |
-| コンテナ名 / ID | |
-| Compose プロジェクト名 | |
-| ネットワーク名 | |
-| `firewall.json` の `mode` | |
+
+| 項目                       | 値         |
+| ------------------------ | --------- |
+| 実施日                      | 2026-08-03 |
+| 対象リポジトリ                  | toganashi |
+| ホスト OS / Docker          | macOS / Docker Desktop（linuxkit 6.12.76） |
+| コンテナ名 / ID               | `toganashi-dev-container` / `1af3beaa8288` |
+| Compose プロジェクト名          | `egress-guard-toganashi` |
+| ネットワーク名                  |           |
+| `firewall.json` の `mode` |           |
+
 
 準備。以降のコマンドはすべて**ホストのシェル**から実行します。
 
 ```sh
-export C=toganashi-dev-container     # docker ps で実名を確認すること
-alias inroot="docker exec -u root $C"
-alias innode="docker exec $C"
+# 対象リポジトリのパスとコンテナ名。R は自分の環境に合わせて書き換える。
+export R=~/dev/himorogy/toganashi-workspaces/toganashi
+export C=toganashi-dev-container
+
+# エイリアスは単一引用符。二重引用符だと定義時に $C が固定される。
+alias inroot='docker exec -u root $C'
+alias innode='docker exec $C'
+
+# 確認してから始める
+docker ps --filter "name=^${C}$" --format '{{.ID}}  {{.Names}}  {{.Image}}'
+ls "$R/.devcontainer/" >/dev/null && echo "R ok"
 ```
 
-> **コンテナを取り違えないでください。** 他プロジェクトの devcontainer が同時に動いています（`shutdownAction: none`）。`docker ps` で ID を確かめてから始めてください。
+> **コンテナを取り違えないでください。** 他プロジェクトの devcontainer が同時に動いています（`shutdownAction: none`）。
+
+> **ホスト側のファイルを見るコマンドは `$R` 起点で書いてあります。** 相対パスで書くと実行場所に依存します。
 
 ---
 
@@ -34,8 +46,8 @@ alias innode="docker exec $C"
 
 埋めながらチェックしてください。
 
-- [ ] 22.0 マウント先と `workspaceFolder` の一致
-- [ ] 22.1 入れ替え
+- [x] 22.0 → 合格
+- [ ] 22.1 案 A の構成 / 戻せること
 - [ ] 22.2 起動する
 - [ ] 22.3 ネットワーク
 - [ ] 22.4 `cap_add` が効いている
@@ -53,11 +65,59 @@ alias innode="docker exec $C"
 **確かめること:** `docker-compose.yml` の `volumes` が `<親>:/X`、`devcontainer.json` の `workspaceFolder` が `/X/<リポジトリ名>` になっている。
 
 ```sh
-grep -n "workspaces\|workspace" .devcontainer/docker-compose.yml .devcontainer/devcontainer.json
-inroot ls -la /workspaces/toganashi/.devcontainer/ | head -3
+# ホスト側: 突き合わせる 2 行だけを出す
+grep -n "workspaceFolder" "$R/.devcontainer/devcontainer.json"
+grep -n ":/workspace" "$R/.devcontainer/docker-compose.yml"
+
+# コンテナ側: 実際にリポジトリが見えているか
+innode sh -c 'ls -la /workspaces/ && ls /workspaces/*/.devcontainer/devcontainer.json'
 ```
 
-**期待:** 両者の `/X` が一致。コンテナ内に `.devcontainer/` が見える。
+**期待:** `workspaceFolder` が `/X/<リポジトリ名>`、compose のバインド先が `/X`。`/workspaces/` 直下にリポジトリが 1 つ見え、その `.devcontainer/devcontainer.json` が存在する。
+
+> **`ls -la` の owner が `root root` に見えても異常ではありません。** `docker exec -u root` 経由だと bind mount が呼び出し側の uid で表示されます（Docker Desktop の fakeowner）。
+
+**結果:** 2026-08-03 実施。ホスト側の grep は cwd 誤りで空振りしたため、コンテナ側の観察で判定した。
+
+```
+$ ls -la /workspaces/
+drwxr-xr-x  3 node node   96 Aug  3 04:13 .
+drwxr-xr-x  1 root root 4096 Aug  3 05:51 ..
+drwxr-xr-x 19 node node  608 Aug  2 15:22 toganashi
+
+$ ls -la /workspaces/toganashi/.devcontainer/
+-rw-r--r--  1 node node  2241 Aug  3 04:12 devcontainer.json
+-rw-r--r--  1 node node  2281 Aug  3 05:46 docker-compose.yml
+（他略）
+
+$ docker ps
+1af3beaa8288  egress-guard-toganashi-dev  toganashi-dev-container
+```
+
+* `/workspaces/` 直下がリポジトリ 1 つ = マウント先は**親ディレクトリ**で正しい
+* `/workspaces/toganashi/.devcontainer/` が見えている = `workspaceFolder` とマウント先が**一致**
+* イメージ名から Compose プロジェクト名は `egress-guard-toganashi`
+
+**判定:** [x] 合格 — メモ: 判定自体は成立。コマンド側に不備があったため書き直した（cwd 依存・`head -3` で切れる・alias の引用符）。
+
+---
+
+## 22.1 案 A の構成になっている / 案 B へ戻せる
+
+**入れ替え方は 2 通りあります。** どちらでも構いませんが、**戻す手段を確保してから先へ進んでください。**
+
+* **2 ファイルを持つ** — `devcontainer.compose.json` と `devcontainer.runargs.json` を並べ、`mv` で切り替える
+* **`devcontainer.json` を直接書き換える** — 戻すのは git 頼みになる
+
+```sh
+ls "$R/.devcontainer/" | grep -E "devcontainer.*\.json"
+git -C "$R" status --short .devcontainer/
+git -C "$R" log --oneline -1 -- .devcontainer/devcontainer.json
+```
+
+**期待:** 直接書き換えている場合、**案 B 版が git に残っている**こと（コミット済み、または `git stash` などで復元できる状態）。
+
+> **`container_name` を固定しているため、案 B のコンテナが動いていると名前が衝突します。** 切り替える前に `docker stop $C`。
 
 **結果:**
 
@@ -65,19 +125,6 @@ inroot ls -la /workspaces/toganashi/.devcontainer/ | head -3
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
-
----
-
-## 22.1 入れ替え
-
-```sh
-docker stop $C            # container_name が衝突するため先に止める
-cd <toganashi>/.devcontainer
-mv devcontainer.json devcontainer.runargs.json
-mv devcontainer.compose.json devcontainer.json
-```
-
-**判定:** [ ] 済 — メモ:
 
 ---
 
@@ -92,6 +139,7 @@ provision-devcontainer.sh -w <toganashi>       # または VS Code の Rebuild C
 **結果（末尾数行）:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -104,11 +152,12 @@ provision-devcontainer.sh -w <toganashi>       # または VS Code の Rebuild C
 docker inspect -f '{{json .NetworkSettings.Networks}}' $C | jq 'keys'
 ```
 
-**期待:** Compose が作った 1 本のみ。**`bridge` を含まない。**
+**期待:** Compose が作った 1 本のみ。`**bridge` を含まない。**
 
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -128,6 +177,7 @@ docker inspect -f '{{.HostConfig.CapAdd}}' $C
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -141,11 +191,12 @@ innode grep nameserver /etc/resolv.conf
 innode sudo /usr/local/bin/init-project-firewall.sh 2>&1 | grep -iE "DNS pinned|not on a user defined"
 ```
 
-**期待:** `127.0.0.11`。`DNS pinned to 127.0.0.11`。**`not on a user defined Docker network` の警告が出ない。**
+**期待:** `127.0.0.11`。`DNS pinned to 127.0.0.11`。`**not on a user defined Docker network` の警告が出ない。**
 
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -169,6 +220,7 @@ inroot sh -c "iptables -S -t nat | grep DOCKER_OUTPUT"
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -186,6 +238,7 @@ innode dig +short api.anthropic.com
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -206,6 +259,7 @@ inroot sh -c "iptables -S | grep '^-P'"
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -224,6 +278,7 @@ inroot sh -c "iptables -S OUTPUT | grep -n 'dport 53'"
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -243,6 +298,7 @@ for i in 1 2 3; do innode sudo /usr/local/bin/init-project-firewall.sh >/dev/nul
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -268,6 +324,7 @@ inroot sh -c "iptables -S OUTPUT | grep 15432"
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -280,9 +337,8 @@ inroot sh -c "iptables -S OUTPUT | grep 15432"
 
 ```sh
 docker stop $C
-cd <toganashi>/.devcontainer
-mv devcontainer.json devcontainer.compose.json
-mv devcontainer.runargs.json devcontainer.json
+# 2 ファイル方式なら mv で戻す。直接書き換えているなら git で戻す。
+git -C "$R" checkout -- .devcontainer/devcontainer.json
 # 再ビルド
 ```
 
@@ -291,6 +347,7 @@ mv devcontainer.runargs.json devcontainer.json
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -308,11 +365,12 @@ README の「`dockerComposeFile` を使うと `runArgs` は無視される」は
 docker inspect -f '{{json .Config.Labels}}' $C | jq 'has("egress-guard-runargs-test")'
 ```
 
-**期待:** `false`。**`true` なら README の記述が誤り。**
+**期待:** `false`。`**true` なら README の記述が誤り。**
 
 **結果:**
 
 ```
+
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
@@ -325,10 +383,10 @@ docker inspect -f '{{json .Config.Labels}}' $C | jq 'has("egress-guard-runargs-t
 
 終わったら次を更新して、このファイルを削除してください。
 
-* [`verification-record.md`](./verification-record.md) §1 実施状況 — 環境・日付・範囲・結果の行を 1 行追加
-* [`verification-record.md`](./verification-record.md) §2 カバレッジ — 「未確認」から **Docker Compose 構成での動作** の行を消し、「確認済み」へ移す
-* [`verification-record.md`](./verification-record.md) §6.22 — 見出しから **未実施** を外す
-* [`README.md`](../README.md) 案 A — 「この構成はまだ実機で検証していません」の但し書きを外す
-* [`HANDOFF.md`](./HANDOFF.md) §1.1 と §2 — 該当項目を落とす
+- [`verification-record.md`](./verification-record.md) §1 実施状況 — 環境・日付・範囲・結果の行を 1 行追加
+- [`verification-record.md`](./verification-record.md) §2 カバレッジ — 「未確認」から **Docker Compose 構成での動作** の行を消し、「確認済み」へ移す
+- [`verification-record.md`](./verification-record.md) §6.22 — 見出しから **未実施** を外す
+- [`README.md`](../README.md) 案 A — 「この構成はまだ実機で検証していません」の但し書きを外す
+- [`HANDOFF.md`](./HANDOFF.md) §1.1 と §2 — 該当項目を落とす
 
 **落ちた項目があれば、直す前にまず記録してください。** [`verification-record.md`](./verification-record.md) §3〜§5 の「なぜ捕まらなかったか」を書ける状態にしておくためです。
