@@ -25,6 +25,7 @@
 | Docker Desktop / macOS arm64、linuxkit 6.12.76、**デフォルトブリッジ** | 2026-08-02 | 項目 1〜13 | 全項目合格（5 件の実装欠陥を発見・修正） |
 | 同上、**ユーザー定義ネットワーク**（`egress-guard-toganashi`） | 2026-08-03 | 項目 17（2〜3・6・15 の再実施を含む） | 全項目合格 |
 | 同上、デフォルトブリッジ | 2026-08-03 | 項目 14〜16、18 | 18.4 を除き合格 |
+| 同上、デフォルトブリッジ、**egress-guard 未適用**（Claude Code v2.1.220） | 2026-08-03 | 項目 19 | WebFetch は直接 egress する。**文書の推論を否定** |
 
 **未実施の環境**は [`known-issues.md`](./known-issues.md) を参照してください（IPv6 が有効なコンテナ、Linux ホスト、CI ランナー、rootless Docker）。
 
@@ -66,6 +67,8 @@
 | **I7** | 遮断先が allowlist ACCEPT の直後・REJECT の前に記録される | 11.1 | `match-set ... ACCEPT` の直後に `-j SET --add-set` |
 | **I7** | `SET` が使えない環境でフォールバックする | — | **ユニットテストのみ** |
 | — | 実利用（`git fetch` / `pnpm install` / GitHub API）が成立する | 13 | — |
+| — | **WebFetch はコンテナから直接 egress する**（従来の推論の否定） | 19.1 | `209.51.188.20:443 users:(("claude",pid=32345,fd=14))` |
+| — | WebSearch はコンテナから egress しない | 19.2 | 検索 2 回で新規 peer なし（常駐テレメトリ 2 件を baseline に含めた上で） |
 | — | shellcheck クリーン / ユニットテスト全通過 | CI | — |
 | — | nat テーブルが変更されない | 2.4、**17.3** | 適用前後の `iptables-save -t nat` が `IDENTICAL` |
 
@@ -80,7 +83,7 @@
 | **`SET` ターゲットが使えないカーネルでのフォールバック** | 検証環境のカーネルでは常に使える | 同 `recorderfallback` |
 | **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし（[known-issues #2](./known-issues.md)） |
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
-| **WebSearch / WebFetch が直接 egress しないこと** | 未実施。手順は [`web-search-fetch.md`](./web-search-fetch.md) にある | なし（[known-issues #5](./known-issues.md)） |
+| **WebFetch が遮断されたときのフォールバック挙動** | 項目 19 は egress-guard 未適用の状態で測定した。REJECT された場合に Anthropic 側の取得へ切り替わるかは観測していない | なし（[known-issues #5](./known-issues.md)） |
 | **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証 | なし |
 | **I3: GitHub meta API 不達でも適用が成立すること** | 検証環境では meta API に常に到達できた。ネットワークを部分的に落とす手順が無い | `tests/firewall-rules.test.sh` の `panic` ケースが近いが、そこでは DNS も落ちるため meta 単独の不達は未確認 |
 
@@ -522,3 +525,32 @@ grep -v 'metadata.test' /etc/hosts > /tmp/h && cat /tmp/h > /etc/hosts
 > **18.3 がこの項目の本命です。** デフォルトブリッジには DNS DNAT ルールが存在しないため、「nat を触らない」という設計判断はこの構成でしか検証できません。
 
 > **未実施:** Docker Compose 構成（README の第一推奨）での再検証。上記は `initializeCommand` 構成で実施したものです。
+
+### 6.19 Claude Code の WebSearch / WebFetch が egress するか
+
+**この項目だけは egress-guard を適用しない状態で実施します。** `enforce` 下で測ると「遮断されたので接続が見えない」のか「そもそも接続しない」のかを区別できません。規制の無い状態で**実際に張られた接続**を見れば、この区別が要りません。
+
+`ss` で全 TCP ソケットの peer を 0.5 秒ごとに記録します。TIME-WAIT が約 60 秒残るため、短命な接続も取りこぼしません。
+
+```sh
+# [node] 記録を開始する（バックグラウンド）
+while :; do
+	ss -Htnp state all | awk -v t="$(date +%s)" '{print t, $5, $6}' >> peers.log
+	sleep 0.5
+done
+```
+
+| # | 確かめること | 手順 | 判定 |
+|---|---|---|---|
+| 19.0 | baseline を取る | Web ツールを使わずに 60 秒以上記録する | 現れる peer を控える。`api.anthropic.com` のほか**常駐テレメトリが 2 つある**（測定時は GCP と Cloudflare の各 1） |
+| 19.1 | WebFetch の egress | 対象ドメインを `dig` で控えてから WebFetch を実行する | **対象 IP が現れる。** `$6` のプロセスが `claude` |
+| 19.2 | WebSearch の egress | 検索を実行する | **baseline 以外の peer が現れない** |
+| 19.3 | 遮断時のフォールバック（**未実施**） | egress-guard 適用後、`allowDomains` に無いドメインを WebFetch する | `egress-audit-v4` に取得先 IP が記録される。**そのうえで WebFetch が成功するならフォールバックしている** |
+
+> **19.0 を飛ばさないでください。** 常駐テレメトリは検索の窓でも新しく現れることがあり、baseline を取っていないと 19.2 が偽陽性になります。**Web ツールを使わない制御窓で同じ peer が継続して ESTAB なら、それはテレメトリです。**
+
+> **対象ドメインの選び方。** CDN 上のドメインは、他の通信と IP が重なって判定できなくなります（測定時、`manpages.debian.org` と `www.debian.org` は同じ IP 集合でした）。`ftp.gnu.org` のように**単独 IP で他が触らない先**を選んでください。
+
+> WebFetch の応答は URL ごとに 15 分キャッシュされます。**再測定では別の URL を使ってください。**
+
+結果は §1・§2 と [`web-search-fetch.md`](./web-search-fetch.md) §1。

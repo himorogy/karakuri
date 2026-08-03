@@ -639,9 +639,9 @@ to find out which ones those are.
 
 L3/L4 では HTTP メソッドが見えず、L4 で表現すると 443 番の全開放になります。また GET 自体が書き出しチャネルであるため、許可すれば §1 の目的 1 が無効になります。
 
-**この要求の大半はそもそも成立しない可能性があります。** Claude Code の WebSearch / WebFetch が Anthropic 側で完結するなら、コンテナから任意ドメインへの egress は不要です。**未実測です** — 根拠と確認手順は [`web-search-fetch.md`](./web-search-fetch.md)。
+**この要求は実在します。** Claude Code の WebFetch はコンテナ内から取得先へ直接接続するため、`allowDomains` に無いドメインは取得できません（実測: [`web-search-fetch.md`](./web-search-fetch.md) §1）。WebSearch は Anthropic 側で完結するため影響を受けません。
 
-コンテナから直接取得する必要がある場合は、そのドメインを `allowDomains` に個別追加します。
+要求が実在してもなお、上の理由により全ドメイン許可は採りません。取得の必要があるドメインは `allowDomains` に個別追加します。
 
 ### 9.3 適用前に確立された接続は継続する
 

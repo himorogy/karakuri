@@ -76,21 +76,28 @@
 
 ---
 
-## 5. WebSearch / WebFetch の egress 実測
+## 5. WebFetch が遮断されたときのフォールバック挙動
 
 **分類:** 未検証
 
-「Claude Code の WebSearch / WebFetch は Anthropic 側で完結し、コンテナから任意ドメインへの egress を必要としない」という理解は、**推論であって実測ではありません。** 参照元の記事もリクエストの発信元については記述していません（[`web-search-fetch.md`](./web-search-fetch.md) §1）。
+「WebSearch / WebFetch は Anthropic 側で完結する」という以前の推論は**実測により否定されました**。WebFetch はコンテナ内の `claude` プロセスが取得先へ直接 TCP 接続します（[`web-search-fetch.md`](./web-search-fetch.md) §1、2026-08-03、Claude Code v2.1.220）。WebSearch 側は egress を発生させません。
 
-`egress-audit-v4` を使えば確認できます。手順は [`web-search-fetch.md`](./web-search-fetch.md) にあります。
+残っているのは次の点です。**測定は egress-guard 未適用の状態で行ったため、直接接続が REJECT されたときの挙動を観測していません。**
+
+* フォールバックする → `allowDomains` 外でも WebFetch は動く（遮断の記録は残る）
+* フォールバックしない → `allowDomains` 外の WebFetch はエラーになる
+
+README と [`web-search-fetch.md`](./web-search-fetch.md) は後者を前提に書いてあります。前者だった場合は両方の記述を緩める必要があります。
+
+適用済みのコンテナで、`allowDomains` に無いドメインを 1 回 WebFetch すれば判定できます。
 
 ```sh
 ipset flush egress-audit-v4
-# この状態で WebSearch / WebFetch を実行
-ipset list egress-audit-v4
+# この状態で allowDomains に無いドメインを WebFetch する
+ipset list egress-audit-v4   # 取得先の IP が記録されるはず
 ```
 
-`enforce` のまま実行して記録が増えなければ、直接 egress は発生していないことになります。
+**遮断の記録が残ったうえで WebFetch が成功すれば、フォールバックしています。**
 
 ---
 

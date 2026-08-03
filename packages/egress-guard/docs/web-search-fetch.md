@@ -6,59 +6,87 @@ egress-guard は allowlist に無いドメインへの通信を遮断します�
 
 | 節 | 内容 | 根拠 |
 |---|---|---|
-| §1 | コンテナから直接 egress しない | **未実測の推論。** 参照元の記事は発信元について記述していない |
+| §1 | WebFetch はコンテナから直接 egress する。WebSearch はしない | **実測**（2026-08-03、Claude Code v2.1.220） |
 | §2〜§4 | Haiku 要約とそのトレードオフ | 参照元の記事（Claude Code v2.1.126 のソース調査） |
 
-したがって現時点で言えるのは次のとおりです。
+結論は次のとおりです。
 
-* **おそらく使えます。** ただし §1 は**まだ実測していません**。確認手順は §1 にあります
+* **WebSearch は追加設定なしで使えます。** 検索の実行中、コンテナから外部への新規接続は観測されませんでした
+* **WebFetch は `allowDomains` に入れたドメインでしか使えません。** 取得はコンテナ内の `claude` プロセスが対象ドメインへ直接 TCP 接続して行っています。**この文書が以前「Anthropic 側で完結すると考えられる」と推論していたのは誤りでした**
 * 取得内容は Haiku の要約を経由するため、**prompt injection のリスクは低くなります**（無効化ではありません）
 * 代償として、**長文ページでは情報が落ちます**。egress 規制の副作用ではなく Claude Code 側の仕様です
-* 「どうしても原文をそのまま読ませたい」ケース以外は、これで十分と考えられます
 
-参照元: [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)（zhizhiarv、Claude Code v2.1.126 の調査、2026-05-04 時点）。**バージョン依存の情報です。**
+§2〜§4 の参照元: [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)（zhizhiarv、Claude Code v2.1.126 の調査、2026-05-04 時点）。**バージョン依存の情報です。**
 
 ---
 
-## 1. コンテナから直接 egress しない（**未実測**）
+## 1. WebFetch は直接 egress する。WebSearch はしない（実測）
 
-Claude Code の Web 検索・Web 取得は、コンテナから任意のドメインへ直接 HTTP を投げる仕組みではない、と考えられます。処理が Anthropic 側で完結するなら、コンテナから見た通信先は `api.anthropic.com` だけです。これは egress-guard の基底プロファイルに含まれるため、追加設定は不要ということになります。
+### 結果
 
 | | 通信先 | allowlist |
 |---|---|---|
-| Claude Code の WebSearch / WebFetch | `api.anthropic.com`（と考えられる） | 基底プロファイルに含まれる（設定不要） |
+| Claude Code の **WebSearch** | `api.anthropic.com` のみ | 基底プロファイルに含まれる（設定不要） |
+| Claude Code の **WebFetch** | **取得先ドメインそのもの** | **`allowDomains` への追加が必要** |
 | `curl https://example.com` などの自前の取得 | そのドメイン | `allowDomains` への追加が必要 |
 
-### この節の根拠は弱い
+WebFetch は、コンテナ内の `claude` プロセスが取得先へ直接 TCP 443 を張ります。
 
-**参照元の記事は、リクエストの発信元について記述していません。** 記事が扱っているのは Haiku 要約の仕組み（§2〜§3）であり、「どこから HTTP が出るか」ではありません。
+```
+209.51.188.20:443  users:(("claude",pid=32345,fd=14))
+```
 
-上の記述は次からの推論です。
+したがって **`enforce` モードでは、`allowDomains` に無いドメインの WebFetch は遮断されます。** 「egress 規制下でも Web 取得は素通しで使える」という理解は成り立ちません。
 
-* WebSearch は Anthropic 側のサーバーサイド実行として提供されている
-* WebFetch も同じ経路で処理されるなら、コンテナは `api.anthropic.com` としか話さないはず
+WebSearch は逆で、検索実行中に新しい通信先は現れませんでした。Anthropic 側で完結しているという理解と整合します。
 
-**バージョンや設定で変わり得ますし、そもそも推論が誤っている可能性もあります。**
+### 測定条件と手順
 
-### 実測で確かめる
+**2026-08-03、Claude Code v2.1.220、Docker Desktop / macOS arm64 のコンテナ内。egress-guard は未適用の状態で測定しました。**
 
-`egress-audit-v4`（遮断先の記録）で確認できます。
+未適用の状態を選んだのは、`enforce` 下で測ると「遮断されたので接続が見えない」のか「そもそも接続しない」のかを区別できないためです。規制の無い状態で**実際に張られた接続**を見れば、この区別が要りません。
+
+`ss` で全 TCP ソケットの peer を 0.5 秒ごとに記録します。TIME-WAIT は約 60 秒残るため、短命な接続も取りこぼしません。
 
 ```sh
-# コンテナ内・root（ホストからは docker exec -u root <container> ...）
+# [node] 記録を開始する
+while :; do
+	ss -Htnp state all | awk -v t="$(date +%s)" '{print t, $5, $6}' >> peers.log
+	sleep 0.5
+done
+```
 
-# 1) 記録をいったん空にする
+この状態で Claude Code に WebFetch / WebSearch を実行させ、`peers.log` に現れた peer を、実行前の baseline と突き合わせます。
+
+* **WebFetch** — `ftp.gnu.org`（`209.51.188.20`）と `www.debian.org`（`128.31.0.62`）を対象に各 2 回。いずれも呼び出しの直後に対象 IP が現れ、約 5.5 秒後に消えました。`ss -p` によるプロセス帰属は `claude` 本体です
+* **WebSearch** — 2 回実行。検索結果に現れたドメイン（`cateee.net`、`forum.openwrt.org` など）への接続はありません
+
+**紛らわしい観測が 1 つあります。** 検索の窓で `35.190.46.17`（GCP）と `104.16.10.34`（Cloudflare）が新しく現れます。これは検索起因ではありません。Web ツールを一切使わない制御窓 71 秒でも継続して ESTAB のままであり、Claude Code の常駐テレメトリと判断しました。**検索の測定では、この 2 つを baseline に含めてから差分を取ってください。**
+
+### egress-guard 適用後に測る場合
+
+適用後は `egress-audit-v4`（遮断先の記録）でも確認できます。上の測定より手軽ですが、**遮断された宛先しか映らない**ため、「接続を試みたか」は分かっても「接続できたか」は分かりません。
+
+```sh
+# [root] 記録をいったん空にする
 ipset flush egress-audit-v4
 
-# 2) この状態で Claude Code に WebSearch / WebFetch を実行させる
+# この状態で Claude Code に WebSearch / WebFetch を実行させる
 
-# 3) 遮断された宛先が増えていないことを確認する
+# 遮断された宛先を読む
 ipset list egress-audit-v4
 ```
 
-`enforce` モードのまま実行して `egress-audit-v4` に何も溜まらなければ、コンテナから外部ドメインへの直接 egress は発生していないことになります。**逆に何か記録されれば、この節の推論は誤りです。**
+`allowDomains` に無いドメインを WebFetch すれば、その IP がここに現れるはずです。
 
-> **検証状況: 未実施。** 実施したら結果をここに追記し、[`known-issues.md`](./known-issues.md) の項目 5 を消してください。
+### 残った未確認
+
+**直接接続が REJECT されたとき、Claude Code が Anthropic 側の取得へフォールバックするかは未確認です。** 上の測定は egress-guard 未適用の状態で行ったため、遮断されたときの挙動を観測していません。
+
+* フォールバックする → `allowDomains` 外でも WebFetch は動く（ただし遮断の記録は残る）
+* フォールバックしない → `allowDomains` 外の WebFetch はエラーになる
+
+[`known-issues.md`](./known-issues.md) 項目 5 に残してあります。適用済みのコンテナで WebFetch を 1 回実行すれば判定できます。
 
 ---
 
@@ -106,15 +134,9 @@ WebFetch は取得した HTML をそのままモデルに渡しません。Markd
 
 ## 4. 使い分け
 
-**通常は Claude Code の WebSearch / WebFetch で十分です。** 調査・仕様確認・エラーメッセージの当たりを付ける、といった用途で要約の粒度が問題になることは多くありません。
+**調査の起点は WebSearch です。** 追加設定なしで使え、egress も発生しません。
 
-原文をそのまま読ませる必要があるのは、次のようなケースです。
-
-* 仕様書やライセンス文書を逐語で確認する
-* 長大なページの後半に用がある
-* 数値・コード片・設定例を正確に取り出す
-
-この場合は `firewall.json` の `allowDomains` にそのドメインを追加し、`curl` などで直接取得します。
+**WebFetch には取得先ごとの許可が要ります。** §1 のとおりコンテナから直接取得しているため、`allowDomains` に入っていないドメインは取得できません。よく参照するドキュメントサイトは、あらかじめ `firewall.json` に列挙しておくことになります。
 
 ```json
 {
@@ -125,7 +147,9 @@ WebFetch は取得した HTML をそのままモデルに渡しません。Markd
 }
 ```
 
-**このとき緩衝材は無くなります。** 取得した内容はそのままコンテキストに入るため、prompt injection の危険は元に戻ります。信頼できるドメインに限って追加してください。
+**許可した時点で、そのドメインは `curl` でも取得できるようになります。** WebFetch だけを許可する、という区別は L3/L4 ではできません（[`spec.md`](./spec.md) §9.2）。取得内容が Haiku 要約を通るかどうかは呼び出し側の選択であり、egress 規制では強制できません。信頼できるドメインに限って追加してください。
+
+どのドメインが要るか分からない場合は `mode: "audit"` で運用し、`egress-audit-v4` に溜まった IP から特定します。
 
 `firewall.json` の反映にはイメージの再ビルドが必要です（理由は [`design.md`](./design.md) §2.1）。
 
@@ -133,7 +157,8 @@ WebFetch は取得した HTML をそのままモデルに渡しません。Markd
 
 ## 参考
 
-* [`spec.md`](./spec.md) §9.2 — 「GET を全ドメイン許可」ができない理由。**この文書の §1 が正しければ、その要求の大半はそもそも成立しません**
-* [`known-issues.md`](./known-issues.md) 項目 5 — §1 の実測が未実施であることの記録
+* [`spec.md`](./spec.md) §9.2 — 「GET を全ドメイン許可」ができない理由
+* [`known-issues.md`](./known-issues.md) 項目 5 — 遮断時のフォールバック挙動が未確認であることの記録
+* [`verification-record.md`](./verification-record.md) §6.19 — §1 の測定手順
 * [`README.md`](../README.md) — `egress-audit-v4` の読み方
 * [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)

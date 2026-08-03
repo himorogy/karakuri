@@ -496,9 +496,11 @@ L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` �
 
 53 番の宛先はリゾルバ 1 つに固定しますが、**そのリゾルバは再帰問い合わせをします。** [`docs/design.md`](./docs/design.md) §3.1。
 
-## Web 検索・Web 取得
+## Web 検索は使えます。Web 取得は許可したドメインだけです
 
-egress 規制下でも Claude Code の WebSearch / WebFetch は使えると考えられます。**ただしこれは未実測です。** 根拠と確認手順は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md)。
+Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic 側で完結し、コンテナから egress しません）。
+
+**WebFetch はコンテナ内から取得先へ直接接続します。** したがって `allowDomains` に無いドメインは取得できません。よく参照するドキュメントサイトは `firewall.json` に列挙してください。実測の結果と手順は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md)。
 
 ## 未検証の環境
 

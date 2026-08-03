@@ -1,14 +1,6 @@
 # 次セッションへの引き継ぎ
 
-作業ブランチ `feat/monorepo-firewall`。作業ツリーはクリーンです。
-
-```
-4477ba0 chore(devcontainer): apply egress-guard to this repo
-c9a4ddd docs(egress-guard): restate the spec as invariants
-c85417a feat(egress-guard): refuse IPv6 egress explicitly instead of dropping it
-2e8a2e0 docs(egress-guard): split the docs by role and drop the work-in-progress ones
-865fee0 feat(egress-guard): allowlist-based egress firewall for devcontainers
-```
+作業ブランチ `feat/monorepo-firewall`。直近のコミットは `git log --oneline -8` で確認してください。
 
 **この文書は作業が片付いたら削除してください。**
 
@@ -23,7 +15,7 @@ c85417a feat(egress-guard): refuse IPv6 egress explicitly instead of dropping it
 | [`known-issues.md`](./known-issues.md) | 未解決のもの（未実装 1・未検証 5・保留 1） |
 | [`verification-record.md`](./verification-record.md) | 受け入れ検証の記録。**§2 のカバレッジ表で「どの不変条件が未確認か」が引けます** |
 | [`../README.md`](../README.md) | 使い方 |
-| [`web-search-fetch.md`](./web-search-fetch.md) | 外部ツールの挙動に関する参考。**§1 は未実測の推論**と明記済み |
+| [`web-search-fetch.md`](./web-search-fetch.md) | 外部ツールの挙動に関する参考。**§1 は実測済み**（WebFetch は直接 egress する） |
 
 文書の役割分担は意図的に分けてあります。**理由は design、規範は spec、未解決は known-issues。** 同じ内容を 2 箇所に書かないでください（以前それで重複が膨らみ、整理に 1 セッション使いました）。
 
@@ -40,26 +32,35 @@ npx biome check .
 
 ## 1. 次にやること（優先度順）
 
-### 1.1 WebSearch / WebFetch の egress 実測（5 分・最優先）
+### 1.1 devcontainer イメージの再ビルド（最優先）
 
-**未実施のまま残っている唯一の「すぐ終わる」項目**です。裁定 2（GET 全許可の拒否）の前提事実の確認なので、enforce 常用の前に済ませてください。
+**このリポジトリのコンテナに egress-guard が適用されていません。** コミット 4477ba0 の devcontainer 変更がイメージに反映されていないためです。2026-08-03 時点の症状:
 
-```sh
-# [root]
-ipset flush egress-audit-v4
-# この状態で Claude Code に WebSearch / WebFetch を実行させる
-ipset list egress-audit-v4
-```
+* `curl https://example.com` が 200 を返す（遮断されていない）
+* コンテナの IP が `172.17.0.3` = デフォルトブリッジ。`egress-guard-karakuri` 網ではない
+* `/usr/local/bin/init-project-firewall.sh` が 4.6 KB の**旧 anthropic 版**（`allowed-domains`）。egress-guard 版（49 KB）は入っていない
 
-記録が増えなければ、コンテナから外部ドメインへの直接 egress は発生していません。**逆に何か記録されれば `web-search-fetch.md` §1 の推論が誤りです。**
+つまり**現在このコンテナで動くエージェントは外部へ無制限に出られます。** Dev Containers: Rebuild Container で解消します。
 
-終わったら:
+再ビルド後、続けて次の 2 つを実施してください。
 
-* `web-search-fetch.md` §1 の「検証状況: 未実施」を結果に差し替え、根拠の強さの表も更新
-* `known-issues.md` 項目 5 を削除
-* `spec.md` §9.2 と README の「未実測」の但し書きを外す
+* [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）
+* §6.2 の 2.1〜2.5 — 適用そのものの確認
 
-### 1.2 論点 2 — DNS 連動 allowlist（dnsmasq + `ipset=`）の調査
+### 1.2 WebFetch の扱いの確定（再ビルド直後・5 分）
+
+**WebSearch / WebFetch の egress は実測済みです**（2026-08-03、Claude Code v2.1.220）。結果は当初の推論と逆でした。
+
+* **WebFetch はコンテナ内の `claude` プロセスが取得先へ直接 TCP 接続する。** `allowDomains` に無いドメインは取得できない
+* **WebSearch は egress しない。** 追加設定なしで使える
+
+反映済み: [`web-search-fetch.md`](./web-search-fetch.md) §1、[`spec.md`](./spec.md) §9.2、README、[`known-issues.md`](./known-issues.md) 項目 5、[`verification-record.md`](./verification-record.md) §1・§2・§6.19。
+
+残っているのは 1 点だけです。**測定は egress-guard 未適用の状態で行ったため、直接接続が REJECT されたときの挙動を観測していません。** フォールバックするなら文書の記述を緩める必要があります。判定は §6.19 の 19.3（WebFetch を 1 回実行するだけ）。
+
+> **1.2 の結論が出るまで、`allowDomains` 外の WebFetch に依存する作業を計画しないでください。** 下記 1.3 の dnsmasq 調査がこれに該当します。
+
+### 1.3 論点 2 — DNS 連動 allowlist（dnsmasq + `ipset=`）の調査
 
 [`spec.md`](./spec.md) §10.2 に「採否未決」として枠だけ入っています。**外部レビューからの提案で、3 つの課題を同時に緩めます。**
 
@@ -79,7 +80,7 @@ ipset list egress-audit-v4
 
 **L7 proxy（§10.1）を導入するなら不要になる可能性が高い**ため、位置づけの判断も含めて検討してください。
 
-### 1.3 Docker Compose 構成での検証
+### 1.4 Docker Compose 構成での検証
 
 **README の第一推奨（案 A）が未検証**です。項目 17 は案 B（`initializeCommand`）で実施しました。
 
@@ -97,7 +98,7 @@ ipset list egress-audit-v4
 | 2 | IPv6 が有効なコンテナでの動作（`curl -6` の実到達性） | 未検証 |
 | 3 | Linux ホスト上の Docker | 未検証 |
 | 4 | `host.docker.internal` が公開アドレスを返すケース | 未検証（ユニットテストで担保） |
-| 5 | WebSearch / WebFetch の egress 実測 | 未検証（→ §1.1） |
+| 5 | WebFetch が遮断されたときのフォールバック挙動 | 未検証（→ §1.2） |
 | 6 | CI ランナー / クラウド開発環境 / rootless Docker | 未検証 |
 | 7 | Dev Container Feature 化 | 保留（着手条件を記載済み） |
 
@@ -105,7 +106,7 @@ ipset list egress-audit-v4
 
 * **I3: GitHub meta API 不達でも適用が成立すること** — meta 単独の不達を再現する手順が無い
 * **`SET` ターゲットが使えないカーネルでのフォールバック** — ユニットテストのみ
-* **Docker Compose 構成** — §1.3
+* **Docker Compose 構成** — §1.4
 
 ---
 
@@ -148,6 +149,7 @@ ipset list egress-audit-v4
   /usr/local/bin/init-project-firewall.sh --check-config --config .devcontainer/firewall.json
   ```
 * **設定エラーは panic テーブルに倒れます。** タイプミスがあるとコンテナが閉じるので、再ビルド前に `--check-config` を通してください
+* **適用されているかは毎回確かめてください。** イメージが古いと旧版のスクリプトが残り、`postStartCommand` は成功したように見えます（§1.1 で実際に起きました）。`curl --connect-timeout 5 https://example.com` が失敗すること、`ls -l /usr/local/bin/init-project-firewall.sh` のサイズがパッケージ側と一致することの 2 点で判別できます
 
 ---
 
