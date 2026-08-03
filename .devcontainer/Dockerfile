@@ -23,13 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   jq \
   nano \
   vim \
-  # 以下は起動後のセットアップスクリプトが apt で入れていたもの。egress-guard を
-  # 適用したあとの apt は成立しない（deb.debian.org は Fastly 上にあり TTL が 25 秒
-  # のため、起動時に解決した IP と実際の取得先がずれる）。ビルド時に済ませる。
-  openssh-server \
-  ripgrep \
-  fd-find \
-  bat \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Ensure default node user has access to /usr/local/share
