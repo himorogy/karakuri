@@ -41,7 +41,9 @@
 
 当初は「AAAA を持つ許可先への接続が、IPv6 の silent DROP でタイムアウト待ちになるのではないか」を未検証事項として挙げていました。
 
-**これは実測を待たず設計で解消しました。** IPv6 の OUTPUT 末尾に `-j REJECT --reject-with icmp6-adm-prohibited` を置いたため、IPv4 へのフォールバックは即座に起こります（[`design.md`](./design.md) §2.12）。クライアントが Happy Eyeballs を実装しているかどうかに依存しなくなりました。
+**これは実測を待たず設計で解消しました。** IPv6 の OUTPUT 末尾に `-j REJECT --reject-with icmp6-adm-prohibited` を置いたため、IPv4 へのフォールバックは即座に起こります（[`spec.md`](./spec.md) §4.7、[`design.md`](./design.md) §2.12）。クライアントが Happy Eyeballs を実装しているかどうかに依存しなくなりました。
+
+**実測しても解決にはなりませんでした。** 得られるのは 1 つの環境・1 つのクライアントについての結果であり、環境依存の不確実性は残ったままです。
 
 ---
 

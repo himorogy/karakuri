@@ -34,38 +34,40 @@
 
 [`spec.md`](./spec.md) §11 の受け入れ基準に対する対応です。**「未確認」の行がこの表の主役**です。
 
+§11 は不変条件（I1〜I7）ごとに分類されているため、**どの不変条件が実環境で確かめられていないか**をこの表から追えます。
+
 ### 確認済み
 
-| 受け入れ基準 | 根拠となる項目 | 判定を決めた出力 |
-|---|---|---|
-| 2 回連続実行で同一結果・exit 0 | 6.1 | `iptables-save` の diff が日時コメント行のみ |
-| 3 回以上繰り返しても壊れない | 6.3 | `FAILED` が一度も出ない |
-| `timeout -s KILL` をどの段階で当てても未許可先に到達できない | 7.1、7.3 | 7 通りのタイミングすべてで `-P OUTPUT DROP` |
-| 中断後の再実行で収束する | 7.2 | — |
-| 不正な `firewall.json` が全て拒否される | 8.3 | — |
-| ワイルドカードの拒否メッセージが代替を示す | 8.3 | `wildcards are not supported ... List the host names you need instead` |
-| §5 の自己検証が全て通る | 2.2 | `self verification passed` |
-| `dig @<外部DNS>` が UDP / TCP とも失敗する | 3.2、3.3 | `communications error to 8.8.8.8#53: timed out` / `exit=9` |
-| DNS の DROP が汎用 ESTABLISHED ACCEPT より前 | 3.4 | `--dport 53 -j DROP` の**次**に `--ctstate RELATED,ESTABLISHED -j ACCEPT` |
-| ip6tables default DROP | 5.1、5.2 | `-P OUTPUT DROP`（v6）、`match-set` 無し |
-| IPv6 の未許可先が REJECT される | 5.2b | `-j REJECT --reject-with icmp6-adm-prohibited` |
-| sudoers が固定パス・引数なし、対象が root 所有・書き換え不可 | 1.1、1.3、1.4、12.1 | `(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""` |
-| 非 root 所有スクリプトの sudo 実行が exit≠0 | — | **ユニットテストのみ**（§2 未確認を参照） |
-| 引数付き sudo が拒否され、引数なしは通る | 12.1、12.2 | 引数付き `exit=1`、引数なし `exit=0` |
-| ワークスペース側 `firewall.json` を書き換えても変化しない | 14.1 | 適用後も `-j REJECT`（`ACCEPT` にならない） |
-| `/etc/egress-guard/firewall.json` の所有者・権限違反で exit≠0 | 14.3、18.2 | `must be owned by root (found uid 1000)` / `must not be a symlink` |
-| `allowHostPorts` が両アドレスに対して開く | 15.1、15.2b | ゲートウェイと `host.docker.internal` の 2 行、到達は後者のみ |
-| 外部ネームサーバーへの試行が記録される | 16 | `8.8.8.8` のみ記録、正規リゾルバは記録されない |
-| 許可ドメインが禁止レンジを返しても allowlist に入らない | 18.3 | `resolved only to forbidden addresses, skipping` + set に不在 |
-| 設定エラーで panic テーブルが適用される | 18.1 | `applying panic policy` + `match-set` 不在 |
-| 個別ドメイン解決失敗で起動が止まらない | 9 | `failed to resolve ..., skipping` + `exit=0` |
-| audit mode で DROP されず遮断先が記録される | 10.1、10.2 | — |
-| audit mode でも DNS 固定・IPv6・INPUT が締まっている | 10.3、10.4 | — |
-| 遮断先が allowlist ACCEPT の直後・REJECT の前に記録される | 11.1 | `match-set ... ACCEPT` の直後に `-j SET --add-set` |
-| `SET` が使えない環境でフォールバックする | — | **ユニットテストのみ** |
-| 実利用（`git fetch` / `pnpm install` / GitHub API）が成立する | 13 | — |
-| shellcheck クリーン / ユニットテスト全通過 | CI | — |
-| nat テーブルが変更されない | 2.4、**17.3** | 適用前後の `iptables-save -t nat` が `IDENTICAL` |
+| 不変条件 | 受け入れ基準 | 根拠となる項目 | 判定を決めた出力 |
+|---|---|---|---|
+| — | 2 回連続実行で同一結果・exit 0 | 6.1 | `iptables-save` の diff が日時コメント行のみ |
+| — | 3 回以上繰り返しても壊れない | 6.3 | `FAILED` が一度も出ない |
+| **I2** | `timeout -s KILL` をどの段階で当てても未許可先に到達できない | 7.1、7.3 | 7 通りのタイミングすべてで `-P OUTPUT DROP` |
+| **I3** | 中断後の再実行で収束する | 7.2 | — |
+| **I5** | 不正な `firewall.json` が全て拒否される | 8.3 | — |
+| **I5** | ワイルドカードの拒否メッセージが代替を示す | 8.3 | `wildcards are not supported ... List the host names you need instead` |
+| **I7** | §5 の自己検証が全て通る | 2.2 | `self verification passed` |
+| **I4** | `dig @<外部DNS>` が UDP / TCP とも失敗する | 3.2、3.3 | `communications error to 8.8.8.8#53: timed out` / `exit=9` |
+| **I4** | DNS の DROP が汎用 ESTABLISHED ACCEPT より前 | 3.4 | `--dport 53 -j DROP` の**次**に `--ctstate RELATED,ESTABLISHED -j ACCEPT` |
+| **I7** | ip6tables default DROP | 5.1、5.2 | `-P OUTPUT DROP`（v6）、`match-set` 無し |
+| **I7** | IPv6 の未許可先が REJECT される | 5.2b | `-j REJECT --reject-with icmp6-adm-prohibited` |
+| **I1** | sudoers が固定パス・引数なし、対象が root 所有・書き換え不可 | 1.1、1.3、1.4、12.1 | `(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""` |
+| **I1** | 非 root 所有スクリプトの sudo 実行が exit≠0 | — | **ユニットテストのみ**（§2 未確認を参照） |
+| **I1** | 引数付き sudo が拒否され、引数なしは通る | 12.1、12.2 | 引数付き `exit=1`、引数なし `exit=0` |
+| **I1** | ワークスペース側 `firewall.json` を書き換えても変化しない | 14.1 | 適用後も `-j REJECT`（`ACCEPT` にならない） |
+| **I1** | `/etc/egress-guard/firewall.json` の所有者・権限違反で exit≠0 | 14.3、18.2 | `must be owned by root (found uid 1000)` / `must not be a symlink` |
+| **I6** | `allowHostPorts` が両アドレスに対して開く | 15.1、15.2b | ゲートウェイと `host.docker.internal` の 2 行、到達は後者のみ |
+| **I4** | 外部ネームサーバーへの試行が記録される | 16 | `8.8.8.8` のみ記録、正規リゾルバは記録されない |
+| **I6** | 許可ドメインが禁止レンジを返しても allowlist に入らない | 18.3 | `resolved only to forbidden addresses, skipping` + set に不在 |
+| **I2** | 設定エラーで panic テーブルが適用される | 18.1 | `applying panic policy` + `match-set` 不在 |
+| — | 個別ドメイン解決失敗で起動が止まらない | 9 | `failed to resolve ..., skipping` + `exit=0` |
+| **I7** | audit mode で DROP されず遮断先が記録される | 10.1、10.2 | — |
+| **I4/I7** | audit mode でも DNS 固定・IPv6・INPUT が締まっている | 10.3、10.4 | — |
+| **I7** | 遮断先が allowlist ACCEPT の直後・REJECT の前に記録される | 11.1 | `match-set ... ACCEPT` の直後に `-j SET --add-set` |
+| **I7** | `SET` が使えない環境でフォールバックする | — | **ユニットテストのみ** |
+| — | 実利用（`git fetch` / `pnpm install` / GitHub API）が成立する | 13 | — |
+| — | shellcheck クリーン / ユニットテスト全通過 | CI | — |
+| — | nat テーブルが変更されない | 2.4、**17.3** | 適用前後の `iptables-save -t nat` が `IDENTICAL` |
 
 ### 未確認
 
@@ -80,6 +82,7 @@
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
 | **WebSearch / WebFetch が直接 egress しないこと** | 未実施。手順は [`web-search-fetch.md`](./web-search-fetch.md) にある | なし（[known-issues #5](./known-issues.md)） |
 | **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証 | なし |
+| **I3: GitHub meta API 不達でも適用が成立すること** | 検証環境では meta API に常に到達できた。ネットワークを部分的に落とす手順が無い | `tests/firewall-rules.test.sh` の `panic` ケースが近いが、そこでは DNS も落ちるため meta 単独の不達は未確認 |
 
 > **最後の行に注意。** README が第一に推奨している構成が未検証、という優先度の反転が再び起きています。項目 17 で一度解消したのと同じ種類の問題です。
 
