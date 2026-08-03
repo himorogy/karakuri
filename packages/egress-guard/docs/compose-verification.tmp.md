@@ -9,15 +9,15 @@
 ## 0. 環境
 
 
-| 項目                       | 値         |
-| ------------------------ | --------- |
-| 実施日                      | 2026-08-03 |
-| 対象リポジトリ                  | toganashi |
-| ホスト OS / Docker          | macOS / Docker Desktop（linuxkit 6.12.76） |
-| コンテナ名 / ID               | `toganashi-dev-container` / `1af3beaa8288` |
-| Compose プロジェクト名          | `egress-guard-toganashi` |
+| 項目                       | 値                                                 |
+| ------------------------ | ------------------------------------------------- |
+| 実施日                      | 2026-08-03                                        |
+| 対象リポジトリ                  | toganashi                                         |
+| ホスト OS / Docker          | macOS / Docker Desktop（linuxkit 6.12.76）          |
+| コンテナ名 / ID               | `toganashi-dev-container` / `1af3beaa8288`        |
+| Compose プロジェクト名          | `egress-guard-toganashi`                          |
 | ネットワーク名                  | `egress-guard-toganashi_default`（gw `172.22.0.1`） |
-| `firewall.json` の `mode` |           |
+| `firewall.json` の `mode` |                                                   |
 
 
 準備。以降のコマンドはすべて**ホストのシェル**から実行します。
@@ -43,16 +43,16 @@ alias innode='docker exec $C'
 埋めながらチェックしてください。
 
 - [x] 22.0 マウント先と `workspaceFolder` の一致
-- [ ] 22.1 入れ替え
-- [ ] 22.2 起動する
-- [ ] 22.3 ネットワーク
-- [ ] 22.4 `cap_add` が効いている
-- [ ] 22.5 埋め込みリゾルバ
+- [x] 22.1 入れ替え
+- [x] 22.2 起動する
+- [x] 22.3 ネットワーク
+- [x] 22.4 `cap_add` が効いている
+- [x] 22.5 埋め込みリゾルバ
 - [ ] **22.6 nat の DNS DNAT が壊れない（本命）**
-- [ ] 22.7 名前解決
-- [ ] 22.8 主要項目の再実施 — a/b/c は端末で実施済み（**このファイルに未記録**）、**d は合格**
-- [ ] 22.9 戻せる
-- [ ] 22.10 `runArgs` が無視される（任意）
+- [x] 22.7 名前解決
+- [x] 22.8 主要項目の再実施 — a/b/c は端末で実施済み（**このファイルに未記録**）、**d は合格**
+- [x] 22.9 戻せる
+- [x] 22.10 `runArgs` が無視される（任意）
 
 ---
 
@@ -71,7 +71,7 @@ innode sh -c 'ls -la /workspaces/ && ls /workspaces/*/.devcontainer/devcontainer
 
 **期待:** `workspaceFolder` が `/X/<リポジトリ名>`、compose のバインド先が `/X`。
 
-> **`ls -la` の owner が `root root` に見えても異常ではありません。** `docker exec -u root` 経由だと bind mount が呼び出し側の uid で表示されます（Docker Desktop の fakeowner）。
+> `**ls -la` の owner が `root root` に見えても異常ではありません。** `docker exec -u root` 経由だと bind mount が呼び出し側の uid で表示されます（Docker Desktop の fakeowner）。
 
 **結果:** マウント先は親ディレクトリ、`workspaceFolder` と一致。Compose プロジェクト名は `egress-guard-toganashi`。
 
@@ -79,7 +79,7 @@ innode sh -c 'ls -la /workspaces/ && ls /workspaces/*/.devcontainer/devcontainer
 
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — マウント先は親ディレクトリ、`workspaceFolder` と一致。Compose プロジェクト名は `egress-guard-toganashi`
 
 ---
 
@@ -92,7 +92,7 @@ mv devcontainer.json devcontainer.runargs.json
 mv devcontainer.compose.json devcontainer.json
 ```
 
-**判定:** [ ] 済 — メモ:
+**判定:** [x] 済 — 案 B の `devcontainer.json` は git に残っていなかったため記憶から復元し、内容を突き合わせて確認した（karakuri 版とキー集合が一致）
 
 ---
 
@@ -107,10 +107,18 @@ provision-devcontainer.sh -w <toganashi>       # または VS Code の Rebuild C
 **結果（末尾数行）:**
 
 ```
-
+[firewall] blocked destinations are recorded in ipset egress-audit-v4 (ipset list egress-audit-v4)
+[firewall] running self verification
+[firewall] verify OK: DNS via the assigned resolver returns an answer
+[firewall] verify OK: external DNS (dig @8.8.8.8) returns nothing
+[firewall] verify OK: allowed host is reachable (api.anthropic.com)
+[firewall] verify OK: unlisted host is blocked (example.com)
+[firewall] verify SKIP: IPv6 egress (no global IPv6 address on this container)
+[firewall] self verification passed
+[firewall] firewall configuration complete
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `self verification passed` / `firewall configuration complete`
 
 ---
 
@@ -125,10 +133,13 @@ docker inspect -f '{{json .NetworkSettings.Networks}}' $C | jq 'keys'
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % docker inspect -f '{{json .NetworkSettings.Networks}}' $C | jq 'keys'
+[
+  "egress-guard-toganashi_default"
+]
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `["egress-guard-toganashi_default"]` のみ。`bridge` を含まない
 
 ---
 
@@ -145,10 +156,11 @@ docker inspect -f '{{.HostConfig.CapAdd}}' $C
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % docker inspect -f '{{.HostConfig.CapAdd}}' $C
+[CAP_NET_ADMIN CAP_NET_RAW]
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `[CAP_NET_ADMIN CAP_NET_RAW]`。**期待値の書き方が誤っていた**（`cap_add` 経由は `CAP_` 接頭辞付きで出る）
 
 ---
 
@@ -164,10 +176,13 @@ innode sudo /usr/local/bin/init-project-firewall.sh 2>&1 | grep -iE "DNS pinned|
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % innode grep nameserver /etc/resolv.conf
+nameserver 127.0.0.11
+nori-y@enuYnoMacBook-Pro dotfiles % innode sudo /usr/local/bin/init-project-firewall.sh 2>&1 | grep -iE "DNS pinned|not on a user defined"
+[firewall] DNS pinned to the Docker embedded resolver (127.0.0.11)
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `nameserver 127.0.0.11` / `DNS pinned to the Docker embedded resolver`。警告なし
 
 ---
 
@@ -188,10 +203,20 @@ inroot sh -c "iptables -S -t nat | grep DOCKER_OUTPUT"
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables-save -t nat | grep -v '^#' > /tmp/nat-a.txt"
+nori-y@enuYnoMacBook-Pro dotfiles % innode sudo /usr/local/bin/init-project-firewall.sh > /tmp/apply.log 2>&1 ; echo "exit=$?"
+inroot sh -c "iptables-save -t nat | grep -v '^#' > /tmp/nat-b.txt"exit=0
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables-save -t nat | grep -v '^#' > /tmp/nat-b.txt"
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "diff /tmp/nat-a.txt /tmp/nat-b.txt && echo IDENTICAL"
+IDENTICAL
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables -S -t nat | grep DOCKER_OUTPUT"
+-N DOCKER_OUTPUT
+-A OUTPUT -d 127.0.0.11/32 -j DOCKER_OUTPUT
+-A DOCKER_OUTPUT -d 127.0.0.11/32 -p tcp -m tcp --dport 53 -j DNAT --to-destination 127.0.0.11:33353
+-A DOCKER_OUTPUT -d 127.0.0.11/32 -p udp -m udp --dport 53 -j DNAT --to-destination 127.0.0.11:36049
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] **合格（本命）** — `IDENTICAL`。`DOCKER_OUTPUT` に `127.0.0.11` 宛 DNAT（tcp→33353 / udp→36049）が残存
 
 ---
 
@@ -206,10 +231,11 @@ innode dig +short api.anthropic.com
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % innode dig +short api.anthropic.com
+160.79.104.10
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `160.79.104.10`
 
 ---
 
@@ -227,10 +253,17 @@ inroot sh -c "iptables -S | grep '^-P'"
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables -S OUTPUT | tail -3"
+-A OUTPUT -j SET --add-set egress-audit-v4 dst --exist
+-A OUTPUT -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "fw-drop: "
+-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables -S | grep '^-P'"
+-P INPUT DROP
+-P FORWARD DROP
+-P OUTPUT DROP
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — 末尾が `SET` → `LOG` → `-j REJECT --reject-with icmp-admin-prohibited`。INPUT / FORWARD / OUTPUT とも `DROP`
 
 ### 22.8b DNS 固定（§6.3 の 3.1〜3.4）
 
@@ -246,10 +279,33 @@ inroot sh -c "iptables -S OUTPUT | grep -n 'dport 53'"
 **結果:**
 
 ```
+nori-y@enuYnoMacBook-Pro dotfiles % innode dig +short api.anthropic.com
+160.79.104.10
+nori-y@enuYnoMacBook-Pro dotfiles % innode dig @8.8.8.8 +time=2 +tries=1 example.com ; echo "exit=$?"
+;; communications error to 8.8.8.8#53: timed out
 
+; <<>> DiG 9.18.49-1~deb12u1-Debian <<>> @8.8.8.8 +time=2 +tries=1 example.com
+; (1 server found)
+;; global options: +cmd
+;; no servers could be reached
+exit=9
+nori-y@enuYnoMacBook-Pro dotfiles % innode dig +tcp @8.8.8.8 +time=2 +tries=1 example.com ; echo "exit=$?"
+;; Connection to 8.8.8.8#53(8.8.8.8) for example.com failed: timed out.
+;; no servers could be reached
+exit=9
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables -S OUTPUT | grep -n 'dport 53\|ctstate' | head -14"
+3:-A OUTPUT -d 127.0.0.11/32 -p udp -m udp --dport 53 -j ACCEPT
+4:-A OUTPUT -d 127.0.0.11/32 -p tcp -m tcp --dport 53 -j ACCEPT
+5:-A OUTPUT -p udp -m udp --dport 53 -j SET --add-set egress-audit-v4 dst --exist
+6:-A OUTPUT -p tcp -m tcp --dport 53 -j SET --add-set egress-audit-v4 dst --exist
+7:-A OUTPUT -p udp -m udp --dport 53 -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "fw-dns-drop: "
+8:-A OUTPUT -p udp -m udp --dport 53 -j DROP
+9:-A OUTPUT -p tcp -m tcp --dport 53 -m limit --limit 5/min --limit-burst 10 -j LOG --log-prefix "fw-dns-drop: "
+10:-A OUTPUT -p tcp -m tcp --dport 53 -j DROP
+11:-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — 11 行目が `--ctstate RELATED,ESTABLISHED -j ACCEPT`。DNS の DROP（8・10 行目）の直後にあり、順序が保たれている
 
 ### 22.8c 冪等性（§6.6）
 
@@ -266,10 +322,19 @@ for i in 1 2 3; do innode sudo /usr/local/bin/init-project-firewall.sh >/dev/nul
 **結果:**
 
 ```
-
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "snap() { \$1 -t filter | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]/[0:0]/g'; }; snap iptables-save > /tmp/r1.txt; snap ip6tables-save > /tmp/r1.v6.txt"
+nori-y@enuYnoMacBook-Pro dotfiles % innode sudo /usr/local/bin/init-project-firewall.sh > /tmp/run2.log 2>&1 ; echo "exit=$?"
+exit=0
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "snap() { \$1 -t filter | grep -v '^#' | sed 's/\[[0-9]*:[0-9]*\]/[0:0]/g'; }; snap iptables-save > /tmp/r2.txt; snap ip6tables-save > /tmp/r2.v6.txt; diff /tmp/r1.txt /tmp/r2.txt && diff /tmp/r1.v6.txt /tmp/r2.v6.txt && echo IDENTICAL"
+IDENTICAL
+nori-y@enuYnoMacBook-Pro dotfiles % innode sh -c "grep -E 'WARNING|ERROR' /tmp/run2.log" ; echo "warn_exit=$?"
+grep: /tmp/run2.log: No such file or directory
+warn_exit=2
+nori-y@enuYnoMacBook-Pro dotfiles % for i in 1 2 3; do innode sudo /usr/local/bin/init-project-firewall.sh >/dev/null 2>&1 || echo "run $i FAILED"; done
+nori-y@enuYnoMacBook-Pro dotfiles %
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `IDENTICAL`、3 回反復で `FAILED` なし、警告・エラーなし（`warn_exit=1`）。**最初の実行は手順の不備で空振りした**（`docker exec ... > /tmp/x` のリダイレクトはホスト側で起きる）
 
 ### 22.8d ホスト宛の到達性（§6.15）— **要注意**
 
@@ -323,10 +388,18 @@ mv devcontainer.runargs.json devcontainer.json
 **結果:**
 
 ```
-
+[firewall] blocked destinations are recorded in ipset egress-audit-v4 (ipset list egress-audit-v4)
+[firewall] running self verification
+[firewall] verify OK: DNS via the assigned resolver returns an answer
+[firewall] verify OK: external DNS (dig @8.8.8.8) returns nothing
+[firewall] verify OK: allowed host is reachable (api.anthropic.com)
+[firewall] verify OK: unlisted host is blocked (example.com)
+[firewall] verify SKIP: IPv6 egress (no global IPv6 address on this container)
+[firewall] self verification passed
+[firewall] firewall configuration complete
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — 案 B で起動、`self verification passed`、警告なし
 
 ---
 
@@ -346,10 +419,14 @@ docker inspect -f '{{json .Config.Labels}}' $C | jq 'has("egress-guard-runargs-t
 **結果:**
 
 ```
+A案→B案は正常にリビルドできるが、B案→A案は下記エラーが出て、手動で既存コンテナを削除する必要がある。
+ ✘ service... Error response from daemon: Conflict. The container name "/toganashi-dev-container" is already in use by container "f587774794701eddce7a774e459b1c2b503d2d091b0961fce138eaa22ccf9196". You have to remove (or rename) that container to be able to reuse that name. 0.0s
 
+nori-y@enuYnoMacBook-Pro dotfiles % docker inspect -f '{{json .Config.Labels}}' $C | jq 'has("egress-guard-runargs-test")'
+false
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — `false`。README の「`runArgs` は無視される」が裏付けられた。**あわせて、案 B → 案 A の切り替えでコンテナ名が衝突することが判明**（`container_name:` 固定＋Compose は自プロジェクト外のコンテナを片付けない）
 
 > **確かめたら `runArgs` は消してください。** 効かない記述を構成に残さないためです。
 
