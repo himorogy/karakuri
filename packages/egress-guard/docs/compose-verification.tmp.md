@@ -16,7 +16,7 @@
 | ホスト OS / Docker          | macOS / Docker Desktop（linuxkit 6.12.76） |
 | コンテナ名 / ID               | `toganashi-dev-container` / `1af3beaa8288` |
 | Compose プロジェクト名          | `egress-guard-toganashi` |
-| ネットワーク名                  |           |
+| ネットワーク名                  | `egress-guard-toganashi_default`（gw `172.22.0.1`） |
 | `firewall.json` の `mode` |           |
 
 
@@ -30,10 +30,6 @@ export C=toganashi-dev-container
 # エイリアスは単一引用符。二重引用符だと定義時に $C が固定される。
 alias inroot='docker exec -u root $C'
 alias innode='docker exec $C'
-
-# 確認してから始める
-docker ps --filter "name=^${C}$" --format '{{.ID}}  {{.Names}}  {{.Image}}'
-ls "$R/.devcontainer/" >/dev/null && echo "R ok"
 ```
 
 > **コンテナを取り違えないでください。** 他プロジェクトの devcontainer が同時に動いています（`shutdownAction: none`）。
@@ -46,15 +42,15 @@ ls "$R/.devcontainer/" >/dev/null && echo "R ok"
 
 埋めながらチェックしてください。
 
-- [x] 22.0 → 合格
-- [ ] 22.1 案 A の構成 / 戻せること
+- [x] 22.0 マウント先と `workspaceFolder` の一致
+- [ ] 22.1 入れ替え
 - [ ] 22.2 起動する
 - [ ] 22.3 ネットワーク
 - [ ] 22.4 `cap_add` が効いている
 - [ ] 22.5 埋め込みリゾルバ
 - [ ] **22.6 nat の DNS DNAT が壊れない（本命）**
 - [ ] 22.7 名前解決
-- [ ] 22.8 主要項目の再実施（下に展開）
+- [ ] 22.8 主要項目の再実施 — a/b/c は端末で実施済み（**このファイルに未記録**）、**d は合格**
 - [ ] 22.9 戻せる
 - [ ] 22.10 `runArgs` が無視される（任意）
 
@@ -73,58 +69,30 @@ grep -n ":/workspace" "$R/.devcontainer/docker-compose.yml"
 innode sh -c 'ls -la /workspaces/ && ls /workspaces/*/.devcontainer/devcontainer.json'
 ```
 
-**期待:** `workspaceFolder` が `/X/<リポジトリ名>`、compose のバインド先が `/X`。`/workspaces/` 直下にリポジトリが 1 つ見え、その `.devcontainer/devcontainer.json` が存在する。
+**期待:** `workspaceFolder` が `/X/<リポジトリ名>`、compose のバインド先が `/X`。
 
 > **`ls -la` の owner が `root root` に見えても異常ではありません。** `docker exec -u root` 経由だと bind mount が呼び出し側の uid で表示されます（Docker Desktop の fakeowner）。
 
-**結果:** 2026-08-03 実施。ホスト側の grep は cwd 誤りで空振りしたため、コンテナ側の観察で判定した。
+**結果:** マウント先は親ディレクトリ、`workspaceFolder` と一致。Compose プロジェクト名は `egress-guard-toganashi`。
 
 ```
-$ ls -la /workspaces/
-drwxr-xr-x  3 node node   96 Aug  3 04:13 .
-drwxr-xr-x  1 root root 4096 Aug  3 05:51 ..
-drwxr-xr-x 19 node node  608 Aug  2 15:22 toganashi
 
-$ ls -la /workspaces/toganashi/.devcontainer/
--rw-r--r--  1 node node  2241 Aug  3 04:12 devcontainer.json
--rw-r--r--  1 node node  2281 Aug  3 05:46 docker-compose.yml
-（他略）
-
-$ docker ps
-1af3beaa8288  egress-guard-toganashi-dev  toganashi-dev-container
-```
-
-* `/workspaces/` 直下がリポジトリ 1 つ = マウント先は**親ディレクトリ**で正しい
-* `/workspaces/toganashi/.devcontainer/` が見えている = `workspaceFolder` とマウント先が**一致**
-* イメージ名から Compose プロジェクト名は `egress-guard-toganashi`
-
-**判定:** [x] 合格 — メモ: 判定自体は成立。コマンド側に不備があったため書き直した（cwd 依存・`head -3` で切れる・alias の引用符）。
-
----
-
-## 22.1 案 A の構成になっている / 案 B へ戻せる
-
-**入れ替え方は 2 通りあります。** どちらでも構いませんが、**戻す手段を確保してから先へ進んでください。**
-
-* **2 ファイルを持つ** — `devcontainer.compose.json` と `devcontainer.runargs.json` を並べ、`mv` で切り替える
-* **`devcontainer.json` を直接書き換える** — 戻すのは git 頼みになる
-
-```sh
-ls "$R/.devcontainer/" | grep -E "devcontainer.*\.json"
-git -C "$R" status --short .devcontainer/
-git -C "$R" log --oneline -1 -- .devcontainer/devcontainer.json
-```
-
-**期待:** 直接書き換えている場合、**案 B 版が git に残っている**こと（コミット済み、または `git stash` などで復元できる状態）。
-
-> **`container_name` を固定しているため、案 B のコンテナが動いていると名前が衝突します。** 切り替える前に `docker stop $C`。
-
-**結果:**
-
-```
 ```
 
 **判定:** [ ] 合格 / [ ] 不合格 — メモ:
+
+---
+
+## 22.1 入れ替え
+
+```sh
+docker stop $C            # container_name が衝突するため先に止める
+cd <toganashi>/.devcontainer
+mv devcontainer.json devcontainer.runargs.json
+mv devcontainer.compose.json devcontainer.json
+```
+
+**判定:** [ ] 済 — メモ:
 
 ---
 
@@ -324,10 +292,17 @@ inroot sh -c "iptables -S OUTPUT | grep 15432"
 **結果:**
 
 ```
-
+ori-y@enuYnoMacBook-Pro dotfiles % innode sh -c 'GW=$(ip route show default | awk "{print \$3}"); HI=$(getent ahostsv4 host.docker.internal | awk "{print \$1}" | head -1); echo "GW=$GW HI=$HI"; curl -sS -o /dev/null -w "gw:%{http_code}\n" --max-time 5 "http://$GW:15432/"; curl -sS -o /dev/null -w "hi:%{http_code}\n" --max-time 5 "http://$HI:15432/"'
+GW=172.22.0.1 HI=192.168.65.254
+curl: (7) Failed to connect to 172.22.0.1 port 15432 after 0 ms: Couldn't connect to server
+gw:000
+hi:200
+nori-y@enuYnoMacBook-Pro dotfiles % inroot sh -c "iptables -S OUTPUT | grep 15432"
+-A OUTPUT -d 172.22.0.1/32 -p tcp -m tcp --dport 15432 -j ACCEPT
+-A OUTPUT -d 192.168.65.254/32 -p tcp -m tcp --dport 15432 -j ACCEPT
 ```
 
-**判定:** [ ] 合格 / [ ] 不合格 — メモ:
+**判定:** [x] 合格 — メモ: `hi:200` で到達。`gw:000` はゲートウェイ `172.22.0.1` に待ち受けが無いだけで、ACCEPT ルールは存在するため遮断ではない（§6.15 の判定基準は「少なくとも `host.docker.internal` 側が 200」）。**案 B とは別のゲートウェイアドレスになったうえで、両アドレスに ACCEPT が出ている。**
 
 > 非許可ポートの遮断も見るなら §6.15 の後半（`ipset flush egress-audit-v4` → 15433 へ接続 → 記録を確認）。`exit≠0` だけでは判定になりません。
 
@@ -337,8 +312,9 @@ inroot sh -c "iptables -S OUTPUT | grep 15432"
 
 ```sh
 docker stop $C
-# 2 ファイル方式なら mv で戻す。直接書き換えているなら git で戻す。
-git -C "$R" checkout -- .devcontainer/devcontainer.json
+cd <toganashi>/.devcontainer
+mv devcontainer.json devcontainer.compose.json
+mv devcontainer.runargs.json devcontainer.json
 # 再ビルド
 ```
 
