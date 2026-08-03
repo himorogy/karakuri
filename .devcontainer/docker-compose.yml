@@ -31,8 +31,10 @@ services:
       NODE_OPTIONS: --max-old-space-size=2048
       CLAUDE_CONFIG_DIR: /home/node/.claude
     volumes:
-      # workspaceMount の置き換え。リポジトリの親を /workspace に載せる。
-      - ../..:/workspace:cached
+      # workspaceMount の置き換え。リポジトリの親を /workspaces に載せる。
+      # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれると
+      # postCreateCommand が exit 127 で落ちる（README の案 A の注意書き）。
+      - ../..:/workspaces:cached
       # devcontainer.json の mounts の置き換え。**${devcontainerId} は Compose では
       # 使えない**ため固定名にしてある。案 B のボリュームとは別物になるので、
       # 初回は claude / codex の再ログインが要る（§6.22 の注意を参照）。

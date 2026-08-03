@@ -43,10 +43,10 @@ RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhisto
 ENV DEVCONTAINER=true
 
 # Create workspace and config directories and set permissions
-RUN mkdir -p /workspace /home/node/.claude /home/node/.codex && \
-  chown -R node:node /workspace /home/node/.claude /home/node/.codex 
+RUN mkdir -p /workspaces /home/node/.claude /home/node/.codex && \
+  chown -R node:node /workspaces /home/node/.claude /home/node/.codex 
 
-WORKDIR /workspace
+WORKDIR /workspaces
 
 ARG GIT_DELTA_VERSION=0.18.2
 RUN ARCH=$(dpkg --print-architecture) && \

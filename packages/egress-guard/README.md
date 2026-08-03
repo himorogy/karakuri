@@ -95,7 +95,7 @@ services:
       - NET_ADMIN
       - NET_RAW
     volumes:
-      - ../..:/workspace:cached
+      - ../..:/workspaces:cached
     command: sleep infinity
 ```
 
@@ -105,7 +105,7 @@ services:
   "name": "my project",
   "dockerComposeFile": "docker-compose.yml",
   "service": "dev",
-  "workspaceFolder": "/workspace/my-project",
+  "workspaceFolder": "/workspaces/my-project",
   "remoteUser": "node",
   "postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
   "waitFor": "postStartCommand"

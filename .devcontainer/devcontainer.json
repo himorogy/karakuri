@@ -54,8 +54,8 @@
 		"NODE_OPTIONS": "--max-old-space-size=2048",
 		"CLAUDE_CONFIG_DIR": "/home/node/.claude"
 	},
-	"workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspace,type=bind,consistency=delegated",
-	"workspaceFolder": "/workspace/${localWorkspaceFolderBasename}",
+	"workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspaces,type=bind,consistency=delegated",
+	"workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
 	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
 	// ファイアウォールを毎起動時に適用する。waitFor と組み合わせているため、適用に
 	// 失敗した状態でエディタが使えるようになる前に失敗が表面化する。
