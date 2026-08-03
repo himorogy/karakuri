@@ -91,10 +91,26 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 
 # Copy and set up firewall script
 COPY init-project-firewall.sh /usr/local/bin/
+
+# The policy that is actually enforced. It has to live outside the workspace and
+# be owned by root: `node` can re-apply the firewall through sudo at any time, so
+# a firewall.json `node` could write would let an injected agent set
+# {"mode":"audit"} and turn enforcement off without ever obtaining root.
+#
+# Editing this file therefore means rebuilding the image, which is a step a human
+# performs. See packages/egress-guard/docs/spec.md section 2.1.
+COPY firewall.json /etc/egress-guard/firewall.json
+
 USER root
 RUN chown root:root /usr/local/bin/init-project-firewall.sh && \
   chmod 755 /usr/local/bin/init-project-firewall.sh && \
-  echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh" > /etc/sudoers.d/node-firewall && \
+  chown -R root:root /etc/egress-guard && \
+  chmod 755 /etc/egress-guard && \
+  chmod 644 /etc/egress-guard/firewall.json && \
+  # The trailing "" is required. A sudoers Cmnd written without an argument list
+  # permits ANY arguments, which would hand `node` the development options.
+  printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
+    > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
 USER node

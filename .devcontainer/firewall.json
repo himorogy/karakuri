@@ -1,0 +1,6 @@
+{
+	"version": 1,
+	"profile": "default",
+	"mode": "enforce",
+	"allowDomains": ["chatgpt.com", "api.openai.com", "auth.openai.com"]
+}
