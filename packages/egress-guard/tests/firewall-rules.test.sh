@@ -415,6 +415,15 @@ assert_contains "IPv6 OUTPUT policy is DROP" "$T6" '^:OUTPUT DROP'
 assert_contains "IPv6 INPUT policy is DROP" "$T6" '^:INPUT DROP'
 assert_contains "IPv6 drops are logged" "$T6" 'fw-drop6: '
 assert_absent "IPv6 has no allowlist accept" "$T6" 'match-set'
+# Not left to the DROP policy. A silent drop makes an allowed host that also has
+# a AAAA record reachable only after a timeout, and how long that takes depends
+# on whether the client implements Happy Eyeballs. IPv4 refuses unlisted
+# destinations explicitly; IPv6 has to do the same.
+assert_contains "IPv6 egress is refused, not silently dropped" "$T6" \
+	'^-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited'
+assert_before "the IPv6 log precedes the reject" "$T6" \
+	'fw-drop6: ' \
+	'^-A OUTPUT -j REJECT'
 
 echo "close before build"
 # The bootstrap table is the first thing installed; nothing may touch the
@@ -506,6 +515,8 @@ assert_absent "audit does not REJECT" "$TA" '^-A OUTPUT -j REJECT'
 assert_contains "audit keeps INPUT on DROP" "$TA" '^:INPUT DROP'
 assert_contains "audit still pins DNS" "$TA" '-A OUTPUT -p udp --dport 53 -j DROP'
 assert_contains "audit still drops IPv6" "$(v6_table audit)" '^:OUTPUT DROP'
+assert_contains "audit still refuses IPv6 egress" "$(v6_table audit)" \
+	'^-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited'
 assert_contains "audit records blocked destinations too" "$TA" \
 	'^-A OUTPUT -j SET --add-set egress-audit-v4 dst --exist'
 
@@ -591,6 +602,10 @@ assert_absent "the panic table keeps no outbound ESTABLISHED" "$TP" \
 	'^-A OUTPUT -m conntrack'
 assert_absent "the panic table has no allowlist" "$TP" 'match-set'
 assert_contains "the panic table is applied to IPv6 too" "$(v6_table panic)" '^:OUTPUT DROP'
+# Deliberately different from the final table: the panic tables drop silently on
+# both families. Fast failure is worth an explicit refusal in normal operation,
+# but the panic table is the state where the fewest assumptions should hold.
+assert_absent "the IPv6 panic table has no reject rule" "$(v6_table panic)" 'REJECT'
 
 # --- probe selection ----------------------------------------------------------
 

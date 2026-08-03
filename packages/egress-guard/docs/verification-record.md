@@ -48,6 +48,7 @@
 | `dig @<外部DNS>` が UDP / TCP とも失敗する | 3.2、3.3 | `communications error to 8.8.8.8#53: timed out` / `exit=9` |
 | DNS の DROP が汎用 ESTABLISHED ACCEPT より前 | 3.4 | `--dport 53 -j DROP` の**次**に `--ctstate RELATED,ESTABLISHED -j ACCEPT` |
 | ip6tables default DROP | 5.1、5.2 | `-P OUTPUT DROP`（v6）、`match-set` 無し |
+| IPv6 の未許可先が REJECT される | 5.2b | `-j REJECT --reject-with icmp6-adm-prohibited` |
 | sudoers が固定パス・引数なし、対象が root 所有・書き換え不可 | 1.1、1.3、1.4、12.1 | `(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""` |
 | 非 root 所有スクリプトの sudo 実行が exit≠0 | — | **ユニットテストのみ**（§2 未確認を参照） |
 | 引数付き sudo が拒否され、引数なしは通る | 12.1、12.2 | 引数付き `exit=1`、引数なし `exit=0` |
@@ -75,8 +76,7 @@
 | **`host.docker.internal` が公開アドレスを返す場合の拒否** | 偽の DNS 応答をコンテナ内から作れない。`/etc/hosts` の細工は効かない（`resolve_domain` は `dig` を先に試し、Docker がこの名前に応答する） | `tests/firewall-rules.test.sh` の `hostpublic` |
 | **非 root 所有スクリプトの sudo 実行拒否** | 実機で再現するにはスクリプトを意図的に壊す必要がある | 同 `placement` |
 | **`SET` ターゲットが使えないカーネルでのフォールバック** | 検証環境のカーネルでは常に使える | 同 `recorderfallback` |
-| **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし |
-| **AAAA を持つ許可先への接続が足踏みしないか** | 同上。IPv6 が有効なコンテナを用意していない | なし（[known-issues #2](./known-issues.md)） |
+| **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし（[known-issues #2](./known-issues.md)） |
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
 | **WebSearch / WebFetch が直接 egress しないこと** | 未実施。手順は [`web-search-fetch.md`](./web-search-fetch.md) にある | なし（[known-issues #5](./known-issues.md)） |
 | **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証 | なし |
@@ -274,6 +274,7 @@ docker exec -it -u root <container> bash
 |---|---|---|---|
 | 5.1 | default policy | `[root] ip6tables -S \| grep '^-P'` | すべて `DROP` |
 | 5.2 | allowlist が存在しない | `[root] ip6tables -S \| grep match-set` | 該当なし |
+| 5.2b | **silent DROP ではなく REJECT** | `[root] ip6tables -S OUTPUT \| tail -2` | `fw-drop6:` の LOG の後に `-j REJECT --reject-with icmp6-adm-prohibited` |
 | 5.3 | 実際の到達性 | `[node] curl -6 -sS --max-time 5 https://example.com/` | 失敗。**global IPv6 アドレスが無い環境ではスキップになる**（§2 未確認） |
 
 ### 6.6 冪等性

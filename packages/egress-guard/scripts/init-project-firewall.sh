@@ -881,9 +881,25 @@ emit_filter_v6() {
 	printf '%s\n' "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 
 	# No IPv6 allowlist by design: the ipset is v4 only and every v6 destination
-	# is dropped, in audit mode too. Logged so an audit run still shows what
+	# is refused, in audit mode too. Logged so an audit run still shows what
 	# tried to leave over v6.
 	log_line OUTPUT "fw-drop6: "
+
+	# REJECT rather than relying on the DROP policy, which is what IPv4 does for
+	# unlisted destinations. A silent DROP makes an allowed host that also has a
+	# AAAA record reachable only after a timeout: address selection (RFC 6724)
+	# tries IPv6 first, gets no answer, and how long the client waits before
+	# falling back to IPv4 depends on whether it implements Happy Eyeballs. That
+	# hands the reachability of a correctly allowed host to the client library.
+	# An explicit refusal makes the fallback immediate and costs nothing - the
+	# ICMPv6 is generated locally and delivered to the local socket, so nothing
+	# reaches the wire.
+	#
+	# The chain policy stays DROP so that a rejected transaction still fails
+	# closed. The panic table keeps the silent drop on both families: fast
+	# failure is worth an explicit refusal in normal operation, but the panic
+	# table is the state where the fewest assumptions should hold.
+	printf '%s\n' "-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited"
 	printf '%s\n' "COMMIT"
 }
 

@@ -301,7 +301,20 @@ SIGKILL では trap が発火しません。それでも「開いたまま」が
 
 ### 4.7 IPv6
 
-**外向き IPv6 は allowlist を持たず全 DROP です。** loopback（`::1`）のみ通します。audit モードでも DROP のままで、試行は `fw-drop6:` のログに残ります。理由は [`design.md`](./design.md) §2.12。
+**外向き IPv6 は allowlist を持たず全て拒否します。** loopback（`::1`）のみ通します。audit モードでも同じで、試行は `fw-drop6:` のログに残ります。理由は [`design.md`](./design.md) §2.12。
+
+**silent DROP ではなく明示的に REJECT します。**
+
+```
+:OUTPUT DROP [0:0]
+-A OUTPUT -o lo -j ACCEPT
+-A OUTPUT -m limit ... -j LOG --log-prefix "fw-drop6: "
+-A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited
+```
+
+chain policy は DROP のままです（トランザクションが拒否された場合も閉じた状態で終わるため）。IPv4 の未許可先が `icmp-admin-prohibited` で即断するのと揃えています。理由は [`design.md`](./design.md) §2.12。
+
+**panic テーブルは両ファミリとも silent DROP のままです。** 通常運転では即座の失敗に価値がありますが、panic は前提を最小にすべき状態だからです。
 
 #### ip6tables が使えない場合
 
@@ -580,6 +593,7 @@ L3/L4 では HTTP メソッドが見えず、L4 で表現すると 443 番の全
 - [ ] `dig @<外部DNS>` が UDP / TCP とも失敗する
 - [ ] DNS の DROP ルールが汎用 ESTABLISHED ACCEPT より前にある
 - [ ] ip6tables default DROP が入っている
+- [ ] IPv6 の未許可先が silent DROP ではなく REJECT される
 - [ ] sudoers が固定パス・引数なし（末尾 `""`）で、対象が root 所有・`755`・非特権ユーザーから書き換え不可
 - [ ] 非 root 所有のスクリプトを sudo 経由で実行すると exit≠0 する
 - [ ] 引数付きの sudo 実行が拒否され、引数なしは通る

@@ -32,7 +32,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 
 `postStartCommand` から root 権限で実行されます。
 
-1. **先にネットワークを閉じる** — IPv6 は最終状態（全 DROP）へ、IPv4 は bootstrap テーブル（loopback・リゾルバ・確立済みセッション・sshd のみ）へ
+1. **先にネットワークを閉じる** — IPv6 は最終状態（loopback 以外すべて拒否）へ、IPv4 は bootstrap テーブル（loopback・リゾルバ・確立済みセッション・sshd のみ）へ
 2. 閉じた状態のまま、DNS だけを使って allowlist を構築する
 3. `ipset swap` で差し替え、本番のフィルタテーブルを `iptables-restore` で一括適用する
 4. 自己検証を実行する
@@ -350,7 +350,7 @@ allowlist 外の外向き通信を REJECT します。遮断された宛先は i
 **audit でも遮断されるもの:**
 
 * **DNS 固定** — 割り当てられたリゾルバ以外への 53 番宛は audit でも DROP します。正規のトラフィックはそのリゾルバ経由なので実害はなく、ここを緩めるとポリシー全体が無意味になります
-* **IPv6** — audit でも全 DROP のままです。試行はログ（`fw-drop6:`）に残ります
+* **IPv6** — audit でも拒否のままです。試行はログ（`fw-drop6:`）に残ります。**silent DROP ではなく `icmp6-adm-prohibited` で即断します**（AAAA を持つ許可先への接続が、IPv4 へフォールバックするまで待たされないため）
 * **INPUT** — audit でも DROP のままです。audit が緩めるのは IPv4 の外向き通信だけです
 
 ## 遮断された宛先を調べる
