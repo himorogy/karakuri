@@ -253,6 +253,10 @@ repo 内の `.devcontainer/firewall.json` が「ソース」で、`/etc/egress-g
 | 再解決（CDN の IP 変動への追随） | エージェントでも可 | 再適用のみ |
 | ポリシー変更 | 人間 | repo の編集 + イメージ再ビルド |
 
+## パッケージを更新する
+
+**伝播はこの 1 経路だけです。** パッケージ更新 → コンテナ rebuild で `/usr/local/bin` のコピーが更新されます。
+
 ---
 
 # firewall.json
@@ -351,7 +355,7 @@ allowlist 外の外向き通信を REJECT します。遮断された宛先は i
 
 ## audit
 
-新規プロジェクトの立ち上げ用です。allowlist 外の通信を**遮断せず**、`fw-audit:` プレフィックスでログだけ残します。
+新規プロジェクトの立ち上げ用です。allowlist 外の IPv4 外向き通信を**遮断せず**、遮断されるはずだった宛先を ipset `egress-audit-v4` に記録します。（`fw-audit:` プレフィックスの `LOG` ルールも入りますが、[カーネルログは多くの環境で出力されません](#カーネルログ当てにしない)。運用の前提にしないでください。）
 
 ```json
 { "version": 1, "mode": "audit" }
@@ -392,7 +396,7 @@ Members:
 dig +short -x 93.184.216.34
 ```
 
-**逆引きは当てになりません。** CDN や link-local アドレスは PTR を持たないか、持っていても汎用的な名前しか返しません。空振りする場合は TLS 証明書から引いてください（`audit` モード中、その宛先に到達できる状態で）。
+**逆引きは当てになりません。** CDN や link-local アドレスは PTR を持たないか、持っていても汎用的な名前しか返しません。**逆引きは CDN や link-local では空振りすることが多いため、TLS 証明書の SAN を見るほうが確実です。** 引くときは `audit` モード中、その宛先に到達できる状態で行ってください。
 
 ```sh
 echo | openssl s_client -connect 93.184.216.34:443 2>/dev/null \
@@ -415,20 +419,6 @@ ipset flush egress-audit-v4
 
 `fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません**（コンテナ内の `dmesg` は `CAP_SYSLOG` が無く読めない。`net.netfilter.nf_log_all_netns` が既定 `0` のためホストからも読めない）。**運用の前提にしないでください。** 経緯と却下した回避策は [`docs/design.md`](./docs/design.md) §2.11。
 
-## 適用されているか確かめる
-
-**`postStartCommand` が成功して見えても、適用されていないことがあります。** イメージが古いままだと旧版のスクリプトが残り、それが正常終了します。2026-08-03 に実際に起きました。
-
-```sh
-# 遮断されていること。到達できたら適用されていない
-curl --connect-timeout 5 https://example.com
-
-# 入っているスクリプトがパッケージ側と同じサイズか
-ls -l /usr/local/bin/init-project-firewall.sh
-```
-
-> **コンテナを取り違えないでください。** `shutdownAction: none` を使っていると、他プロジェクトの devcontainer が同時に動いたままになります。`ipset` を読むときは `docker ps` でコンテナ ID を確かめてから `docker exec -u root <id> ...` としてください。**起動時刻より前のエントリが混ざっていたら、それは別のコンテナです。**
-
 ## 再適用
 
 allowlist は起動時の名前解決に基づくため、CDN の IP 変動で許可先に到達できなくなることがあります。
@@ -444,6 +434,20 @@ sudoers の設定上、**エージェント自身も再適用できます。** �
 ---
 
 # トラブルシューティング
+
+## 適用されているか確かめる
+
+**`postStartCommand` が成功して見えても、適用されていないことがあります。** イメージが古いままだと旧版のスクリプトが残り、それが正常終了します。2026-08-03 に実際に起きました。
+
+```sh
+# 遮断されていること。到達できたら適用されていない
+curl --connect-timeout 5 https://example.com
+
+# 入っているスクリプトがパッケージ側と同じサイズか
+ls -l /usr/local/bin/init-project-firewall.sh
+```
+
+> **コンテナを取り違えないでください。** `shutdownAction: none` を使っていると、他プロジェクトの devcontainer が同時に動いたままになります。`ipset` を読むときは `docker ps` でコンテナ ID を確かめてから `docker exec -u root <id> ...` としてください。**起動時刻より前のエントリが混ざっていたら、それは別のコンテナです。**
 
 ## 起動時にファイアウォールの適用が失敗する
 
@@ -464,6 +468,26 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 `ipset list egress-audit-v4` で遮断された宛先を確認し、逆引きしてから `firewall.json` の `allowDomains` / `allowCidrs` に追加して再適用してください。
 
 新規プロジェクトで許可先が読めない場合は、いったん `mode: "audit"` で運用してログを集めるのが早道です。
+
+**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** 2026-08-03 に Orca remote の接続不能を追ったときの手順で、同種の構成に使えます。
+
+| # | 手順 | 注意 |
+|---|---|---|
+| 1 | `firewall.json` を `mode: "audit"` にして**再ビルドする** | **再接続では駄目です。** 導入物がホームに残っていると再インストールが走らず、何も記録されません |
+| 2 | 問題の操作を一通り行う | — |
+| 3 | `[ホスト] docker exec -u root <container> ipset list egress-audit-v4` | **コンテナを取り違えないこと。** 7 参照 |
+| 4 | 各 IP を名前に戻す | 5・6 |
+| 5 | 逆引き | CDN では引けないか、CDN 事業者名しか返りません |
+| 6 | TLS 証明書で確認 | `openssl s_client -connect <ip>:443 -servername <候補>` で候補を当てる。SNI 無しでは Cloudflare は証明書を返しません |
+| 7 | `timeout` の残量から追加時刻を逆算する | `追加時刻 = 現在 - (604800 - 残量)`。**`--exist` で再追加されると残量がリセットされるため、これは「最後に接触した時刻」です** |
+
+> **6 が記録を汚染します。** `openssl` で候補 IP を叩くと、**その接続自体が `egress-audit-v4` に記録されます。** 実際にこれをやってしまい、別コンテナから取った 17 件を全て自分のコンテナに書き込みました。7 の時刻で切り分けられますが、**名前解決は別のコンテナか、記録が済んでから行ってください。**
+
+> **7 が効きます。** 「コンテナ起動時刻より前のエントリがある」ことから、取得先のコンテナを取り違えていると気付けました（[適用されているか確かめる](#適用されているか確かめる)の注意書きと同じ話です）。`docker ps` でコンテナ ID を確認してから 3 を実行してください。
+
+> **`example.com` と `8.8.8.8` が 2 秒差で並んでいたら、それは [`docs/spec.md`](./docs/spec.md) §5 の自己検証です**（未許可ホストの到達確認と外部 DNS の確認）。`audit` では前者がスキップされるため、**この組が出ていればそのコンテナは `enforce` で動いています。** 取り違えの判別にも使えます。
+
+この手順は [`docs/verification-record.md`](./docs/verification-record.md) §6.21 から移しました（当時の項目 21.1〜21.7）。
 
 ---
 
@@ -518,16 +542,9 @@ out which ones those are.
 
 allowlist は**起動時に解決した IP の集合**です。**その起動の間アドレスが変わらないドメインにしか使えません。**
 
-`deb.debian.org` が実例です。Fastly 上にあり **TTL は 25 秒**で、応答は複数の IP を持ち回ります。`allowDomains` に書いても、起動時に掴んだ IP と `apt` が実際に繋ぐ先がずれ、こうなります。
+`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。**`allowDomains` に書いてあるのに落ちます。** 同じ日に `nodejs.org` は問題なく通っており、**CDN の性質で成否が分かれます。**
 
-```
-Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
-- connect (113: No route to host)
-```
-
-**`No route to host` は egress-guard の `REJECT` です。書いてあるのに落ちます。** 同じ日に `nodejs.org` は問題なく通っており、**CDN の性質で成否が分かれます。** 詳細は [`docs/spec.md`](./docs/spec.md) §9.7。
-
-`allowCidrs` での回避は多くの場合採れません。Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります。
+仕様上の位置づけは [`docs/spec.md`](./docs/spec.md) §9.7、実害の詳細と回避策は[コンテナ起動後にセットアップを行う場合](#コンテナ起動後にセットアップを行う場合)。
 
 ## コンテナ起動後にセットアップを行う場合
 
@@ -535,10 +552,31 @@ egress-guard は **`postStartCommand` で適用され、その時点でポリシ
 
 実際に踏んだ例です。
 
-* `apt-get install openssh-server ...` — 上記のとおり `deb.debian.org` は `allowDomains` に書いても直りません
+* `apt-get install openssh-server ...` — 下記のとおり `deb.debian.org` は `allowDomains` に書いても直りません
 * `node-gyp` による Node ヘッダの取得 — `nodejs.org` を `allowDomains` に足せば通ります
 
-**第一選択は、取得をイメージビルド時に移すことです。** それができない場合は、プロビジョニングの間だけ `mode` を `audit` にして再適用し、終わったら元に戻して再適用してください。ホスト側から次の順で行います。
+**`deb.debian.org` で何が起きたか。** 2026-08-03 に実測した例です。
+
+* Fastly 上にあり、**TTL は 25 秒**
+* 応答は複数の IP を持ち回る（同じ実体を指す `ftp.debian.org` は `146.75.114.132` と `199.232.162.132` の両方を返す）
+* 適用時のスナップショットと、その 1 分後に `apt` が接続した先が食い違い、`No route to host` になった
+
+```
+Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
+- connect (113: No route to host)
+```
+
+**`No route to host` は egress-guard の `REJECT` です。書いてあるのに落ちます。** 同じ日に `nodejs.org` は問題なく通っており、**CDN の性質によって成否が分かれます。**
+
+回避策は 3 つで、いずれも本体の制限を消しません。
+
+* **取得をイメージビルド時に移す。** 起動後に外部から取ってくる作業を無くします。実運用ではこれが第一選択です
+* **CIDR で許可する**（`allowCidrs`）。**多くの場合これは採れません。** Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります
+* **アドレスが安定した別ホストを使う。** Debian のミラーには該当するものが見当たりませんでした
+
+**構造的な解決は [`docs/spec.md`](./docs/spec.md) §10.1（L7 proxy 移行）です。** 名前で判定する層に移せば、アドレスがどれだけ動いても関係がなくなります。
+
+**取得をイメージビルド時に移せない場合。** プロビジョニングの間だけ `mode` を `audit` にして再適用し、終わったら元に戻して再適用してください。ホスト側から次の順で行います。
 
 ```sh
 # [ホスト] コンテナ内の実効設定を audit に落とす
@@ -599,6 +637,6 @@ pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
 pnpm test          # 設定 95 件 + ルール 145 件
 ```
 
-> **egress-guard を導入した devcontainer の中で実行すると `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、その 5 件が何も検査できないためです。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §5。
+> **egress-guard を導入した devcontainer の中で実行すると `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、その 5 件が何も検査できないためです。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
 > **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。GitHub は基底プロファイルに入っているため `enforce` のままでも取得できます。

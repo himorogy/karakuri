@@ -2,12 +2,15 @@
 
 egress-guard は allowlist に無いドメインへの通信を遮断します。「では Claude Code の Web 検索・Web 取得は使えなくなるのか」に答えるための**外部ツールの挙動に関する参考文書**です。egress-guard の仕様ではありません。
 
+**ここに書いた挙動を測り直すための手順も、本書が持ちます**（§5）。Claude Code のバージョンが上がるたびに測り直す必要があり、その手順は egress-guard 自身の受け入れ検証（[`verification-record.md`](./verification-record.md)）とは別系統だからです。**参考文書であると同時に、その参考情報の再取得手順書でもあります。**
+
 | 節 | 内容 | 根拠 |
 |---|---|---|
 | §1 | WebFetch はコンテナから直接 egress する。WebSearch はしない | **実測**（`ss` による接続のサンプリング） |
 | §2 | 要約が挟まる条件と、それをバイパスする 91 ドメイン | **実装の静的解析＋ライブ再現** |
 | §3 | 打ち切りの 3 段と、その定数 | **実装の静的解析** |
 | §4 | 使い分け | 上記からの導出 |
+| §5 | §1〜§3 を測り直すための再実行手順 | — |
 
 **すべて 2026-08-03、Claude Code v2.1.220 で確認しています**（`BUILD_TIME 2026-07-24T22:17:45Z`、`GIT_SHA 4073f595`）。**バージョン依存の情報です。** 実装は将来変わります。
 
@@ -61,21 +64,9 @@ await No.get(`https://api.anthropic.com/api/web/domain_info?domain=${encodeURICo
 
 ### 測定条件と手順
 
-**2026-08-03、Claude Code v2.1.220、Docker Desktop / macOS arm64 のコンテナ内。egress-guard は未適用の状態で測定しました。**
+**2026-08-03、Claude Code v2.1.220、Docker Desktop / macOS arm64 のコンテナ内。** 測定は egress-guard 未適用の状態で、`ss` による接続のサンプリングで行いました。手順は本書 §5.1。
 
-未適用の状態を選んだのは、`enforce` 下で測ると「遮断されたので接続が見えない」のか「そもそも接続しない」のかを区別できないためです。規制の無い状態で**実際に張られた接続**を見れば、この区別が要りません。
-
-`ss` で全 TCP ソケットの peer を 0.5 秒ごとに記録します。TIME-WAIT は約 60 秒残るため、短命な接続も取りこぼしません。
-
-```sh
-# [node] 記録を開始する
-while :; do
-	ss -Htnp state all | awk -v t="$(date +%s)" '{print t, $5, $6}' >> peers.log
-	sleep 0.5
-done
-```
-
-この状態で Claude Code に WebFetch / WebSearch を実行させ、`peers.log` に現れた peer を、実行前の baseline と突き合わせます。
+`peers.log` に現れた peer を、Web ツールを実行する前の baseline と突き合わせています。
 
 * **WebFetch** — `ftp.gnu.org`（`209.51.188.20`）と `www.debian.org`（`128.31.0.62`）を対象に各 2 回。いずれも呼び出しの直後に対象 IP が現れ、約 5.5 秒後に消えました。`ss -p` によるプロセス帰属は `claude` 本体です
 * **WebSearch** — 2 回実行。検索結果に現れたドメイン（`cateee.net`、`forum.openwrt.org` など）への接続はありません
@@ -272,10 +263,79 @@ let a = t.length > ymr ? t.slice(0, ymr) + `\n\n[Content truncated due to length
 
 ---
 
+## 5. 再実行手順
+
+**Claude Code が上がったら実行し直してください。** §1〜§3 の主張がバージョンを跨いで生き続けるための手順です。
+
+**もともと [`verification-record.md`](./verification-record.md) §6.19 の 19.0〜19.2 と §6.20 にあったものを、参考文書である本書へ移しました。** 項目ラベルは 19.0 → 5.1.1、19.1 → 5.1.2、19.2 → 5.1.3、20.1〜20.7 → 5.2.1〜5.2.7 と付け替えています。**egress-guard 自身の検証（`enforce` 下で `allowDomains` 外の WebFetch が遮断され、フォールバックしないこと）は [`verification-record.md`](./verification-record.md) §6.19 に残っています。**
+
+### 5.1 接続のサンプリング（§1 の測定）
+
+**この測定だけは egress-guard を適用しない状態で実施します。** `enforce` 下で測ると「遮断されたので接続が見えない」のか「そもそも接続しない」のかを区別できません。規制の無い状態で**実際に張られた接続**を見れば、この区別が要りません。
+
+`ss` で全 TCP ソケットの peer を 0.5 秒ごとに記録します。TIME-WAIT が約 60 秒残るため、短命な接続も取りこぼしません。
+
+```sh
+# [node] 記録を開始する（バックグラウンド）
+while :; do
+	ss -Htnp state all | awk -v t="$(date +%s)" '{print t, $5, $6}' >> peers.log
+	sleep 0.5
+done
+```
+
+| # | 確かめること | 手順 | 判定 |
+|---|---|---|---|
+| 5.1.1 | baseline を取る | Web ツールを使わずに 60 秒以上記録する | 現れる peer を控える。`api.anthropic.com` のほか**常駐テレメトリが 2 つある**（測定時は GCP と Cloudflare の各 1） |
+| 5.1.2 | WebFetch の egress | 対象ドメインを `dig` で控えてから WebFetch を実行する | **対象 IP が現れる。** `$6` のプロセスが `claude` |
+| 5.1.3 | WebSearch の egress | 検索を実行する | **baseline 以外の peer が現れない** |
+
+> **5.1.1 を飛ばさないでください。** 常駐テレメトリは検索の窓でも新しく現れることがあり、baseline を取っていないと 5.1.3 が偽陽性になります。**Web ツールを使わない制御窓で同じ peer が継続して ESTAB なら、それはテレメトリです。**
+
+> **対象ドメインの選び方。** CDN 上のドメインは、他の通信と IP が重なって判定できなくなります（測定時、`manpages.debian.org` と `www.debian.org` は同じ IP 集合でした）。`ftp.gnu.org` のように**単独 IP で他が触らない先**を選んでください。
+
+> WebFetch の応答は URL ごとに 15 分キャッシュされます。**再測定では別の URL を使ってください。**
+
+### 5.2 実装の静的解析（§2・§3 の確認）
+
+**egress-guard の検証ではありません。** 環境にも依存しません。
+
+配布物は Bun の単一実行ファイルで、JS が平文で埋め込まれています。読める領域を切り出してから grep します。
+
+```sh
+# [node] JS 領域の位置を掴む
+B=$(readlink -f "$(command -v claude)")
+grep -abo "Fetches a URL" "$B" | head -1        # 測定時は 248440257
+
+# その周辺を切り出す（測定時は 236 MiB から 32 MiB で全部入った）
+dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
+```
+
+| # | 確かめること | 手順 | 測定時（v2.1.220）の値 |
+|---|---|---|---|
+| 5.2.1 | 要約バイパスの分岐 | `grep -aob 'text/markdown' js.bin` の各位置を `dd` で読む | `if(_&&f.includes("text/markdown")&&u.length<ymr)T=u;else T=await Iin(...)` |
+| 5.2.2 | 打ち切りの 3 定数 | 上の分岐の近傍にまとまっている | `RHy=10485760` / `ogd=1048576` / `ymr=1e5` |
+| 5.2.3 | 打ち切りが無言か | `grep -a 'Content truncated' js.bin` | **2 箇所でマーカーを付加**。記事の「サイレント」と食い違う |
+| 5.2.4 | 事前承認ドメイン | `grep -aob 'function Bpd' js.bin` から `dd` で読む | 92 エントリ（`learn.microsoft.com` 重複、実質 91）。うち 7 件はパス接頭辞付き |
+| 5.2.5 | 引用 125 文字の制限 | `grep -aob 'function TCu' js.bin` から `dd` で読む | **`isPreapprovedDomain` が偽のときだけ**課される |
+| 5.2.6 | 取得前のブロックリスト照会 | 同上の近傍 | `api.anthropic.com/api/web/domain_info?domain=...` |
+
+バイパスは実際に踏ませて確認します。
+
+| # | 確かめること | 手順 | 判定 |
+|---|---|---|---|
+| 5.2.7 | 事前承認ドメインで原文が返る | 5.2.4 のリストから `Accept: text/markdown` に応じるものを選び、`curl` で保存してから、**要約されれば絶対に長文にならない `prompt`** で WebFetch する | **`prompt` が無視され、`curl` の内容と一致する原文が返る** |
+
+> **5.2.7 の `prompt` の作り方が肝です。** 「1 語で答えろ」のような指示にしてください。要約された場合と原文が返った場合を、出力の長さだけで区別できます。
+
+> 測定時は `code.claude.com/docs/en/overview`（16,445 バイト）で確認しました。**このサイトが将来も `text/markdown` を返す保証はありません。** 候補は `curl -sI -H 'Accept: text/markdown, text/html, */*'` の `content-type` で選び直してください。
+
+---
+
 ## 参考
 
 * [`spec.md`](./spec.md) §9.2 — 「GET を全ドメイン許可」ができない理由
 * [`verification-record.md`](./verification-record.md) §2 — 遮断時にフォールバックしないことの記録
-* [`verification-record.md`](./verification-record.md) §6.19 — 本書 §1〜§3 の確認手順（接続のサンプリングと、実装の静的解析）
+* 本書 §5 — §1〜§3 を測り直すための再実行手順（もとは [`verification-record.md`](./verification-record.md) §6.19・§6.20）
+* [`verification-record.md`](./verification-record.md) §6.19 — 遮断された WebFetch がフォールバックしないことの確認手順
 * [`README.md`](../README.md) — `egress-audit-v4` の読み方
 * [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)

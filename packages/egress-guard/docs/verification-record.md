@@ -9,7 +9,7 @@
 | 節 | 問い |
 |---|---|
 | §2 カバレッジ | **何が確かめられていて、何が確かめられていないか** |
-| §3 見つけた欠陥 | 検証が捕まえた欠陥は、なぜユニットテストで捕まらなかったのか |
+| §3 見つけた欠陥 | 検証が捕まえた欠陥は、なぜユニットテストで捕まらなかったのか。回帰させないための落とし穴と、テスト自体の欠陥もここ |
 | §4 **見逃した欠陥** | 後から出た指摘を、当時のチェックリストはなぜ捕まえられなかったのか |
 
 §4 が改善の直接の入力です。「どの観点が欠けていたか」を書きます。
@@ -25,11 +25,12 @@
 | Docker Desktop / macOS arm64、linuxkit 6.12.76、**デフォルトブリッジ** | 2026-08-02 | §6.1〜§6.13 | 全項目合格（5 件の実装欠陥を発見・修正） |
 | 同上、**ユーザー定義ネットワーク**（`egress-guard-toganashi`） | 2026-08-03 | §6.18（§6.2・§6.3・§6.6・§6.15 の再実施を含む） | 全項目合格 |
 | 同上、デフォルトブリッジ | 2026-08-03 | §6.14・§6.15・§6.16・§6.17、および §6.11 に統合された当時の項目 16 | 当時の項目 18.4 を除き合格（18.4 に対応する手順は現行 §6 に無い。§5 を参照） |
-| 同上、デフォルトブリッジ、**egress-guard 未適用**（Claude Code v2.1.220） | 2026-08-03 | §6.19 | WebFetch は直接 egress する。**文書の推論を否定** |
-| 同上（実装の静的解析。環境非依存） | 2026-08-03 | §6.20 | 参照元記事の主張を再現。**打ち切りの「サイレント」のみ食い違い** |
+| 同上、デフォルトブリッジ、**egress-guard 未適用**（Claude Code v2.1.220） | 2026-08-03 | [`web-search-fetch.md`](./web-search-fetch.md) §5.1（当時の §6.19 の 19.0〜19.2） | WebFetch は直接 egress する。**文書の推論を否定** |
+| 同上（実装の静的解析。環境非依存） | 2026-08-03 | [`web-search-fetch.md`](./web-search-fetch.md) §5.2（当時の §6.20） | 参照元記事の主張を再現。**打ち切りの「サイレント」のみ食い違い** |
 | 同上、ユーザー定義ネットワーク、**audit モード** | 2026-08-03 | §6.21 | 起動後セットアップに要る 2 ドメインを特定 |
 | 同上、ユーザー定義ネットワーク、**enforce** | 2026-08-03 | §6.19 の 19.3、および §6.21 の再実施 | 合格。プロビジョニング中だけ audit にする運用で起動後セットアップが成立した |
 | 同上、**Docker Compose**（`egress-guard-toganashi_default`、gw `172.22.0.1`） | 2026-08-03 | §6.22（§6.2・§6.3・§6.6・§6.15 の再実施を含む） | **全項目合格。** README の第一推奨がこれで検証済みになった |
+| 同上、**`enforce` と `audit` を比較**（VS Code の UI 上での確認） | 2026-08-03 | §6.23 | `enforce` では拡張が 2 つ入らない。[`known-issues.md`](./known-issues.md) #7 の実害を確認 |
 
 > **§3 の欠陥 1・2 は、この表より前の初期検証で見つけたものです。** §6 のチェックリストを整備する前に実施したもので、実施日と範囲の記録は残っていません。そのため §6 には対応する節がありません。
 
@@ -73,9 +74,9 @@
 | **I7** | 遮断先が allowlist ACCEPT の直後・REJECT の前に記録される | §6.11 の 11.1 | `match-set ... ACCEPT` の直後に `-j SET --add-set` |
 | **I7** | `SET` が使えない環境でフォールバックする | — | **ユニットテストのみ** |
 | — | 実利用（`git fetch` / `pnpm install` / GitHub API）が成立する | §6.13 | — |
-| — | **WebFetch はコンテナから直接 egress する**（従来の推論の否定） | §6.19 の 19.1 | `209.51.188.20:443 users:(("claude",pid=32345,fd=14))` |
-| — | WebSearch はコンテナから egress しない | §6.19 の 19.2 | 検索 2 回で新規 peer なし（常駐テレメトリ 2 件を baseline に含めた上で） |
-| — | **事前承認 91 ドメインでは要約がバイパスされ原文が返る** | §6.20 の 20.4・20.7 | `prompt` が無視され、`curl` と一致する 16,445 バイトが返った |
+| — | **WebFetch はコンテナから直接 egress する**（従来の推論の否定） | [`web-search-fetch.md`](./web-search-fetch.md) §5.1 の 5.1.2 | `209.51.188.20:443 users:(("claude",pid=32345,fd=14))` |
+| — | WebSearch はコンテナから egress しない | [`web-search-fetch.md`](./web-search-fetch.md) §5.1 の 5.1.3 | 検索 2 回で新規 peer なし（常駐テレメトリ 2 件を baseline に含めた上で） |
+| — | **事前承認 91 ドメインでは要約がバイパスされ原文が返る** | [`web-search-fetch.md`](./web-search-fetch.md) §5.2 の 5.2.4・5.2.7 | `prompt` が無視され、`curl` と一致する 16,445 バイトが返った |
 | — | **遮断された WebFetch はフォールバックせず失敗する** | §6.19 の 19.3 | `allowDomains` 外は出力なしで失敗、`allowDomains` 内と WebSearch は成功 |
 | — | 起動後セットアップが成立する（プロビジョニング中だけ audit） | §6.21 | `enforce` 復帰後に `example.com` 到達不可・`openssh-server` 導入済み |
 | — | shellcheck クリーン / ユニットテスト全通過 | CI | — |
@@ -118,6 +119,65 @@
 1〜4 は**すべてスタブの作りが甘かったことが原因**です。「スタブが単純すぎると、実環境でしか出ない分岐が消える」。特に **2 と 4 は、テスト自体が壊れていて空振りしていた**ケースで、テストの存在がかえって安心材料になっていました。
 
 改善として、アサート関数に引数個数チェックを入れ、追加する回帰テストは**必ず修正前のコードで失敗することを確認**する運用にしています。
+
+### 回帰させないこと（実装上の落とし穴）
+
+**回帰させないための箇条書きです。** 上の表の欠陥がコードのどの形として現れたかを、対応する欠陥番号を括弧で添えて書いてあります。**末尾の 1 件だけは対応する欠陥行がありません。** 実装をレビューするときはここを見てください。
+
+* **`IFS=$'\n\t'` の下で `"$*"` を使わない。** 改行で連結され、1 行のルールが複数行に割れます。空白連結が必要な箇所では `local IFS=' '` を使ってください（欠陥 2）
+* **パイプの下流で早期終了しない。** `head -n1` / `grep -q` / `awk '...; exit'` は上流を SIGPIPE で殺し、`set -o pipefail` + `set -e` の下ではスクリプト全体が落ちます。出力をいったん変数に受けてから処理してください（欠陥 3）
+* **自己検証のプローブをハードコードしない**（[`spec.md`](./spec.md) §5.1）（欠陥 4）
+* **自己検証を「最初の 1 IP」で判定しない**（[`spec.md`](./spec.md) §5.2）。DNS ラウンドロビンで起動がランダムに失敗します（欠陥 4）
+* **DNS 応答を検証済みデータとして扱わない**（I5、[`spec.md`](./spec.md) §4.5）。`allowCidrs` にある検査は、名前解決の結果にも要ります（欠陥 6）
+* **外部コマンドに渡す前にアドレスファミリで絞る。** GitHub meta API は IPv6 プレフィックスも返します。`aggregate` の挙動はビルドによって異なるため、渡す前に IPv4 だけにしてください（この 1 件は上の表に対応する欠陥行がありません。出所の記録が残っていません）
+
+**配置の検査が競合する攻撃者には勝てないこと**は規範側の注意なので [`spec.md`](./spec.md) §7.1 に残してあります。
+
+### テスト自体の欠陥: ユニットテストがホスト環境に依存していた（修正済み）
+
+**これは実装の欠陥ではなくテスト自体の欠陥ですが、上の表の欠陥 2・4 と同じ「テストが空振りしている」形なのでここに置きます。**
+
+**`tests/firewall-rules.test.sh` の「configuration source」ブロックは、`/etc/egress-guard/firewall.json` が存在しない環境でしか通りません。** egress-guard を導入した devcontainer の中で `pnpm test` を実行すると落ちます（2026-08-03 に発生）。
+
+```
+FAIL --check-config does not search the working directory (missing: no firewall.json found)
+FAIL the apply path ignores the workspace copy (missing: no firewall.json found)
+FAIL the workspace copy cannot relax the policy (missing: ^:OUTPUT DROP)
+```
+
+**落ちる件数は実効設定の `mode` で変わります。** `audit` のコンテナでは 3 件、`enforce` のコンテナでは 3 件目が偶然通って 2 件になります。**件数を目印にしないでください。**
+
+`PROD_CONFIG="/etc/egress-guard/firewall.json"` は固定パスで、上書き手段がありません（[`design.md`](./design.md) の「見に行く場所を増やすほど攻撃面が増える」に基づく意図的な設計）。**したがってテスト側で環境を分岐させる必要があります。**
+
+CI には `/etc/egress-guard` が無いため緑のままで、**この依存は導入済みコンテナの中でしか表面化しません。**
+
+#### 最初に書いた修正方針は誤りだった
+
+当初ここには「`PROD_CONFIG` の存在で**期待値を分岐**させる」と書いていました。**これは間違いです。**
+
+`CONFIG_FILE` は `PROD_CONFIG` が存在した時点で確定します（`init-project-firewall.sh` の `[ -n "$CONFIG_FILE" ] || { [ -f "$PROD_CONFIG" ] && ... }`）。**そのためワークスペース側のコピーは、スクリプトが作業ディレクトリを探そうが探すまいが、そもそも到達されません。** 期待値を差し替えれば緑にはなりますが、**ブロック全体が何も検査していない状態**になります。
+
+変異解析で確認しました。`./.devcontainer/firewall.json` を探すよう改造したビルドを、期待値を分岐させた版のテストに掛けても **5 件すべて `ok` のまま通過**しました。上の表の欠陥 2・4 と同じ「テストが空振りしている」状態です。
+
+#### 実際の修正: 観測できない項目は skip する
+
+`PROD_CONFIG` が存在する環境では、当該 5 件を **`SKIP` にして件数を集計に出す**ようにしました。緑にするより、**その環境では確かめられないと表示するほう**が正確です。
+
+```
+140 passed, 0 failed, 5 skipped
+```
+
+CI（`/etc/egress-guard` が無い）では従来どおり全件実行されます。同じ変異を CI 相当の条件で掛けると **3 件が落ちます**。検査は生きています。
+
+**副産物として、防御が二段になっていることも確認できました。** 変異版は「作業ディレクトリを探した」ところで止まらず、その次の配置検査で弾かれます。
+
+```
+[firewall] ERROR: ./.devcontainer must be owned by root (found uid 1000);
+                  a writable directory lets the file be replaced
+[firewall] ERROR: applying panic policy (egress DROP) after failure
+```
+
+> **`PROD_CONFIG` にテスト用の上書きを足す案は採りませんでした。** sudo の `env_reset` で無効化されるとはいえ、固定パスであること自体が設計判断です（[`design.md`](./design.md) §2.1）。
 
 ---
 
@@ -224,57 +284,15 @@
 | 13 の `gh auth status` が疎通確認にならない（現 §6.13） | ネットワークに触れない |
 | 15.2 / 15.3 がゲートウェイアドレスを直書き（現 §6.15 は取得して使う） | ネットワーク構成を変えると古いアドレスを叩く（§6.18 で実際に発生） |
 | 18.4 が `/etc/hosts` で名前解決を細工できる前提（**現行 §6 に対応する手順は無い**） | `resolve_domain` は `dig` を先に試すため `getent` に到達しない |
-| **ユニットテストの「configuration source」がホスト環境に依存していた** | 下記。修正済み |
-
-### ユニットテストがホスト環境に依存していた（修正済み）
-
-**`tests/firewall-rules.test.sh` の「configuration source」ブロックは、`/etc/egress-guard/firewall.json` が存在しない環境でしか通りません。** egress-guard を導入した devcontainer の中で `pnpm test` を実行すると落ちます（2026-08-03 に発生）。
-
-```
-FAIL --check-config does not search the working directory (missing: no firewall.json found)
-FAIL the apply path ignores the workspace copy (missing: no firewall.json found)
-FAIL the workspace copy cannot relax the policy (missing: ^:OUTPUT DROP)
-```
-
-**落ちる件数は実効設定の `mode` で変わります。** `audit` のコンテナでは 3 件、`enforce` のコンテナでは 3 件目が偶然通って 2 件になります。**件数を目印にしないでください。**
-
-`PROD_CONFIG="/etc/egress-guard/firewall.json"` は固定パスで、上書き手段がありません（[`design.md`](./design.md) の「見に行く場所を増やすほど攻撃面が増える」に基づく意図的な設計）。**したがってテスト側で環境を分岐させる必要があります。**
-
-CI には `/etc/egress-guard` が無いため緑のままで、**この依存は導入済みコンテナの中でしか表面化しません。**
-
-#### 最初に書いた修正方針は誤りだった
-
-当初ここには「`PROD_CONFIG` の存在で**期待値を分岐**させる」と書いていました。**これは間違いです。**
-
-`CONFIG_FILE` は `PROD_CONFIG` が存在した時点で確定します（`init-project-firewall.sh` の `[ -n "$CONFIG_FILE" ] || { [ -f "$PROD_CONFIG" ] && ... }`）。**そのためワークスペース側のコピーは、スクリプトが作業ディレクトリを探そうが探すまいが、そもそも到達されません。** 期待値を差し替えれば緑にはなりますが、**ブロック全体が何も検査していない状態**になります。
-
-変異解析で確認しました。`./.devcontainer/firewall.json` を探すよう改造したビルドを、期待値を分岐させた版のテストに掛けても **5 件すべて `ok` のまま通過**しました。[§3](#3-検証で見つかった実装の欠陥) の欠陥 2・4 と同じ「テストが空振りしている」状態です。
-
-#### 実際の修正: 観測できない項目は skip する
-
-`PROD_CONFIG` が存在する環境では、当該 5 件を **`SKIP` にして件数を集計に出す**ようにしました。緑にするより、**その環境では確かめられないと表示するほう**が正確です。
-
-```
-140 passed, 0 failed, 5 skipped
-```
-
-CI（`/etc/egress-guard` が無い）では従来どおり全件実行されます。同じ変異を CI 相当の条件で掛けると **3 件が落ちます**。検査は生きています。
-
-**副産物として、防御が二段になっていることも確認できました。** 変異版は「作業ディレクトリを探した」ところで止まらず、その次の配置検査で弾かれます。
-
-```
-[firewall] ERROR: ./.devcontainer must be owned by root (found uid 1000);
-                  a writable directory lets the file be replaced
-[firewall] ERROR: applying panic policy (egress DROP) after failure
-```
-
-> **`PROD_CONFIG` にテスト用の上書きを足す案は採りませんでした。** sudo の `env_reset` で無効化されるとはいえ、固定パスであること自体が設計判断です（[`design.md`](./design.md) §2.1）。
+| **ユニットテストの「configuration source」がホスト環境に依存していた** | 修正済み。詳細と、最初に書いた修正方針が誤りだった経緯は §3 |
 
 ### ここから読み取れるパターン
 
 * **環境の前提を検証に含めていない** — `nc` の有無、`/etc/hosts` が bind mount であること、`iptables -S` の表示規則
 * **アドレスやパスを直書きしている** — 構成が変わると古い値を叩き、しかも失敗が「遮断されている」ように見える
 * **失敗の原因を区別できない判定** — `exit≠0` だけでは「遮断された」「相手が居ない」「コマンドが無い」が区別できない。`egress-audit-v4` の記録有無のような**遮断の証跡**を判定に入れる必要がある
+* **調査の操作が証跡を汚す** — 遮断先の記録を読んでから候補 IP に `openssl` で当たると、その接続自体が `egress-audit-v4` に載る。**証跡を読む手順と、証跡を作る手順を同じコンテナで続けて実行しない**（当時の項目 21.6 で実際に汚染した）
+* **記録の時刻は「いつ追加されたか」ではない** — `timeout` の残量から逆算できるのは最後に接触した時刻で、`--exist` の再追加でリセットされる。それでも**「コンテナ起動時刻より前のエントリがある」ことは、対象を取り違えている証拠として使える**（当時の項目 21.7）
 
 ---
 
@@ -587,88 +605,29 @@ grep -v 'metadata.test' /etc/hosts > /tmp/h && cat /tmp/h > /etc/hosts
 
 > Docker Compose 構成（README の第一推奨）での再検証は §6.22 で実施済みです。上記は `initializeCommand` 構成で実施したものです。
 
-### 6.19 Claude Code の WebSearch / WebFetch が egress するか
+### 6.19 遮断された WebFetch がフォールバックしないこと
 
-**この項目だけは egress-guard を適用しない状態で実施します。** `enforce` 下で測ると「遮断されたので接続が見えない」のか「そもそも接続しない」のかを区別できません。規制の無い状態で**実際に張られた接続**を見れば、この区別が要りません。
-
-`ss` で全 TCP ソケットの peer を 0.5 秒ごとに記録します。TIME-WAIT が約 60 秒残るため、短命な接続も取りこぼしません。
-
-```sh
-# [node] 記録を開始する（バックグラウンド）
-while :; do
-	ss -Htnp state all | awk -v t="$(date +%s)" '{print t, $5, $6}' >> peers.log
-	sleep 0.5
-done
-```
+**`enforce` 下で、`allowDomains` に無いドメインの WebFetch がそのまま失敗することを確かめます。** 成功するなら Anthropic 側の取得へ切り替わっていることになり、[`web-search-fetch.md`](./web-search-fetch.md) の「取得先ごとの許可が要る」という記述が成り立ちません。
 
 | # | 確かめること | 手順 | 判定 |
 |---|---|---|---|
-| 19.0 | baseline を取る | Web ツールを使わずに 60 秒以上記録する | 現れる peer を控える。`api.anthropic.com` のほか**常駐テレメトリが 2 つある**（測定時は GCP と Cloudflare の各 1） |
-| 19.1 | WebFetch の egress | 対象ドメインを `dig` で控えてから WebFetch を実行する | **対象 IP が現れる。** `$6` のプロセスが `claude` |
-| 19.2 | WebSearch の egress | 検索を実行する | **baseline 以外の peer が現れない** |
 | 19.3 | 遮断時のフォールバック | `enforce` 適用後、`allowDomains` に無いドメインを WebFetch する | **失敗する**（2026-08-03 実施）。成功するならフォールバックしている |
 
-> **19.0 を飛ばさないでください。** 常駐テレメトリは検索の窓でも新しく現れることがあり、baseline を取っていないと 19.2 が偽陽性になります。**Web ツールを使わない制御窓で同じ peer が継続して ESTAB なら、それはテレメトリです。**
+> **再測定では別の URL を使ってください。** WebFetch の応答は URL ごとに 15 分キャッシュされます。
 
-> **対象ドメインの選び方。** CDN 上のドメインは、他の通信と IP が重なって判定できなくなります（測定時、`manpages.debian.org` と `www.debian.org` は同じ IP 集合でした）。`ftp.gnu.org` のように**単独 IP で他が触らない先**を選んでください。
-
-> WebFetch の応答は URL ごとに 15 分キャッシュされます。**再測定では別の URL を使ってください。**
+> **egress-guard を適用しない状態での測定（WebFetch / WebSearch が実際に egress するか）は [`web-search-fetch.md`](./web-search-fetch.md) §5.1 へ移しました。** 当時の項目 19.0〜19.2 が対応します。egress-guard 自身の検証ではなく、外部ツールの挙動の測定だからです。
 
 結果は §1・§2 と [`web-search-fetch.md`](./web-search-fetch.md) §1。
 
 ### 6.20 WebFetch の要約と打ち切りの確認（実装の静的解析）
 
-**egress-guard の検証ではありません。** [`web-search-fetch.md`](./web-search-fetch.md) §2・§3 の主張がバージョンを跨いで生き続けるための、再実行手順です。**Claude Code が上がったら実行し直してください。**
+**この手順は [`web-search-fetch.md`](./web-search-fetch.md) §5.2 へ移しました。** egress-guard の検証ではなく、外部ツールの実装をバージョンごとに確かめ直すためのものだからです。当時の項目 20.1〜20.7 が、同 §5.2 の 5.2.1〜5.2.7 に対応します。
 
-配布物は Bun の単一実行ファイルで、JS が平文で埋め込まれています。読める領域を切り出してから grep します。
-
-```sh
-# [node] JS 領域の位置を掴む
-B=$(readlink -f "$(command -v claude)")
-grep -abo "Fetches a URL" "$B" | head -1        # 測定時は 248440257
-
-# その周辺を切り出す（測定時は 236 MiB から 32 MiB で全部入った）
-dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
-```
-
-| # | 確かめること | 手順 | 測定時（v2.1.220）の値 |
-|---|---|---|---|
-| 20.1 | 要約バイパスの分岐 | `grep -aob 'text/markdown' js.bin` の各位置を `dd` で読む | `if(_&&f.includes("text/markdown")&&u.length<ymr)T=u;else T=await Iin(...)` |
-| 20.2 | 打ち切りの 3 定数 | 上の分岐の近傍にまとまっている | `RHy=10485760` / `ogd=1048576` / `ymr=1e5` |
-| 20.3 | 打ち切りが無言か | `grep -a 'Content truncated' js.bin` | **2 箇所でマーカーを付加**。記事の「サイレント」と食い違う |
-| 20.4 | 事前承認ドメイン | `grep -aob 'function Bpd' js.bin` から `dd` で読む | 92 エントリ（`learn.microsoft.com` 重複、実質 91）。うち 7 件はパス接頭辞付き |
-| 20.5 | 引用 125 文字の制限 | `grep -aob 'function TCu' js.bin` から `dd` で読む | **`isPreapprovedDomain` が偽のときだけ**課される |
-| 20.6 | 取得前のブロックリスト照会 | 同上の近傍 | `api.anthropic.com/api/web/domain_info?domain=...` |
-
-バイパスは実際に踏ませて確認します。
-
-| # | 確かめること | 手順 | 判定 |
-|---|---|---|---|
-| 20.7 | 事前承認ドメインで原文が返る | 20.4 のリストから `Accept: text/markdown` に応じるものを選び、`curl` で保存してから、**要約されれば絶対に長文にならない `prompt`** で WebFetch する | **`prompt` が無視され、`curl` の内容と一致する原文が返る** |
-
-> **20.7 の `prompt` の作り方が肝です。** 「1 語で答えろ」のような指示にしてください。要約された場合と原文が返った場合を、出力の長さだけで区別できます。
-
-> 測定時は `code.claude.com/docs/en/overview`（16,445 バイト）で確認しました。**このサイトが将来も `text/markdown` を返す保証はありません。** 候補は `curl -sI -H 'Accept: text/markdown, text/html, */*'` の `content-type` で選び直してください。
+結果は §1・§2。
 
 ### 6.21 audit モードで、起動後セットアップに要るドメインを洗い出す
 
-**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** 2026-08-03 に Orca remote の接続不能を追ったときの手順で、同種の構成に使えます。
-
-| # | 手順 | 注意 |
-|---|---|---|
-| 21.1 | `firewall.json` を `mode: "audit"` にして**再ビルドする** | **再接続では駄目です。** 導入物がホームに残っていると再インストールが走らず、何も記録されません |
-| 21.2 | 問題の操作を一通り行う | — |
-| 21.3 | `[ホスト] docker exec -u root <container> ipset list egress-audit-v4` | **コンテナを取り違えないこと。** 21.7 参照 |
-| 21.4 | 各 IP を名前に戻す | 21.5・21.6 |
-| 21.5 | 逆引き | CDN では引けないか、CDN 事業者名しか返りません |
-| 21.6 | TLS 証明書で確認 | `openssl s_client -connect <ip>:443 -servername <候補>` で候補を当てる。SNI 無しでは Cloudflare は証明書を返しません |
-| 21.7 | `timeout` の残量から追加時刻を逆算する | `追加時刻 = 現在 - (604800 - 残量)`。**`--exist` で再追加されると残量がリセットされるため、これは「最後に接触した時刻」です** |
-
-> **21.6 が記録を汚染します。** `openssl` で候補 IP を叩くと、**その接続自体が `egress-audit-v4` に記録されます。** 実際にこれをやってしまい、別コンテナから取った 17 件を全て自分のコンテナに書き込みました。21.7 の時刻で切り分けられますが、**名前解決は別のコンテナか、記録が済んでから行ってください。**
-
-> **21.7 が効きます。** 「コンテナ起動時刻より前のエントリがある」ことから、取得先のコンテナを取り違えていると気付けました。`docker ps` でコンテナ ID を確認してから 21.3 を実行してください。
-
-> **`example.com` と `8.8.8.8` が 2 秒差で並んでいたら、それは [`spec.md`](./spec.md) §5 の自己検証です**（未許可ホストの到達確認と外部 DNS の確認）。`audit` では前者がスキップされるため、**この組が出ていればそのコンテナは `enforce` で動いています。** 取り違えの判別にも使えます。
+**手順は [README](../README.md) の「特定の通信だけが通らない」へ移しました。** `enforce` にしたら何かが動かなくなった、という状況の切り分けであり、受け入れ検証の項目ではないためです。当時の項目 21.1〜21.7 が対応します。**ここから読み取れるパターンは §5 に残してあります。**
 
 結果は §1・§2 と [README](../README.md) の「コンテナ起動後にセットアップを行う場合」、[known-issues #7](./known-issues.md)。
 
@@ -723,3 +682,25 @@ README は「`dockerComposeFile` を使うと `runArgs` は無視される」と
 | 22.10 | `runArgs` が無視される | `devcontainer.json` に `"runArgs": ["--label=egress-guard-runargs-test=1"]` を足して再ビルド → `[ホスト] docker inspect -f '{{json .Config.Labels}}' karakuri-dev-container \| jq 'has("egress-guard-runargs-test")'` | `false`。**`true` なら README の記述が誤り** |
 
 **確かめたら `runArgs` は消してください。** 残しても効きませんが、効くように見える記述を構成に残すのは避けます。
+
+### 6.23 `enforce` と `audit` で入る VS Code 拡張を比べる
+
+**[`known-issues.md`](./known-issues.md) #7（`*.gallerycdn.vsassets.io` を allowlist できない）が実害として出ているかを確かめる手順です。** 拡張の実体を配る CDN が遮断されると、拡張のインストールが失敗します。
+
+| # | 手順 | 注意 |
+|---|---|---|
+| 23.1 | `firewall.json` を `mode: "audit"` にして**再ビルドする** | **再接続では駄目です。** 導入物がホームに残っていると再インストールが走らず、差が出ません |
+| 23.2 | VS Code の拡張ビューで、実際に入った拡張を控える | `~/.vscode-server/extensions` はボリュームに載っていないため、再ビルドのたびに再ダウンロードが走ります |
+| 23.3 | `firewall.json` を `mode: "enforce"` に戻して**再ビルドする** | 23.1 と同じ理由で、ここも再接続では駄目です |
+| 23.4 | 同じ手順で控え、23.2 と突き合わせる | **差が出た拡張が、遮断された CDN から配られているものです** |
+
+> **2026-08-03 に実施しました。** 同じワークスペースで両モードを比べた結果です（VS Code の UI 上での確認）。
+>
+> | モード | 入った拡張 |
+> |---|---|
+> | `enforce` | `anthropic.claude-code`、`biomejs.biome` |
+> | `audit` | 上記に加えて `ms-vscode.js-debug-companion`、`ms-ceintl.vscode-language-pack-ja` |
+>
+> **`enforce` では 2 つ足りません。** `gallerycdn` の遮断と整合します。
+>
+> **ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、この差がどこから来るのかは未確認です（別経路で取得しているのか、キャッシュから復元されたのか）。**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
