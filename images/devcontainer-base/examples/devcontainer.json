@@ -1,0 +1,88 @@
+// プロジェクト側 devcontainer.json の雛形。
+// .devcontainer/devcontainer.json としてコピーし、<your-project> と CRIT_PORT を差し替える。
+{
+	"name": "<your-project>",
+
+	"build": {
+		"dockerfile": "Dockerfile",
+		// 必須。これがないとローカルに残った古い base が使われ続け、
+		// リビルドしても :1 の更新が反映されない。
+		"options": ["--pull"]
+	},
+
+	"runArgs": [
+		"--name=<your-project>-devcontainer",
+
+		// egress-guard が iptables / ipset を操作するために必要。
+		"--cap-add=NET_ADMIN",
+		"--cap-add=NET_RAW",
+
+		// crit のポート転送。プロジェクトごとに重複しない値を割り当てる。
+		// base で CRIT_HOST=0.0.0.0 を設定済みのため、この転送が実際に届く。
+		// 127.0.0.1 に固定してホスト外へ露出させない。
+		"-p",
+		"127.0.0.1:4517:4517",
+
+		// dotenvx の local / dev 復号キーの注入。
+		// enclave-env のワークフローに合わせる場合はこの --env-file 方式を使う。
+		// prod キーはワークスペース外に置く（templates/devcontainer/prod を参照）。
+		"--env-file",
+		"${localWorkspaceFolder}/.devcontainer/dev/.env.container"
+	],
+
+	"containerEnv": {
+		"NODE_OPTIONS": "--max-old-space-size=2048",
+		"CLAUDE_CONFIG_DIR": "/home/node/.claude",
+
+		// runArgs の -p と同じ値にする。
+		"CRIT_PORT": "4517"
+
+		// --env-file を使わずホストの環境変数から直接注入する場合は以下の形。
+		// どちらか一方に統一する（二重定義すると containerEnv が勝つ）。
+		// "DOTENV_PRIVATE_KEY": "${localEnv:DOTENV_PRIVATE_KEY}",
+		// "DOTENV_PRIVATE_KEY_DEVELOPMENT": "${localEnv:DOTENV_PRIVATE_KEY_DEVELOPMENT}"
+	},
+
+	"remoteUser": "node",
+
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+	"workspaceFolder": "/workspace",
+
+	"mounts": [
+		// シェル履歴を永続化。前回のコマンドを Ctrl+R で呼び出せる。
+		"source=<your-project>-history-${devcontainerId},target=/commandhistory,type=volume",
+		// エージェントの認証情報と設定を永続化。リビルドしても再ログイン不要。
+		"source=<your-project>-claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
+		"source=<your-project>-codex-config-${devcontainerId},target=/home/node/.codex,type=volume"
+	],
+
+	"customizations": {
+		"vscode": {
+			"extensions": ["anthropic.claude-code", "biomejs.biome"],
+			"settings": {
+				"terminal.integrated.defaultProfile.linux": "zsh"
+			}
+		}
+	},
+
+	// 平文 env がワークスペースに残っていないかを検査する。これはホスト側で走る。
+	"initializeCommand": "sh node_modules/@himorogy/enclave-env/scripts/init-check-dev.sh",
+
+	// エージェント CLI は Dockerfile ではなくここで入れる。prod 環境の
+	// イメージに含めないため。
+	//
+	// 注意: lifecycle の順序は postCreateCommand → postStartCommand。
+	// つまりこの curl は egress-guard が適用される「前」に、復号キーが注入済みの
+	// コンテナ内で実行される。egress-guard はコンテナ作成中の通信を保護しない。
+	// 詳細は README の「保護範囲」を参照。
+	"postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash",
+
+	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
+	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。
+	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
+
+	// エディタが接続を報告するまでに firewall の適用を終わらせる。
+	// これは UI がどの lifecycle command を待つかの指定であって、
+	// セキュリティ境界ではない。先行するコマンドの通信は制限されない。
+	"waitFor": "postStartCommand"
+}
