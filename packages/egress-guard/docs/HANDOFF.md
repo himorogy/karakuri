@@ -12,7 +12,7 @@
 |---|---|
 | [`spec.md`](./spec.md) | **規範記述。§1 の不変条件 I1〜I7 が中核** |
 | [`design.md`](./design.md) | なぜそう作ったか（設計判断 20 件、受容した残余リスク 5 件、却下した案の一覧） |
-| [`known-issues.md`](./known-issues.md) | 未解決のもの（未実装 1・未検証 7・保留 1） |
+| [`known-issues.md`](./known-issues.md) | 未解決のもの（未実装 1・未検証 4・保留 2） |
 | [`verification-record.md`](./verification-record.md) | 受け入れ検証の記録。**§2 のカバレッジ表で「どの不変条件が未確認か」が引けます** |
 | [`../README.md`](../README.md) | 使い方 |
 | [`web-search-fetch.md`](./web-search-fetch.md) | 外部ツールの挙動に関する参考。**§1〜§3 は Claude Code v2.1.220 で確認済み**（WebFetch は直接 egress する / 91 ドメインで要約がバイパスされる） |
@@ -28,7 +28,7 @@ pnpm lint:sh
 npx biome check .
 ```
 
-> **導入済みの devcontainer の中で `pnpm test` を実行すると、ルール側が 142/3 になります。** 実装の不具合ではなく、テストが `/etc/egress-guard/firewall.json` の不在を前提にしているためです。詳細と修正方針は [`verification-record.md`](./verification-record.md) §5。**未修正です。**
+> **導入済みの devcontainer の中で `pnpm test` を実行すると、ルール側が 2〜3 件落ちます。** 実装の不具合ではなく、テストが `/etc/egress-guard/firewall.json` の不在を前提にしているためです。詳細と修正方針は [`verification-record.md`](./verification-record.md) §5。**未修正です。**
 
 > `pnpm lint:sh` はこのコンテナでは動きません（shellcheck が未導入）。
 
@@ -36,75 +36,22 @@ npx biome check .
 
 ## 1. 次にやること（優先度順）
 
-### 1.1 enforce に戻して確認する（進行中・最優先）
+**2026-08-03 に enforce での常用が成立しました。** `example.com` 到達不可・`api.github.com` 到達可・起動後セットアップ完了、を確認済みです。ここから先は残っている未確認の消化です。
 
-**原因は特定済みで、対処も入れてあります。あとは `enforce` で通ることの確認だけです。**
-
-`enforce` で Orca remote から接続できなくなっていた件は、audit モードでの洗い出しで決着しました（手順は [`verification-record.md`](./verification-record.md) §6.21、結論は [`known-issues.md`](./known-issues.md) #8）。
-
-**制御チャネルは無関係でした。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。**ここは二度と疑う必要がありません。**
-
-**倒れていたのは「firewall 適用後に走るセットアップ」です。**
-
-1. **`apt-get install openssh-server ...`** — `openssh-server` はイメージに入っていませんでした。ここが落ちると sshd が無く、Orca は接続そのものができません
-2. **node-gyp の Node ヘッダ取得** — relay の依存 `node-pty` に linux 向け prebuild が無くソースビルドになります
-
-**1 が先に倒れるため、2 は表に出ていませんでした。**
-
-#### 入れた対処と、その理由
-
-* **`nodejs.org` を `allowDomains` に追加** — 2 はこれで通ります（実測済み）
-* **`deb.debian.org` は追加しても直りませんでした。** Fastly 上で **TTL 25 秒**、起動時のスナップショットと `apt` の接続先がずれます（[`spec.md`](./spec.md) §9.7）。**「書いてあるのに落ちる」状態を残さないため `allowDomains` から外し**、該当パッケージ（`openssh-server` / `ripgrep` / `fd-find` / `bat`）を `.devcontainer/Dockerfile` に移しました
-
-> **起動後に `apt` を使う構成は、この方式と根本的に相性が悪いと考えてください。** 起動後に外から取ってくる作業は、イメージビルド時に移すのが第一選択です。
-
-#### 次にやること
-
-1. **Dev Containers: Rebuild Container**（`.devcontainer/firewall.json` は `enforce`。`--check-config` は通過済み）
-2. Orca が繋がったら、§6.2 の 2.1〜2.5 で適用そのものを確認する
-3. **セットアップスクリプトの `apt` が通るか。** パッケージがイメージに入っているので取得は起きないはずですが、`apt-get update` の警告は出ます。**`E:` が出たらまだ何か起動後に取りに行っています**
-4. [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）。`enforce` でないと測れません
-5. `ls ~/.vscode-server/extensions` — 拡張の数（[`known-issues.md`](./known-issues.md) #9。`enforce` で 2 個・`audit` で 4 個が既知の差）
-6. 通ったら [`known-issues.md`](./known-issues.md) #8 を閉じ、§1 実施状況に `enforce` の行を足す
-
-> **戻し方。** 繋がらなくなったら、ホストから `.devcontainer/devcontainer.json` の `postStartCommand` をコメントアウトして再ビルドしてください。ワークスペースはバインドマウントなので、コンテナが上がらなくても編集できます。
-
-> **`~/.orca-remote`・`~/.cache`・`~/.vscode-server` はボリュームに載っていません。** そのため起動後のセットアップは**再ビルドのたびに走ります**。逆に言えば、再ビルドを跨がない限りこの問題は再現しません（別プロジェクトのコンテナが `enforce` のまま動き続けていたのはこのためです）。
-
-#### 残っている宿題
-
-**VS Code 拡張が一部入りません**（[`known-issues.md`](./known-issues.md) #9）。実体を配る `*.gallerycdn.vsassets.io` はワイルドカードのため列挙できず、publisher 別の具体名で書いても Akamai の IP が回ります。
-
-**`deb.debian.org` と併せて、[`spec.md`](./spec.md) §9.7 の「アドレスが動くドメインは `allowDomains` で表現できない」が実害として出た 2 例目です。下記 1.3 を採る動機がこれです。**
-### 1.2 WebFetch の扱いの確定（再ビルド直後・5 分）
-
-**WebSearch / WebFetch の egress は実測済みです**（2026-08-03、Claude Code v2.1.220）。結果は当初の推論と逆でした。
-
-* **WebFetch はコンテナ内の `claude` プロセスが取得先へ直接 TCP 接続する。** `allowDomains` に無いドメインは取得できない
-* **WebSearch は egress しない。** 追加設定なしで使える
-
-反映済み: [`web-search-fetch.md`](./web-search-fetch.md) §1、[`spec.md`](./spec.md) §9.2、README、[`known-issues.md`](./known-issues.md) 項目 5、[`verification-record.md`](./verification-record.md) §1・§2・§6.19。
-
-残っているのは 1 点だけです。**測定は egress-guard 未適用の状態で行ったため、直接接続が REJECT されたときの挙動を観測していません。** フォールバックするなら文書の記述を緩める必要があります。判定は §6.19 の 19.3（WebFetch を 1 回実行するだけ）。
-
-> **1.2 の結論が出るまで、`allowDomains` 外の WebFetch に依存する作業を計画しないでください。** 下記 1.3 の dnsmasq 調査がこれに該当します。
-
-あわせて [`web-search-fetch.md`](./web-search-fetch.md) §2・§3（要約と打ち切り）も v2.1.220 の実装で確認済みです。**参照元記事の主張はおおむね再現しましたが、2 点違います。**
-
-* **事前承認 91 ドメインでは要約がバイパスされ、原文がそのままコンテキストに入る** — `allowDomains` に入れる判断に効きます
-* 打ち切りは無言ではなく `[Content truncated due to length...]` が付く
-
-> **これはバージョン依存の情報です。** Claude Code が上がったら [`verification-record.md`](./verification-record.md) §6.20 を実行し直してください。実装の静的解析なので 10 分程度で終わります。
-
-### 1.3 論点 2 — DNS 連動 allowlist（dnsmasq + `ipset=`）の調査
+### 1.1 論点 2 — DNS 連動 allowlist（dnsmasq + `ipset=`）の調査
 
 [`spec.md`](./spec.md) §10.2 に「採否未決」として枠だけ入っています。**外部レビューからの提案で、3 つの課題を同時に緩めます。**
 
 * **§9.1 の部分解消** — `ipset=/neon.tech/egress-allow-v4` はサブドメイン解決のたびに IP を注入するため、ワイルドカードが本来の意味で機能する
 * **I4 の強化** — 非許可名は NXDOMAIN で返すため「経路の固定」が実質的な遮断に近づく。クエリログで試行の可視化もできる（現行の recorder に映らない唯一のシグナル）
-* **CDN drift が構造ごと消える** — 解決時に TTL の新鮮な IP が set に入るため、起動時スナップショット方式の弱点が無くなる
+* **§9.7 が構造ごと消える** — 解決時に TTL の新鮮な IP が set に入るため、起動時スナップショット方式の弱点が無くなる
 
-**ここが一番効きます。** 現状は起動時スナップショットの弱点を「再適用運用」（[`spec.md`](./spec.md) §6.4）と「verify のいずれか判定」（§5.2）という 2 つの緩和策で埋めているだけで、どちらも本質的な解決ではありません。
+**ここが一番効きます。** しかも 2026-08-03 に、**実害が 2 件出ました**。もう理論上の弱点ではありません。
+
+* **`deb.debian.org`** — TTL 25 秒の Fastly。`allowDomains` に書いても通らない（[`spec.md`](./spec.md) §9.7）
+* **`*.gallerycdn.vsassets.io`** — VS Code 拡張の配信 CDN。ワイルドカードで書けず、publisher 別の具体名でも Akamai の IP が回る（[`known-issues.md`](./known-issues.md) #7）
+
+現状は起動時スナップショットの弱点を「再適用運用」（[`spec.md`](./spec.md) §6.4）と「verify のいずれか判定」（§5.2）という 2 つの緩和策で埋めているだけで、どちらも本質的な解決ではありません。
 
 調査が要る点:
 
@@ -116,13 +63,19 @@ npx biome check .
 
 **L7 proxy（§10.1）を導入するなら不要になる可能性が高い**ため、位置づけの判断も含めて検討してください。
 
-### 1.4 Docker Compose 構成での検証
+### 1.2 ユニットテストの環境依存を直す
+
+**導入済みの devcontainer の中で `pnpm test` を実行すると、ルール側が 2〜3 件落ちます。** テストが `/etc/egress-guard/firewall.json` の不在を前提にしているためで、CI では緑のままです。実装の不具合ではありません。
+
+修正方針は [`verification-record.md`](./verification-record.md) §5 に書いてあります。**`PROD_CONFIG` にテスト用の上書きを足すのは避けてください** — 固定パスであること自体が設計判断です。テスト側で分岐させます。
+
+**小さい割に効きます。** 検証コマンドが赤いままだと、次にここへ来た人が本物の失敗と区別できません。
+
+### 1.3 Docker Compose 構成での検証
 
 **README の第一推奨（案 A）が未検証**です。項目 17 は案 B（`initializeCommand`）で実施しました。
 
 これは**優先度の反転が再発している状態**です。項目 17 で一度解消したのと同じ種類の問題なので、放置しないでください。手順は [`verification-record.md`](./verification-record.md) §6.18 がそのまま使えます（`--network` の確認だけ読み替え）。
-
----
 
 ## 2. 未解決の一覧
 
@@ -134,17 +87,15 @@ npx biome check .
 | 2 | IPv6 が有効なコンテナでの動作（`curl -6` の実到達性） | 未検証 |
 | 3 | Linux ホスト上の Docker | 未検証 |
 | 4 | `host.docker.internal` が公開アドレスを返すケース | 未検証（ユニットテストで担保） |
-| 5 | WebFetch が遮断されたときのフォールバック挙動 | 未検証（→ §1.2） |
-| 6 | CI ランナー / クラウド開発環境 / rootless Docker | 未検証 |
-| 7 | Dev Container Feature 化 | 保留（着手条件を記載済み） |
-| 8 | コンテナ起動後にセットアップを行う構成（原因特定済み・`enforce` での確認待ち） | 未検証（→ §1.1） |
-| 9 | VS Code 拡張の配信 CDN を allowlist できない | 未検証（回避策なし。→ §1.3） |
+| 5 | CI ランナー / クラウド開発環境 / rootless Docker | 未検証 |
+| 6 | Dev Container Feature 化 | 保留（着手条件を記載済み） |
+| 7 | VS Code 拡張の配信 CDN を allowlist できない | 保留（→ §1.1） |
 
 加えて [`verification-record.md`](./verification-record.md) §2 の「未確認」表に、上記に載らないものが 3 件あります。
 
 * **I3: GitHub meta API 不達でも適用が成立すること** — meta 単独の不達を再現する手順が無い
 * **`SET` ターゲットが使えないカーネルでのフォールバック** — ユニットテストのみ
-* **Docker Compose 構成** — §1.4
+* **Docker Compose 構成** — §1.3
 
 ---
 

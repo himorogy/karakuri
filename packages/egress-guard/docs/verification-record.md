@@ -27,7 +27,8 @@
 | 同上、デフォルトブリッジ | 2026-08-03 | 項目 14〜16、18 | 18.4 を除き合格 |
 | 同上、デフォルトブリッジ、**egress-guard 未適用**（Claude Code v2.1.220） | 2026-08-03 | 項目 19 | WebFetch は直接 egress する。**文書の推論を否定** |
 | 同上（実装の静的解析。環境非依存） | 2026-08-03 | 項目 20 | 参照元記事の主張を再現。**打ち切りの「サイレント」のみ食い違い** |
-| 同上、ユーザー定義ネットワーク、**audit モード** | 2026-08-03 | 項目 21 | 起動後セットアップに要る 2 ドメインを特定（[known-issues #8](./known-issues.md)）。**`enforce` での確認は未実施** |
+| 同上、ユーザー定義ネットワーク、**audit モード** | 2026-08-03 | 項目 21 | 起動後セットアップに要る 2 ドメインを特定 |
+| 同上、ユーザー定義ネットワーク、**enforce** | 2026-08-03 | 項目 19.3、21 の再実施 | 合格。プロビジョニング中だけ audit にする運用で起動後セットアップが成立した |
 
 **未実施の環境**は [`known-issues.md`](./known-issues.md) を参照してください（IPv6 が有効なコンテナ、Linux ホスト、CI ランナー、rootless Docker）。
 
@@ -72,6 +73,8 @@
 | — | **WebFetch はコンテナから直接 egress する**（従来の推論の否定） | 19.1 | `209.51.188.20:443 users:(("claude",pid=32345,fd=14))` |
 | — | WebSearch はコンテナから egress しない | 19.2 | 検索 2 回で新規 peer なし（常駐テレメトリ 2 件を baseline に含めた上で） |
 | — | **事前承認 91 ドメインでは要約がバイパスされ原文が返る** | 20.4、20.7 | `prompt` が無視され、`curl` と一致する 16,445 バイトが返った |
+| — | **遮断された WebFetch はフォールバックせず失敗する** | 19.3 | `allowDomains` 外は出力なしで失敗、`allowDomains` 内と WebSearch は成功 |
+| — | 起動後セットアップが成立する（プロビジョニング中だけ audit） | 21 | `enforce` 復帰後に `example.com` 到達不可・`openssh-server` 導入済み |
 | — | shellcheck クリーン / ユニットテスト全通過 | CI | — |
 | — | nat テーブルが変更されない | 2.4、**17.3** | 適用前後の `iptables-save -t nat` が `IDENTICAL` |
 
@@ -86,7 +89,6 @@
 | **`SET` ターゲットが使えないカーネルでのフォールバック** | 検証環境のカーネルでは常に使える | 同 `recorderfallback` |
 | **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし（[known-issues #2](./known-issues.md)） |
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
-| **WebFetch が遮断されたときのフォールバック挙動** | 項目 19 は egress-guard 未適用の状態で測定した。REJECT された場合に Anthropic 側の取得へ切り替わるかは観測していない | なし（[known-issues #5](./known-issues.md)） |
 | **Docker Compose 構成での動作** | 項目 17 は案 B（`initializeCommand`）で実施した。案 A（Compose、README の第一推奨）は未検証 | なし |
 | **I3: GitHub meta API 不達でも適用が成立すること** | 検証環境では meta API に常に到達できた。ネットワークを部分的に落とす手順が無い | `tests/firewall-rules.test.sh` の `panic` ケースが近いが、そこでは DNS も落ちるため meta 単独の不達は未確認 |
 
@@ -220,13 +222,15 @@
 
 ### ユニットテストがホスト環境に依存している（未修正）
 
-**`tests/firewall-rules.test.sh` の「configuration source」ブロックは、`/etc/egress-guard/firewall.json` が存在しない環境でしか通りません。** egress-guard を導入した devcontainer の中で `pnpm test` を実行すると 3 件落ちます（2026-08-03 に発生）。
+**`tests/firewall-rules.test.sh` の「configuration source」ブロックは、`/etc/egress-guard/firewall.json` が存在しない環境でしか通りません。** egress-guard を導入した devcontainer の中で `pnpm test` を実行すると落ちます（2026-08-03 に発生）。
 
 ```
 FAIL --check-config does not search the working directory (missing: no firewall.json found)
 FAIL the apply path ignores the workspace copy (missing: no firewall.json found)
 FAIL the workspace copy cannot relax the policy (missing: ^:OUTPUT DROP)
 ```
+
+**落ちる件数は実効設定の `mode` で変わります。** `audit` のコンテナでは 3 件、`enforce` のコンテナでは 3 件目が偶然通って 2 件になります。**件数を目印にしないでください。**
 
 `PROD_CONFIG="/etc/egress-guard/firewall.json"` は固定パスで、上書き手段がありません（[`design.md`](./design.md) の「見に行く場所を増やすほど攻撃面が増える」に基づく意図的な設計）。**したがってテスト側で環境を分岐させる必要があります。**
 
@@ -570,7 +574,7 @@ done
 | 19.0 | baseline を取る | Web ツールを使わずに 60 秒以上記録する | 現れる peer を控える。`api.anthropic.com` のほか**常駐テレメトリが 2 つある**（測定時は GCP と Cloudflare の各 1） |
 | 19.1 | WebFetch の egress | 対象ドメインを `dig` で控えてから WebFetch を実行する | **対象 IP が現れる。** `$6` のプロセスが `claude` |
 | 19.2 | WebSearch の egress | 検索を実行する | **baseline 以外の peer が現れない** |
-| 19.3 | 遮断時のフォールバック（**未実施**） | egress-guard 適用後、`allowDomains` に無いドメインを WebFetch する | `egress-audit-v4` に取得先 IP が記録される。**そのうえで WebFetch が成功するならフォールバックしている** |
+| 19.3 | 遮断時のフォールバック | `enforce` 適用後、`allowDomains` に無いドメインを WebFetch する | **失敗する**（2026-08-03 実施）。成功するならフォールバックしている |
 
 > **19.0 を飛ばさないでください。** 常駐テレメトリは検索の窓でも新しく現れることがあり、baseline を取っていないと 19.2 が偽陽性になります。**Web ツールを使わない制御窓で同じ peer が継続して ESTAB なら、それはテレメトリです。**
 
@@ -616,7 +620,7 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 
 ### 6.21 audit モードで、起動後セットアップに要るドメインを洗い出す
 
-**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** 2026-08-03 に Orca remote の接続不能を追ったときの手順で（[known-issues #8](./known-issues.md)）、同種の構成に使えます。
+**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** 2026-08-03 に Orca remote の接続不能を追ったときの手順で、同種の構成に使えます。
 
 | # | 手順 | 注意 |
 |---|---|---|
@@ -634,4 +638,4 @@ dd if="$B" bs=1M skip=236 count=32 2>/dev/null > js.bin
 
 > **`example.com` と `8.8.8.8` が 2 秒差で並んでいたら、それは §5 の自己検証です**（未許可ホストの到達確認と外部 DNS の確認）。`audit` では前者がスキップされるため、**この組が出ていればそのコンテナは `enforce` で動いています。** 取り違えの判別にも使えます。
 
-結果は [known-issues #8](./known-issues.md)・[#9](./known-issues.md)。
+結果は §1・§2 と [README](../README.md) の「コンテナ起動後にセットアップを行う場合」、[known-issues #7](./known-issues.md)。

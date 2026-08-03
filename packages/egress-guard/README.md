@@ -488,6 +488,51 @@ out which ones those are.
 
 どのホスト名が必要かわからない場合は `mode: "audit"` で運用し、`egress-audit-v4` に溜まった IP から逆引き（あるいは TLS 証明書の SAN）で特定してください。
 
+## アドレスが動くドメインは `allowDomains` に書けません
+
+allowlist は**起動時に解決した IP の集合**です。**その起動の間アドレスが変わらないドメインにしか使えません。**
+
+`deb.debian.org` が実例です。Fastly 上にあり **TTL は 25 秒**で、応答は複数の IP を持ち回ります。`allowDomains` に書いても、起動時に掴んだ IP と `apt` が実際に繋ぐ先がずれ、こうなります。
+
+```
+Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
+- connect (113: No route to host)
+```
+
+**`No route to host` は egress-guard の `REJECT` です。書いてあるのに落ちます。** 同じ日に `nodejs.org` は問題なく通っており、**CDN の性質で成否が分かれます。** 詳細は [`docs/spec.md`](./docs/spec.md) §9.7。
+
+`allowCidrs` での回避は多くの場合採れません。Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります。
+
+## コンテナ起動後にセットアップを行う場合
+
+egress-guard は **`postStartCommand` で適用され、その時点でポリシーが閉じます。** したがって**適用より後に外部から何かを取ってくる作業は、そのままでは成立しません。**
+
+実際に踏んだ例です。
+
+* `apt-get install openssh-server ...` — 上記のとおり `deb.debian.org` は `allowDomains` に書いても直りません
+* `node-gyp` による Node ヘッダの取得 — `nodejs.org` を `allowDomains` に足せば通ります
+
+**第一選択は、取得をイメージビルド時に移すことです。** それができない場合は、プロビジョニングの間だけ `mode` を `audit` にして再適用し、終わったら元に戻して再適用してください。ホスト側から次の順で行います。
+
+```sh
+# [ホスト] コンテナ内の実効設定を audit に落とす
+docker exec -u root <container> sh -c '
+  cp -a /etc/egress-guard/firewall.json /root/fw.bak
+  jq ".mode = \"audit\"" /root/fw.bak > /etc/egress-guard/firewall.json'
+docker exec -u root <container> /usr/local/bin/init-project-firewall.sh
+
+# ここでセットアップを流す
+
+# [ホスト] 元に戻して閉じ直す
+docker exec -u root <container> sh -c '
+  cp -a /root/fw.bak /etc/egress-guard/firewall.json && rm -f /root/fw.bak'
+docker exec -u root <container> /usr/local/bin/init-project-firewall.sh
+```
+
+**この窓の間、コンテナは外へ出られます。** 途中で失敗しても必ず閉じ直せるように、スクリプト化して `trap` で復元してください。`audit` のまま残ると、以後の `docker start` でも `audit` で立ち上がります。
+
+**コンテナ内から行う手段は用意していません。** 実効設定を書き換えられるのは root だけで、それは I1 の前提です（[`docs/design.md`](./docs/design.md) §2.1）。
+
 ## 許可済みドメインへの GET 経由の漏洩は防げません
 
 L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` に入れたドメインへ「クエリ文字列に秘密を載せた GET」を投げる経路は残ります。設計上の非目標であり、クレデンシャル側で受け止める前提です。

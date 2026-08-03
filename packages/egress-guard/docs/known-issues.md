@@ -76,32 +76,7 @@
 
 ---
 
-## 5. WebFetch が遮断されたときのフォールバック挙動
-
-**分類:** 未検証
-
-「WebSearch / WebFetch は Anthropic 側で完結する」という以前の推論は**実測により否定されました**。WebFetch はコンテナ内の `claude` プロセスが取得先へ直接 TCP 接続します（[`web-search-fetch.md`](./web-search-fetch.md) §1、2026-08-03、Claude Code v2.1.220）。WebSearch 側は egress を発生させません。
-
-残っているのは次の点です。**測定は egress-guard 未適用の状態で行ったため、直接接続が REJECT されたときの挙動を観測していません。**
-
-* フォールバックする → `allowDomains` 外でも WebFetch は動く（遮断の記録は残る）
-* フォールバックしない → `allowDomains` 外の WebFetch はエラーになる
-
-README と [`web-search-fetch.md`](./web-search-fetch.md) は後者を前提に書いてあります。前者だった場合は両方の記述を緩める必要があります。
-
-適用済みのコンテナで、`allowDomains` に無いドメインを 1 回 WebFetch すれば判定できます。
-
-```sh
-ipset flush egress-audit-v4
-# この状態で allowDomains に無いドメインを WebFetch する
-ipset list egress-audit-v4   # 取得先の IP が記録されるはず
-```
-
-**遮断の記録が残ったうえで WebFetch が成功すれば、フォールバックしています。**
-
----
-
-## 6. CI ランナー / クラウド開発環境 / rootless Docker
+## 5. CI ランナー / クラウド開発環境 / rootless Docker
 
 **分類:** 未検証
 
@@ -110,7 +85,7 @@ ipset list egress-audit-v4   # 取得先の IP が記録されるはず
 
 ---
 
-## 7. Dev Container Feature 化
+## 6. Dev Container Feature 化
 
 **分類:** 保留
 
@@ -200,48 +175,9 @@ RUN chown -R root:root /etc/egress-guard && chmod 644 /etc/egress-guard/firewall
 
 ---
 
-## 8. コンテナ起動後にセットアップを行う構成
+## 7. VS Code 拡張の配信 CDN を allowlist できない
 
-**分類:** 未検証
-
-**`enforce` にすると Orca remote から接続できなくなりました**（2026-08-03、このリポジトリの devcontainer）。audit モードでの洗い出しにより**原因は特定済み**です。`allowDomains` に `deb.debian.org` と `nodejs.org` を追加しましたが、**`enforce` で通ることの確認が残っています。**
-
-**制御チャネルは無関係でした。** Orca の SSH は `docker exec` の stdio に載り、relay は Unix ソケットしか使いません。iptables の INPUT / OUTPUT を通らないため、ここを疑う必要はありません。
-
-**原因は「firewall 適用後に走るセットアップ」です。** `postStartCommand` で適用したあとに、コンテナ内で導入作業が続きます。
-
-1. **`deb.debian.org`** — 個人セットアップの `apt-get install openssh-server ...`。**`openssh-server` はイメージに入っておらず、起動後に導入されます。** ここが落ちると sshd が無く、Orca は接続そのものができません
-2. **`nodejs.org`** — relay の依存 `node-pty` に linux 向け prebuild が無いためソースビルドになり、node-gyp が Node ヘッダを取得します
-
-**1 が先に倒れます。** `nodejs.org` は 2 番目の障害点で、1 を直すまで表に出ません。
-
-### `deb.debian.org` は `allowDomains` では直せなかった
-
-**両方を `allowDomains` に入れて `enforce` にしたところ、`nodejs.org` は通り、`deb.debian.org` は落ちました。**
-
-```
-W: Failed to fetch http://deb.debian.org/debian/dists/bookworm/InRelease
-   Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
-   - connect (113: No route to host)
-```
-
-`No route to host` は egress-guard の `icmp-admin-prohibited` です。**書いてあるのに遮断されています。** 原因は [`spec.md`](./spec.md) §9.7 — Fastly 上にあり TTL が 25 秒で、起動時に解決した IP と `apt` の接続先がずれます。同じ日の audit 記録に `146.75.114.132`（`deb.debian.org`）が載っていることが裏付けです。**allowlist に入っていれば記録されません。**
-
-**そのため `deb.debian.org` は `allowDomains` から外し、当該パッケージを `Dockerfile` に移しました。** 「書いてあるが通ったり通らなかったりする」状態を残すほうが、確実に落ちるより悪いためです。`nodejs.org` は Cloudflare 上でアドレスが安定しており、そのまま残しています。
-
-**起動後に `apt` を使う構成は、この方式とは根本的に相性が悪いと考えてください。**
-
-`~/.orca-remote`・`~/.cache`・`~/.vscode-server` はいずれもボリュームに載っていないため、**再ビルドのたびに 1 と 2 の両方が走ります。** 同じ構成でも**再ビルドを跨がなければ再現しません**（別プロジェクトのコンテナは、適用前に導入が済んでいたため `enforce` のまま動き続けていました）。
-
-**一般化するとこうです。** egress-guard は「起動時点で必要なものが揃っている」構成を想定しています。**起動後に導入を行う構成では、その導入が要求する先を全て `allowDomains` に列挙する必要があります。** README にこの前提を書くべきかは未決です。
-
-洗い出しの手順は [`verification-record.md`](./verification-record.md) §6.21。
-
----
-
-## 9. VS Code 拡張の配信 CDN を allowlist できない
-
-**分類:** 未検証（回避策なし）
+**分類:** 保留（§10.2 の採否待ち。現行方式では回避策がありません）
 
 拡張のカタログは `marketplace.visualstudio.com`（基底プロファイル）ですが、**実体を配るのは `*.gallerycdn.vsassets.io`** です。ここが遮断されると**拡張のインストールが失敗します**。`~/.vscode-server/extensions` はボリュームに載っていないため、**再ビルドのたびに再ダウンロードが必要**です。
 

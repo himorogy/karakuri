@@ -98,14 +98,19 @@ ipset list egress-audit-v4
 
 `allowDomains` に無いドメインを WebFetch すれば、その IP がここに現れるはずです。
 
-### 残った未確認
+### 遮断されたときフォールバックはしない（実測）
 
-**直接接続が REJECT されたとき、Claude Code が Anthropic 側の取得へフォールバックするかは未確認です。** 上の測定は egress-guard 未適用の状態で行ったため、遮断されたときの挙動を観測していません。
+**`enforce` 下で `allowDomains` に無いドメインを WebFetch すると、そのまま失敗します。** Anthropic 側の取得へ切り替わることはありません。
 
-* フォールバックする → `allowDomains` 外でも WebFetch は動く（ただし遮断の記録は残る）
-* フォールバックしない → `allowDomains` 外の WebFetch はエラーになる
+2026-08-03、`enforce` を適用したコンテナで確認しました。
 
-[`known-issues.md`](./known-issues.md) 項目 5 に残してあります。適用済みのコンテナで WebFetch を 1 回実行すれば判定できます。
+| 操作 | 結果 |
+|---|---|
+| WebFetch → `ftp.gnu.org`（`allowDomains` 外） | **失敗。出力なし** |
+| WebFetch → `nodejs.org`（`allowDomains` 内） | 成功 |
+| WebSearch | 成功 |
+
+**したがってこの文書の記述はそのまま成立します。** WebFetch は取得先ごとの許可が要り、WebSearch は要りません。
 
 ---
 
@@ -270,7 +275,7 @@ let a = t.length > ymr ? t.slice(0, ymr) + `\n\n[Content truncated due to length
 ## 参考
 
 * [`spec.md`](./spec.md) §9.2 — 「GET を全ドメイン許可」ができない理由
-* [`known-issues.md`](./known-issues.md) 項目 5 — 遮断時のフォールバック挙動が未確認であることの記録
+* [`verification-record.md`](./verification-record.md) §2 — 遮断時にフォールバックしないことの記録
 * [`verification-record.md`](./verification-record.md) §6.19 — §1〜§3 の確認手順（接続のサンプリングと、実装の静的解析）
 * [`README.md`](../README.md) — `egress-audit-v4` の読み方
 * [Claude CodeのWebFetchは要約されている](https://zenn.dev/zhizhiarv/articles/claude-code-webfetch-haiku-summary)
