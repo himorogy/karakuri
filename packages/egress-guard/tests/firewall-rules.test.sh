@@ -77,9 +77,14 @@ make_stub iptables 'exit 0'
 # does not understand, so the host's copy would hide an IPv6 prefix reaching it;
 # this one refuses the input instead, which is the behaviour the jq filter in
 # add_github_meta_ranges has to make impossible to trigger.
+#
+# Each input line is logged as `aggregate< <line>`. aggregate is an external
+# command on the far side of the validation boundary, so "what reached it" is
+# assertable in its own right and not only inferable from what came back.
 make_stub aggregate '
 buf=""
 while IFS= read -r line; do
+	printf "aggregate< %s\n" "$line" >>"$FW_LOG"
 	case "$line" in
 		[0-9]*.*) buf="$buf$line
 " ;;
@@ -91,14 +96,24 @@ exit 0'
 
 # Every IPv4 table is kept separately so the bootstrap, the final and the panic
 # table can each be asserted: filter-v4.<tag>.1, .2, ... with filter-v4.<tag>
-# holding the last one.
+# holding the last one that was ACCEPTED.
+#
+# A rejected restore must not advance filter-v4.<tag>. netfilter applies a table
+# atomically or not at all, so after a failure the previously accepted table is
+# still the effective one. A stub that copied first and failed afterwards would
+# report the refused table as if it were live, and every "falls back to X"
+# assertion would pass without checking anything.
+#
+# The input is still read to completion (the writing end sees no SIGPIPE) and
+# still kept as filter-v4.<tag>.<n>, because the assertions that inspect what
+# the script generated need the refused table too.
 make_stub iptables-restore '
 run="$(cat "$FW_STATE/run")"
 n=$(( $(cat "$FW_STATE/v4count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" >"$FW_STATE/v4count"
 cat >"$FW_STATE/filter-v4.$run.$n"
-cp "$FW_STATE/filter-v4.$run.$n" "$FW_STATE/filter-v4.$run"
 case ",${FW_FAIL_RESTORE:-}," in *",$n,"*) exit 1 ;; esac
+cp "$FW_STATE/filter-v4.$run.$n" "$FW_STATE/filter-v4.$run"
 exit 0'
 
 make_stub ip6tables 'exit 0'
@@ -484,6 +499,78 @@ assert_absent "IPv6 meta prefixes never reach the set" "$(cat "$LOG")" '2606:'
 assert_before "the meta API is only fetched after the final table is live" "$(cat "$LOG")" \
 	'^ipset swap' \
 	'^curl .*api.github.com/meta'
+assert_contains "a valid meta range does reach aggregate" "$(cat "$LOG")" \
+	'^aggregate< 140\.82\.112\.0/20$'
+
+# --- the meta API is outside the validation boundary -------------------------
+#
+# The response arrives over TLS from GitHub, so the agent cannot write it, and
+# the set is additive - the worst case is fewer ranges, not wider ones. What is
+# still required is that the boundary hold: the jq filter selects an address
+# family, it does not decide what is a CIDR, so the check has to happen before
+# anything external is handed the value.
+
+echo "meta ranges are checked before aggregate is handed them"
+make_stub curl '
+case "$*" in
+	*api.github.com/meta*)
+		echo "{\"web\":[\"140.82.112.0/20\",\"10.0.0.0/8\"],\"api\":[\"999999999999999999999999.1.1.1/32\"],\"git\":[\"143.55.64.0/20\"]}"
+		exit 0
+		;;
+	*example.*) exit 7 ;;
+esac
+exit 0'
+run_firewall metabounds '{"version":1}'
+healthy_net_stubs
+META_LOG="$(cat "$WORK/log.metabounds")"
+
+if [ "$(cat "$WORK/rc.metabounds")" = "0" ]; then
+	ok "an unusable meta entry does not fail the run"
+else
+	ng "an unusable meta entry does not fail the run (rc=$(cat "$WORK/rc.metabounds"))"
+	sed 's/^/    /' "$WORK/out.metabounds" >&2
+fi
+assert_absent "a private meta range never reaches aggregate" "$META_LOG" \
+	'^aggregate< 10\.0\.0\.0/8$'
+assert_absent "a malformed meta prefix never reaches aggregate" "$META_LOG" \
+	'^aggregate< 999'
+assert_contains "the usable ranges still reach aggregate" "$META_LOG" \
+	'^aggregate< 140\.82\.112\.0/20$'
+assert_absent "the private meta range is not allowed" "$META_LOG" \
+	'^ipset add -exist egress-allow-v4 10\.0\.0\.0/8$'
+assert_contains "the usable ranges are still allowed" "$META_LOG" \
+	'^ipset add -exist egress-allow-v4 140\.82\.112\.0/20$'
+# Two entries were dropped. A count that only says how many were allowed reads
+# as "that was all of them", which is the one thing it must not mean here.
+assert_contains "the dropped entries are reported" "$(cat "$WORK/out.metabounds")" \
+	'2 GitHub meta entries did not pass CIDR validation'
+
+echo "a meta response that cannot be read to the end says so"
+# A shape the presence check accepts but the extraction cannot process: jq dies
+# partway. Adding nothing is the correct outcome (the set is additive and the
+# GitHub hosts are already in it from DNS), but reporting it as an ordinary run
+# is not - as a process substitution the failure was invisible, and the run
+# announced the ranges it happened to get as though that were the whole list.
+make_stub curl '
+case "$*" in
+	*api.github.com/meta*)
+		echo "{\"web\":{\"a\":1},\"api\":[\"140.82.112.0/20\"],\"git\":[]}"
+		exit 0
+		;;
+	*example.*) exit 7 ;;
+esac
+exit 0'
+run_firewall metatruncated '{"version":1}'
+healthy_net_stubs
+
+if [ "$(cat "$WORK/rc.metatruncated")" = "0" ]; then
+	ok "an unreadable meta response does not fail the run"
+else
+	ng "an unreadable meta response does not fail the run (rc=$(cat "$WORK/rc.metatruncated"))"
+	sed 's/^/    /' "$WORK/out.metatruncated" >&2
+fi
+assert_contains "an unreadable meta response is reported" "$(cat "$WORK/out.metatruncated")" \
+	'could not be read to the end'
 
 # --- idempotency -------------------------------------------------------------
 
@@ -589,6 +676,41 @@ assert_contains "the rejection is reported" "$(cat "$WORK/out.restorefail")" \
 	'iptables-restore rejected the generated filter table'
 assert_contains "a rejected filter table falls back to the panic table" \
 	"$(v4_table restorefail)" '^-A OUTPUT -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED -j ACCEPT'
+# The panic table is the fourth restore of the run (bootstrap, final with
+# recorder, final without, panic). Naming the count keeps the case above honest:
+# if the panic restore stopped being attempted, the assertion would still find
+# an sshd rule in whatever table happened to be last.
+if [ "$(cat "$WORK/state/v4count")" = "4" ]; then
+	ok "the panic table is a restore of its own, not the last rejected one"
+else
+	ng "the panic table is a restore of its own (v4count=$(cat "$WORK/state/v4count"))"
+fi
+
+echo "a rejected panic table leaves the bootstrap table in place"
+# The panic restore can be refused too - it is piped into iptables-restore with
+# no check on the result. What matters for I2 is what remains: netfilter keeps
+# the last table it accepted, which here is the bootstrap table, and that one is
+# already closed except for DNS to the assigned resolver. The run must still
+# exit non-zero.
+#
+# This case is why the iptables-restore stub records only accepted tables. With
+# the copy done before the failure check, the refused panic table would show up
+# as the effective one and this assertion would read the opposite of the truth.
+FW_FAIL_RESTORE=2,3,4
+run_firewall panicfail '{"version":1}'
+unset FW_FAIL_RESTORE
+if [ "$(cat "$WORK/rc.panicfail")" != "0" ]; then
+	ok "a rejected panic table still exits non-zero"
+else
+	ng "a rejected panic table still exits non-zero"
+fi
+assert_contains "the effective table is still the bootstrap table" \
+	"$(v4_table panicfail)" '^-A OUTPUT -p udp --dport 53 -j DROP'
+assert_absent "the refused panic table did not take effect" \
+	"$(v4_table panicfail)" 'sport 22'
+# Closed is the point, not merely "not the panic table".
+assert_contains "the bootstrap table still drops by default" \
+	"$(v4_table panicfail)" '^:OUTPUT DROP'
 
 echo "panic on a failed rebuild"
 # No resolver at all: the allowlist cannot be built, and the run must end closed

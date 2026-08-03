@@ -261,6 +261,36 @@ check_config "out of range port" reject '{"version":1,"allowHostPorts":[70000]}'
 check_config "non-integer port" reject '{"version":1,"allowHostPorts":[5432.5]}'
 check_config "bad sshdPort" reject '{"version":1,"sshdPort":0}'
 
+# Control characters have to die at the schema gate, because nothing below it
+# can see them any more. `jq -r` emits \u0000 as a real NUL byte, and both
+# command substitution and `read` drop it: the validators then judge a string
+# the config does not contain. The danger is not the shell - it is that the
+# value a human reviews in the diff is not the value that ends up in the ipset.
+check_config "NUL in profile" reject '{"version":1,"profile":"default\u0000"}'
+check_config "NUL in allowDomains" reject '{"version":1,"allowDomains":["attacker\u0000.example.com"]}'
+check_config "NUL in allowCidrs" reject '{"version":1,"allowCidrs":["203.0.113.0/24\u0000"]}'
+# The unknown field gate reads keys through `read` as well, so a NUL in a key
+# passes it and the field is then silently absent: accepted, never applied.
+check_config "NUL in a field name" reject '{"version":1,"allowDomains\u0000":["example.com"]}'
+# A newline splits one array entry into two `read` iterations, a tab splits one
+# entry at IFS and drops the remainder. Both are accepted today, and in both
+# cases the entry list that takes effect differs from the one in the file.
+check_config "newline in allowDomains" reject '{"version":1,"allowDomains":["example.com\nevil.example.com"]}'
+check_config "tab in allowDomains" reject '{"version":1,"allowDomains":["example.com\tevil.example.com"]}'
+check_config "DEL in allowDomains" reject '{"version":1,"allowDomains":["example.com\u007f"]}'
+check_config "NUL in mode" reject '{"version":1,"mode":"enforce\u0000"}'
+
+# A schema violation this specific reads as a JSON syntax complaint unless the
+# message names the cause: the character is invisible in the diff by definition.
+printf '%s' '{"version":1,"allowDomains":["attacker\u0000.example.com"]}' >"$TMPDIR_TEST/firewall.json"
+rc=0
+out="$(bash "$FIREWALL_SH" --check-config --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "control character"; then
+	ok "the control character rejection names the cause"
+else
+	ng "the control character rejection names the cause (rc=$rc, out=$out)"
+fi
+
 # "rejected allowDomains entry: *.example.com" on its own reads like a syntax
 # complaint. The author needs to be told what to write instead.
 printf '%s' '{"version":1,"allowDomains":["*.example.com"]}' >"$TMPDIR_TEST/firewall.json"

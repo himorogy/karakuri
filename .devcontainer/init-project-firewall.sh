@@ -437,6 +437,24 @@ read_config() {
 	jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null ||
 		die "$CONFIG_FILE must contain a JSON object"
 
+	# Control characters have to die here, before any value is read into a shell
+	# variable, because below this line they cannot be seen any more. `jq -r`
+	# writes a JSON \u0000 escape out as a real NUL byte, and neither command
+	# substitution nor `read` can carry one: the validators would then be judging
+	# a string the file does not contain. A newline splits one array entry into
+	# two `read` iterations and a tab splits one at IFS, with the same result.
+	#
+	# The risk is not shell injection - the validators still see whatever reaches
+	# them. It is that the value a human reviews in the diff stops being the value
+	# that ends up in the ipset, and human review is what I1 leans on. Keys are
+	# checked too: a NUL in one passes the unknown field gate below, and the field
+	# is then silently absent - accepted, never applied.
+	jq -e '
+		([.. | strings] + [paths | .[] | strings])
+		| all(explode | all(. > 31 and . != 127))
+	' "$CONFIG_FILE" >/dev/null ||
+		die "$CONFIG_FILE contains a control character in a string or field name; these are invisible in a diff and are dropped before validation, so what you review would not be what takes effect"
+
 	# Reject unknown top level keys so that a typo in a future field name can
 	# never be silently ignored.
 	local key
@@ -702,19 +720,70 @@ add_github_meta_ranges() {
 		return 0
 	fi
 
-	# The jq filter keeps IPv4 prefixes only. `^[0-9]` alone would let
-	# 2606:...-style IPv6 prefixes through; validate_cidr rejects them further
-	# down, but only after `aggregate` has been handed input it does not
-	# understand, which makes the outcome depend on which aggregate is installed.
+	# The jq filter selects the address family: `^[0-9]` alone would let
+	# 2606:...-style IPv6 prefixes through. It is a filter, not a validator - a
+	# string like 999999999999999999.1.1.1/32 passes it too - so nothing here is
+	# trusted beyond "this is meant to be an IPv4 prefix".
+	#
+	# Reading the whole extraction into a variable first is what makes a partial
+	# response visible. As a process substitution feeding `while read`, a jq that
+	# died halfway just ended the loop, and the run reported the ranges it did get
+	# as though that were all of them.
+	local raw jq_rc=0
+	raw="$(printf '%s' "$meta" |
+		jq -r '(.web + .api + .git)[] | select(type == "string") | select(test("^[0-9]+[.]"))')" ||
+		jq_rc=$?
+	if [ "$jq_rc" -ne 0 ]; then
+		warn "the GitHub meta response could not be read to the end; allowing only the ranges that were readable"
+	fi
+
+	# validate_cidr runs BEFORE aggregate, not after. aggregate is an external
+	# command with build-dependent behaviour, and handing it input it does not
+	# understand makes the outcome depend on which one is installed.
+	local -a ranges=()
+	local rejected=0
 	while read -r cidr; do
 		[ -n "$cidr" ] || continue
-		validate_cidr "$cidr" || continue
-		ipset add -exist "$SET_V4" "$cidr"
-		count=$((count + 1))
-	done < <(printf '%s' "$meta" |
-		jq -r '(.web + .api + .git)[] | select(test("^[0-9]+[.]"))' |
-		if command -v aggregate >/dev/null 2>&1; then aggregate -q; else cat; fi)
+		if validate_cidr "$cidr"; then
+			ranges+=("$cidr")
+		else
+			rejected=$((rejected + 1))
+		fi
+	done <<<"$raw"
+
+	local compacted
+	if [ "${#ranges[@]}" -eq 0 ]; then
+		compacted=""
+	elif command -v aggregate >/dev/null 2>&1; then
+		local agg_rc=0
+		compacted="$(printf '%s\n' "${ranges[@]}" | aggregate -q)" || agg_rc=$?
+		if [ "$agg_rc" -ne 0 ]; then
+			warn "aggregate failed on the GitHub meta ranges; allowing them uncompacted"
+			compacted="$(printf '%s\n' "${ranges[@]}")"
+		fi
+	else
+		compacted="$(printf '%s\n' "${ranges[@]}")"
+	fi
+
+	# Re-validated on the way out. aggregate merges prefixes, so its output is not
+	# the input, and only checked values may reach the set.
+	while read -r cidr; do
+		[ -n "$cidr" ] || continue
+		if validate_cidr "$cidr"; then
+			ipset add -exist "$SET_V4" "$cidr"
+			count=$((count + 1))
+		else
+			rejected=$((rejected + 1))
+		fi
+	done <<<"$compacted"
+
 	info "allowed $count GitHub ranges from the meta API"
+	# Silence here would read as "everything on offer was allowed". The set is
+	# additive and the core hosts are already in it from DNS, so a short list is
+	# survivable - being unable to tell it apart from a complete one is not.
+	if [ "$rejected" -gt 0 ]; then
+		warn "$rejected GitHub meta entries did not pass CIDR validation and were not allowed"
+	fi
 }
 
 # Name resolution only. Everything here works under the bootstrap policy, which
