@@ -54,7 +54,8 @@ npx biome check .
 1. **Dev Containers: Rebuild Container**
 2. Orca が繋がったら、§6.2 の 2.1〜2.5 で適用そのものを確認する
 3. [`verification-record.md`](./verification-record.md) §6.19 の 19.3 — **WebFetch が遮断されたときのフォールバック挙動**（下記 1.2 の前提）。`enforce` でないと測れません
-4. 通ったら [`known-issues.md`](./known-issues.md) #8 を閉じ、§1 実施状況に `enforce` の行を足す
+4. `ls ~/.vscode-server/extensions` — **拡張が 3 つ揃うか**（[`known-issues.md`](./known-issues.md) #9 の判定）
+5. 通ったら [`known-issues.md`](./known-issues.md) #8 を閉じ、§1 実施状況に `enforce` の行を足す
 
 > **戻し方。** 繋がらなくなったら、ホストから `.devcontainer/devcontainer.json` の `postStartCommand` をコメントアウトして再ビルドしてください。ワークスペースはバインドマウントなので、コンテナが上がらなくても編集できます。
 
