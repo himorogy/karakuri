@@ -37,7 +37,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 3. `ipset swap` で差し替え、本番のフィルタテーブルを `iptables-restore` で一括適用する
 4. 自己検証を実行する
 
-**リビルド中に外部ネットワークを必要とする工程はありません。** 途中で強制終了されても「開いたまま固定される」状態になりません。
+**リビルド中に外部ネットワークを必要とする工程はありません。** 途中で強制終了された場合に何が保たれるかは [`docs/design.md`](./docs/design.md) §2.2。
 
 **失敗したら panic テーブル**（loopback と確立済み sshd 応答のみ許可、他は全 DROP）を適用して exit≠0 します。`firewall.json` の検証エラーも同様です。`iptables` が使えると確認する前の失敗だけは、panic テーブルすら適用できないためルール未適用で終了します。
 
@@ -73,12 +73,12 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 **推奨は「ユーザー定義ネットワークを、プロジェクトごとに 1 つ」です。**
 
-* Docker の埋め込みリゾルバ `127.0.0.11` は**ユーザー定義ネットワーク上でのみ**提供されます。デフォルトブリッジではホスト側の DNS アドレスが直接書かれ、**そのアドレスの 53 番へ外向きの穴を 1 つ開ける**ことになります。埋め込みリゾルバならパケットが eth0 から出ないため、この穴自体が不要になります
-* **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナは相互に到達でき、埋め込み DNS がコンテナ名で解決できてしまいます
+* **Docker の埋め込みリゾルバ `127.0.0.11` が使えます。** デフォルトブリッジでは、ホスト側の DNS アドレス宛に外向きの穴が 1 つ開きます
+* **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナが相互に到達できる状態になります
 
-どちらも**このパッケージの必須要件ではありません。** スクリプトはどちらの構成でも動き、埋め込みリゾルバでなければ警告を出すだけです。
+**これは推奨であって必須要件ではありません。** 埋め込みリゾルバでない構成では警告が出ますが、動作します。
 
-判断の根拠（ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/design.md`](./docs/design.md) §4 を参照してください。
+判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/design.md`](./docs/design.md) §4 を参照してください。
 
 ### 案 A: Docker Compose を使う（推奨）
 
@@ -246,12 +246,7 @@ sudoers の書き間違い（末尾 `""` の欠落）は、スクリプト側が
 | `firewall.json` を `/etc/egress-guard/` に置く | エージェントは再適用をいつでも実行できます。**再適用が読むファイルをエージェントが書き換えられるなら、root を取らずに 2 手でポリシーが無効になります**（[design §2.1](./docs/design.md)） |
 | `chattr +i` を使わない | Docker の既定 capability では失敗し、防御価値も限定的（[design §2.16](./docs/design.md)） |
 
-repo 内の `.devcontainer/firewall.json` が「ソース」で、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、次の 2 つが別の操作になります。
-
-| 操作 | 誰が | 必要なもの |
-|---|---|---|
-| 再解決（CDN の IP 変動への追随） | エージェントでも可 | 再適用のみ |
-| ポリシー変更 | 人間 | repo の編集 + イメージ再ビルド |
+repo 内の `.devcontainer/firewall.json` が「ソース」で、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、**再解決（CDN の IP 変動への追随）と、ポリシー変更とが別の操作になります**（それぞれ誰が何をすれば済むかの対応表は [`docs/design.md`](./docs/design.md) §2.1）。
 
 ## パッケージを更新する
 
@@ -305,15 +300,7 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 }
 ```
 
-| フィールド | 型 | 必須 | 説明 |
-|---|---|---|---|
-| `version` | int | ✔ | スキーマ版。現在は `1` のみ。未知の版は拒否します |
-| `profile` | string | — | 基底プロファイル名。現在は `default` のみ |
-| `mode` | `"enforce"` \| `"audit"` | — | 既定は `enforce`。詳細は後述 |
-| `allowDomains` | string[] | — | 追加許可ドメイン。**ワイルドカードは使えません**（[理由](#ワイルドカードドメインは使えません)）。具体的なホスト名を書いてください |
-| `allowCidrs` | string[] | — | 追加許可 CIDR |
-| `allowHostPorts` | int[] | — | ホスト宛に許可する TCP ポート（デフォルトゲートウェイと `host.docker.internal`） |
-| `sshdPort` | int | — | コンテナ内 sshd のポート。既定は `22` |
+各フィールドの型・必須・拒否条件は [`docs/spec.md`](./docs/spec.md) §3.1。`allowHostPorts` が開けるホスト宛の相手は**デフォルトゲートウェイと `host.docker.internal`** の 2 つです。`allowDomains` に**ワイルドカードは使えません**（[理由](#ワイルドカードドメインは使えません)）。
 
 未知のフィールドが含まれている場合は拒否します（タイプミスが黙って無視されるのを防ぐため）。
 
@@ -363,11 +350,9 @@ allowlist 外の外向き通信を REJECT します。遮断された宛先は i
 
 数日運用して `egress-audit-v4` から必要な宛先を収集し、`firewall.json` に転記してから `enforce` に切り替える、という流れを想定しています。静的 allowlist の「事前に全部知らないと使えない」問題への緩和策です。
 
-**audit でも遮断されるもの:**
+**audit でも遮断されるものが 3 つあります** — DNS 固定・IPv6・INPUT です。緩むのは IPv4 の外向き通信だけで、一覧と各項目の理由は [`docs/spec.md`](./docs/spec.md) §6.2。
 
-* **DNS 固定** — 割り当てられたリゾルバ以外への 53 番宛は audit でも DROP します。正規のトラフィックはそのリゾルバ経由なので実害はなく、ここを緩めるとポリシー全体が無意味になります
-* **IPv6** — audit でも拒否のままです。試行はログ（`fw-drop6:`）に残ります。**silent DROP ではなく `icmp6-adm-prohibited` で即断します**（AAAA を持つ許可先への接続が、IPv4 へフォールバックするまで待たされないため）
-* **INPUT** — audit でも DROP のままです。audit が緩めるのは IPv4 の外向き通信だけです
+IPv6 の試行はログ（`fw-drop6:`）に残ります。**silent DROP ではなく `icmp6-adm-prohibited` で即断します**（AAAA を持つ許可先への接続が、IPv4 へフォールバックするまで待たされないため）。
 
 ## 遮断された宛先を調べる
 
@@ -396,7 +381,7 @@ Members:
 dig +short -x 93.184.216.34
 ```
 
-**逆引きは当てになりません。** CDN や link-local アドレスは PTR を持たないか、持っていても汎用的な名前しか返しません。**逆引きは CDN や link-local では空振りすることが多いため、TLS 証明書の SAN を見るほうが確実です。** 引くときは `audit` モード中、その宛先に到達できる状態で行ってください。
+**逆引きは当てになりません。** CDN や link-local アドレスは PTR を持たないか、持っていても汎用的な名前しか返しません。**空振りすることが多いため、TLS 証明書の SAN を見るほうが確実です。** 引くときは `audit` モード中、その宛先に到達できる状態で行ってください。
 
 ```sh
 echo | openssl s_client -connect 93.184.216.34:443 2>/dev/null \
@@ -465,11 +450,7 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 
 ## 特定の通信だけが通らない
 
-`ipset list egress-audit-v4` で遮断された宛先を確認し、逆引きしてから `firewall.json` の `allowDomains` / `allowCidrs` に追加して再適用してください。
-
-新規プロジェクトで許可先が読めない場合は、いったん `mode: "audit"` で運用してログを集めるのが早道です。
-
-**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** 2026-08-03 に Orca remote の接続不能を追ったときの手順で、同種の構成に使えます。
+**`enforce` にしたら何かが動かなくなった、という状況の切り分け手順です。** いったん `mode: "audit"` で運用して `egress-audit-v4` に宛先を溜め、名前に戻して `firewall.json` の `allowDomains` / `allowCidrs` に追加し、再適用する、という流れになります。2026-08-03 に Orca remote の接続不能を追ったときの手順で、同種の構成に使えます。
 
 | # | 手順 | 注意 |
 |---|---|---|
@@ -481,6 +462,8 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 | 6 | TLS 証明書で確認 | `openssl s_client -connect <ip>:443 -servername <候補>` で候補を当てる。SNI 無しでは Cloudflare は証明書を返しません |
 | 7 | `timeout` の残量から追加時刻を逆算する | `追加時刻 = 現在 - (604800 - 残量)`。**`--exist` で再追加されると残量がリセットされるため、これは「最後に接触した時刻」です** |
 
+3〜6 で使う具体的なコマンドは[遮断された宛先を調べる](#遮断された宛先を調べる)にあります。
+
 > **6 が記録を汚染します。** `openssl` で候補 IP を叩くと、**その接続自体が `egress-audit-v4` に記録されます。** 実際にこれをやってしまい、別コンテナから取った 17 件を全て自分のコンテナに書き込みました。7 の時刻で切り分けられますが、**名前解決は別のコンテナか、記録が済んでから行ってください。**
 
 > **7 が効きます。** 「コンテナ起動時刻より前のエントリがある」ことから、取得先のコンテナを取り違えていると気付けました（[適用されているか確かめる](#適用されているか確かめる)の注意書きと同じ話です）。`docker ps` でコンテナ ID を確認してから 3 を実行してください。
@@ -488,20 +471,6 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 > **`example.com` と `8.8.8.8` が 2 秒差で並んでいたら、それは [`docs/spec.md`](./docs/spec.md) §5 の自己検証です**（未許可ホストの到達確認と外部 DNS の確認）。`audit` では前者がスキップされるため、**この組が出ていればそのコンテナは `enforce` で動いています。** 取り違えの判別にも使えます。
 
 この手順は [`docs/verification-record.md`](./docs/verification-record.md) §6.21 から移しました（当時の項目 21.1〜21.7）。
-
----
-
-# 開発
-
-```sh
-pnpm test          # 設定バリデーション + ルール適用
-pnpm lint:sh       # shellcheck
-```
-
-* `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ
-* `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）
-
-開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/spec.md`](./docs/spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**
 
 ---
 
@@ -542,7 +511,7 @@ out which ones those are.
 
 allowlist は**起動時に解決した IP の集合**です。**その起動の間アドレスが変わらないドメインにしか使えません。**
 
-`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。**`allowDomains` に書いてあるのに落ちます。** 同じ日に `nodejs.org` は問題なく通っており、**CDN の性質で成否が分かれます。**
+`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。**`allowDomains` に書いてあるのに落ちます。**
 
 仕様上の位置づけは [`docs/spec.md`](./docs/spec.md) §9.7、実害の詳細と回避策は[コンテナ起動後にセットアップを行う場合](#コンテナ起動後にセットアップを行う場合)。
 
@@ -603,7 +572,7 @@ L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` �
 
 ## DNS トンネリングは防げません
 
-53 番の宛先はリゾルバ 1 つに固定しますが、**そのリゾルバは再帰問い合わせをします。** [`docs/design.md`](./docs/design.md) §3.1。
+[できないこと（設計上の非目標）](#できないこと設計上の非目標)と [DNS リゾルバ](#dns-リゾルバ)の注意書きのとおりです。機序と受容の理由は [`docs/design.md`](./docs/design.md) §3.1。
 
 ## Web 検索は使えます。Web 取得は許可したドメインだけです
 
@@ -611,7 +580,7 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 
 **WebFetch はコンテナ内から取得先へ直接接続します。** したがって `allowDomains` に無いドメインは取得できません。よく参照するドキュメントサイトは `firewall.json` に列挙してください。
 
-取得内容はふつう小型モデルの要約を経由するため、prompt injection の緩衝材になります。**ただし Claude Code が事前承認している 91 のドキュメントドメインでは要約がバイパスされ、原文がそのままコンテキストに入ります。** それらを `allowDomains` に入れるときは、遮断の可否だけでなくこの点も勘定に入れてください。
+取得内容はふつう小型モデルの要約を経由するため、prompt injection の緩衝材になります。**ただし Claude Code が事前承認している 91 のドキュメントドメインでは、この緩衝材が働きません**（何が起きるか、`allowDomains` に入れるときに何を勘定に入れるべきかは [`docs/web-search-fetch.md`](./docs/web-search-fetch.md) §2）。
 
 実測の結果と、バージョンが上がったときの再確認手順は [`docs/web-search-fetch.md`](./docs/web-search-fetch.md)。
 
@@ -627,9 +596,9 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 
 ---
 
-## このパッケージを直す場合
+# 開発
 
-このリポジトリのルートで、CI が回すのと同じ 3 つを実行します。
+このパッケージを直す場合は、このリポジトリのルートで、CI が回すのと同じ 3 つを実行します。
 
 ```sh
 pnpm lint          # biome
@@ -637,6 +606,13 @@ pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
 pnpm test          # 設定 95 件 + ルール 145 件
 ```
 
-> **egress-guard を導入した devcontainer の中で実行すると `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、その 5 件が何も検査できないためです。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
+* `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 95 件**
+* `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 145 件**
+
+**`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
+
+> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**145 件のうち 5 件**が何も検査できないためです。**設定側の 95 件は影響を受けません**（`95 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
 > **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。GitHub は基底プロファイルに入っているため `enforce` のままでも取得できます。
+
+開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/spec.md`](./docs/spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**

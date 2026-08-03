@@ -644,9 +644,9 @@ grep -v 'metadata.test' /etc/hosts > /tmp/h && cat /tmp/h > /etc/hosts
 
 #### 実施前に
 
-> **既存コンテナを止めてください。** `container_name` を案 B と同じ `karakuri-dev-container` に揃えてあるため、動いたままだと名前が衝突します。`shutdownAction: none` なので自動では止まりません。
+> **既存コンテナ（`karakuri-dev-container`）を止めてください。** `container_name` を案 B と揃えてあるため名前が衝突します。`shutdownAction: none` なので自動では止まりません。衝突が起きる理由は [`../README.md`](../README.md) の「ネットワーク構成（推奨）」案 A の注意書き。
 
-> **`claude` と `codex` の再ログインが要ります。** `devcontainer.json` の `mounts` は `${devcontainerId}` を含む名前でボリュームを作りますが、**`${devcontainerId}` は Compose では使えません。** そのため固定名の別ボリュームになります。既存のボリュームを引き継ぎたい場合は `docker volume ls | grep claude-code-config` で実名を調べ、`docker-compose.yml` の当該ボリュームを `external: true` にして名前を合わせてください。
+> **`claude` と `codex` の再ログインが要ります。** `${devcontainerId}` が Compose では使えない（同上）ため、`devcontainer.json` の `mounts` が作るボリュームとは別の、固定名のボリュームになります。既存のボリュームを引き継ぎたい場合は `docker volume ls | grep claude-code-config` で実名を調べ、`docker-compose.yml` の当該ボリュームを `external: true` にして名前を合わせてください。
 
 | # | 確かめること | コマンド | 判定 |
 |---|---|---|---|
@@ -664,7 +664,7 @@ grep -v 'metadata.test' /etc/hosts > /tmp/h && cat /tmp/h > /etc/hosts
 | 22.8d | 同 — ホスト宛の到達性 | §6.15 の手順 | §6.15 の判定どおり。**ここは特に注意。** ゲートウェイのアドレスが案 B と変わる |
 | 22.9 | 戻せる | 22.1 を逆に行って再ビルド | 案 B で起動し、警告 2 行が出ない（どちらもユーザー定義ネットワークのため） |
 
-> **22.0 を飛ばさないでください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A では別ファイルに分かれ、整合を検査する仕組みがありません。** ずれると `postCreateCommand` が **exit 127** で落ちます。`docker exec -w` が存在しない作業ディレクトリを黙って作るため、空のディレクトリでコマンドが走り、原因が「スクリプトが見つからない」までしか辿れません。**2026-08-03 に `/workspaces` と `/workspace` の取り違えで実際に踏みました。** 再現と切り分けはこうです。
+> **22.0 を飛ばさないでください。** マウント先と `workspaceFolder` がずれると `postCreateCommand` が **exit 127** で落ちます。なぜ案 A でだけ起きるのか、なぜ原因に辿り着きにくいのか、実際に踏んだ経緯は [`../README.md`](../README.md) の「ネットワーク構成（推奨）」案 A の注意書き。再現と切り分けはこうです。
 >
 > ```sh
 > # [ホスト] 失敗したコマンドをそのまま再現する

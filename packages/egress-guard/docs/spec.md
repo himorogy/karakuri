@@ -181,26 +181,11 @@ live set（`egress-allow-v4`）に禁止レンジ（§3.2 の表）のアドレ�
 
 **読むのは `/etc/egress-guard/firewall.json` だけです。探索は一切行いません。** 見つからない場合は基底プロファイルのみで動作します。理由は §2.1（I1）。
 
-設定は**イメージビルドが配置するもの**であり、スクリプトが見つけ出すものではありません（理由は [`design.md`](./design.md) §2.1）。まだインストールされていないファイルを検証する場合は `--config` でパスを明示します（§8）。
-
-```sh
-# 再ビルド前に repo 側のコピーを検証する
-init-project-firewall.sh --check-config --config .devcontainer/firewall.json
-```
+設定は**イメージビルドが配置するもの**であり、スクリプトが見つけ出すものではありません（理由は [`design.md`](./design.md) §2.1）。まだインストールされていないファイルを検証する場合は `--config` でパスを明示します（§8。実行例は [`../README.md`](../README.md) の「firewall.json」）。
 
 パスは環境変数からも導出しません（sudo 下の環境変数は信用できないため）。
 
-```json
-{
-  "version": 1,
-  "profile": "default",
-  "mode": "enforce",
-  "allowDomains": ["registry.example.com"],
-  "allowCidrs": ["203.0.113.0/24"],
-  "allowHostPorts": [5432],
-  "sshdPort": 22
-}
-```
+全フィールドを埋めた記入例は [`../README.md`](../README.md) の「スキーマ」（同じ内容が `templates/firewall.example.json` にあります）。
 
 | フィールド | 型 | 必須 | 説明 |
 |---|---|---|---|
@@ -295,7 +280,7 @@ root スクリプト側で実施し、違反は **panic テーブルを適用し
 順序の要点:
 
 * **適用フェーズは設定を読む前に始まります。** `iptables` の存在を確認した時点から、どの失敗も閉じた状態で終わります（§4.6、I2）
-* **6 を 7 より先に行うのが本仕様の核です。** リビルド中に外部ネットワークを必要とする工程が存在しないため（I3）、途中で強制終了されても「開いたまま固定される」状態になりません（I2）
+* **6 を 7 より先に行うのが本仕様の核です。** リビルド中に外部ネットワークを必要とする工程が存在しないため（I3）、任意の時点の強制終了が I2 を破りません
 * 8 は 6 の後。`host.docker.internal` の解決は bootstrap テーブルの下で成立します
 * 10 は 9 の後。`api.github.com` に到達できるのが最終テーブル適用後のためです。GitHub の主要ホストは 7 の DNS 解決で許可済みなので、10 が失敗しても GitHub は使えます（I3 の「best effort」例外）
 
@@ -328,9 +313,7 @@ DNS の DROP ルールは**汎用の `ESTABLISHED,RELATED` ACCEPT より前**に
 * SIGKILL を受けても、旧テーブルか新テーブルのどちらかしか観測されない
 * **nat テーブルには触りません。** `iptables-restore` は入力に含まれるテーブルしか置き換えないため、Docker の DNS DNAT は無傷のまま残ります
 
-IPv4 と IPv6 は 1 つのトランザクションを共有できません。そのため IPv6 を先に最終状態へ確定させ、以降は触らない構成にしています。
-
-根拠は [`design.md`](./design.md) §2.3・§2.4。
+IPv6 の最終テーブルを先に確定させ以降触らないのは §4.2 手順 6a のとおりで、そうする理由（トランザクションをファミリ間で共有できないこと）は [`design.md`](./design.md) §2.3。nat を触らない理由は同 §2.4。
 
 ### 4.5 allowlist の構築
 
@@ -476,12 +459,9 @@ default DROP + loopback + `ESTABLISHED,RELATED` + sshd ポートの NEW を許�
 
 #### カーネルログ（`LOG`）について
 
-`fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません**。
+`fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません**（出力されない 2 つの理由は [`design.md`](./design.md) §2.11）。
 
-* コンテナ内の `dmesg` は `CAP_SYSLOG` が無いため読めない
-* `net.netfilter.nf_log_all_netns` が既定の `0` の場合、カーネルが非初期ネットワーク名前空間からのログを抑制する
-
-**運用の前提にしません。** 出力される環境では時刻とポートも取れるため残してあります（[`design.md`](./design.md) §2.11）。
+**運用の前提にしません。** 出力される環境では時刻とポートも取れるため残してあります。
 
 ### 4.11 冪等性
 
@@ -548,7 +528,7 @@ audit が緩めるのは IPv4 の外向き通信だけです。
 
 ### 6.3 再適用
 
-allowlist は起動時の名前解決に基づくため、CDN の IP 変動で許可先に到達できなくなることがあります。
+**同一の実効設定の再適用（再解決）はいつでも実行できます**（冪等。§4.11）。用途と手順は [`../README.md`](../README.md) の「再適用」。
 
 ```sh
 sudo /usr/local/bin/init-project-firewall.sh
@@ -602,14 +582,7 @@ sudoers 上、agent 自身も再実行できますが、読むのは root 所有
 
 ### 9.1 ワイルドカードドメインは使用不可
 
-`*` を含む `allowDomains` エントリはバリデーションで拒否します。拒否メッセージには回避策（具体的なホスト名の列挙、audit モードでの特定）を含めます。
-
-```
-rejected allowDomains entry: *.example.com - wildcards are not supported. DNS cannot
-enumerate the subdomains of a zone, so a wildcard cannot be expanded into addresses.
-List the host names you need instead; run in audit mode and read ipset egress-audit-v4
-to find out which ones those are.
-```
+`*` を含む `allowDomains` エントリはバリデーションで拒否します。**拒否メッセージには回避策（具体的なホスト名の列挙、audit モードでの特定）を含めます。** 出力されるメッセージの実物は [`../README.md`](../README.md) の「ワイルドカードドメインは使えません」。
 
 現行実現層（L3 の IP 集合）の制限です。不変条件そのものの制限ではないため、実現層の交代で解消できます（§10.1）。L7 proxy への移行時にスキーマ version 2 で再導入します。根拠は [`design.md`](./design.md) §2.10。
 
@@ -629,7 +602,7 @@ L3/L4 では HTTP メソッドが見えず、L4 で表現すると 443 番の全
 
 ### 9.4 DNS トンネリングは防げない
 
-53 番の宛先はリゾルバ 1 つに固定していますが、**そのリゾルバは再帰問い合わせをします。** 得られている性質は I4（経路の固定と、それ以外の試行の遮断・記録）であって、トンネリングの遮断ではありません。埋め込みリゾルバ `127.0.0.11` でも同じです。
+割り当てられたリゾルバの再帰問い合わせを経由する持ち出しは遮断できません（機序と、埋め込みリゾルバでも同じである理由は [`design.md`](./design.md) §3.1）。**得られている性質は I4（経路の固定と、それ以外の試行の遮断・記録）であって、トンネリングの遮断ではありません。**
 
 受容の理由と対策の選択肢は [`design.md`](./design.md) §3.1。実現層の交代（§10.1）で「固定」を実質的な遮断へ強化できます。
 
