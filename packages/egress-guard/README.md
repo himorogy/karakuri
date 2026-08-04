@@ -101,7 +101,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 2. スクリプトを /usr/local/bin へコピー（パッケージから取得する場合）
-RUN npm install -g @himorogy/egress-guard \
+#    バージョンは必ず固定する。このスクリプトは root 所有の /usr/local/bin に置かれ、
+#    4 のパスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の
+#    更新がそのままコンテナ内 root でのコード実行になる。
+RUN npm install -g @himorogy/egress-guard@0.1.0 \
   && cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
         /usr/local/bin/init-project-firewall.sh \
   && chown root:root /usr/local/bin/init-project-firewall.sh \
@@ -120,6 +123,12 @@ RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""
 
 USER node
 ```
+
+> **`NPM_CONFIG_PREFIX` を `node` 所有のディレクトリへ移しているイメージでは、2 の
+> `npm install` だけを `node` として実行してください。** root で入れると root 所有の
+> ファイルがグローバル領域に混ざり、以後 `node` での `-g install` が権限で失敗します。
+> `cp` 以降は root のままで構いません。`node:24` の既定（`/usr/local/lib/node_modules`、
+> root 所有）を使っている場合は上のとおり全部 root で問題ありません。
 
 ## devcontainer.json に追記するもの
 

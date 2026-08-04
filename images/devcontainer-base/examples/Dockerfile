@@ -7,43 +7,21 @@
 FROM ghcr.io/himorogy/devcontainer-base:1
 
 # --- egress-guard ---------------------------------------------------------------
-# 実行に必要な OS パッケージは base に入っている。ここではスクリプト本体と
-# プロジェクト固有の実効設定だけを入れる。
+# OS パッケージ・スクリプト本体 (/usr/local/bin/init-project-firewall.sh)・sudoers は
+# base に入っている。プロジェクト側で要るのは実効設定だけ。
 #
-# npm のグローバル領域 (/usr/local/share/npm-global) は node 所有のため、
-# install は node のまま実行する。root で入れると root 所有のファイルが混ざり、
-# 以後 node での -g install が権限で失敗しうる。
-#
-# バージョンは必ず固定する。このパッケージのスクリプトは下で root 所有の
-# /usr/local/bin に置かれ、パスワードなし sudo の対象になる。dist-tag のまま
-# 追従させると、パッケージ側の更新がそのままコンテナ内 root でのコード実行になる。
-RUN npm install -g @himorogy/egress-guard@<VERSION>
-
-# base は USER=node で終わっているため、root 作業の前後で明示的に切り替える。
-USER root
-
-RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-         /usr/local/bin/init-project-firewall.sh \
-    && chown root:root /usr/local/bin/init-project-firewall.sh \
-    && chmod 755 /usr/local/bin/init-project-firewall.sh
-
 # 実効設定は /etc/egress-guard 固定。探索は行わない。
 # firewall.json は .devcontainer/ に置き、ビルドコンテキストに合わせてパスを調整する。
+#
+# base は USER=node で終わっているため、root 作業の前後で明示的に切り替える。
+# COPY したファイルは root 所有で入るが、node が書き換えられる状態だと
+# {"mode":"audit"} への差し替えで防御を無効化できてしまうため、権限を明示する。
+USER root
+
 COPY firewall.json /etc/egress-guard/firewall.json
 RUN chown -R root:root /etc/egress-guard \
     && chmod 755 /etc/egress-guard \
     && chmod 644 /etc/egress-guard/firewall.json
-
-# 末尾の "" は「引数を取らない実行のみ許可」の意。
-# 実効設定を /etc/egress-guard に固定した設計意図を、引数経由での設定差し替えを
-# 塞ぐことで sudoers 側でも担保する。この "" を落とすと防御が無効になる。
-#
-# visudo -c は構文検証。この行を編集して引用符や改行を壊すと、ビルドは通るのに
-# 起動時の postStartCommand で初めて失敗する。ビルド時に落とす。
-RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
-      > /etc/sudoers.d/node-firewall \
-    && chmod 0440 /etc/sudoers.d/node-firewall \
-    && visudo -cf /etc/sudoers.d/node-firewall
 
 # --- プロジェクト固有のパッケージ ------------------------------------------------
 # 例: Neon / Postgres を使うプロジェクト

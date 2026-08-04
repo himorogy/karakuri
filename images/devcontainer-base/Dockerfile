@@ -38,6 +38,7 @@ FROM node:24
 ARG USERNAME=node
 ARG TZ=Asia/Tokyo
 ARG PNPM_VERSION=10.30.0
+ARG EGRESS_GUARD_VERSION=0.1.0
 
 # --- ロケール / タイムゾーン --------------------------------------------------
 # LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定になる。
@@ -54,6 +55,9 @@ RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
 # --- OS パッケージ ------------------------------------------------------------
 # vim-tiny は git commit / rebase -i がエディタ不在で失敗しないための最小保険。
 # 実際に使うエディタ (micro 等) は後付けスクリプトが入れて EDITOR を上書きする。
+#
+# egress-guard が要求するもののうち curl (GitHub meta API の取得と自己検証) は
+# node:24 に同梱されているため、ここには並べていない。上流が外したら追加すること。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git \
       gh \
@@ -116,44 +120,6 @@ RUN mkdir -p /workspace /home/${USERNAME}/.claude /home/${USERNAME}/.codex \
 
 WORKDIR /workspace
 
-# --- egress-guard --------------------------------------------------------------
-# 実行に必要な OS パッケージ (iptables / ipset / iproute2 / dnsutils / jq /
-# aggregate) は上の apt-get で base に入れてある。
-#
-# 一方でスクリプト本体と設定は base に焼かない。実効設定 (firewall.json) が
-# プロジェクトごとに異なり、base に含めると許可ドメインの差し替えが
-# 「base の再ビルド」を要求してしまうため。
-# → 層の分離でいう B 層。将来 devcontainer Feature 化する余地を残す。
-#
-# プロジェクト側の Dockerfile で以下を行う。
-# npm のグローバル領域は node 所有のため、install は node のまま実行する
-# (root で入れると root 所有のファイルが混ざり、以後 node での -g install が
-#  権限で失敗しうる)。root が担当するのは配置と権限付与だけ。
-#
-#   RUN npm install -g @himorogy/egress-guard
-#
-#   USER root
-#
-#   RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-#            /usr/local/bin/init-project-firewall.sh \
-#       && chown root:root /usr/local/bin/init-project-firewall.sh \
-#       && chmod 755 /usr/local/bin/init-project-firewall.sh
-#
-#   COPY firewall.json /etc/egress-guard/firewall.json
-#   RUN chown -R root:root /etc/egress-guard \
-#       && chmod 755 /etc/egress-guard \
-#       && chmod 644 /etc/egress-guard/firewall.json
-#
-#   RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
-#         > /etc/sudoers.d/node-firewall \
-#       && chmod 0440 /etc/sudoers.d/node-firewall
-#
-#   USER node
-#
-# sudoers 末尾の "" は「引数を取らない実行のみ許可」の意。実効設定を
-# /etc/egress-guard に固定し探索を廃止した設計意図を、引数経由での設定差し替えを
-# 塞ぐことで sudoers 側でも担保する。この "" を落とすと防御が無効になる。
-
 # --- pnpm ----------------------------------------------------------------------
 ENV PNPM_HOME=/usr/local/share/pnpm \
     NPM_CONFIG_PREFIX=/usr/local/share/npm-global
@@ -168,6 +134,47 @@ USER ${USERNAME}
 # 各プロジェクトの packageManager フィールドと乖離する。
 RUN npm install -g pnpm@${PNPM_VERSION} \
     && pnpm --version
+
+# --- egress-guard --------------------------------------------------------------
+# スクリプト本体と sudoers は base に入れる。どちらも全プロジェクトで同一で、
+# root 所有の場所に置く必要があり、npm では入らない領域を触るため。
+#
+# base に入らないのは実効設定 (firewall.json) だけ。プロジェクトごとに内容が
+# 異なるうえ、COPY 元がプロジェクトのビルドコンテキストにあり base のビルド時
+# には存在しない。プロジェクト側の Dockerfile で入れる (examples/Dockerfile)。
+#
+# バージョンは ARG で固定する。このスクリプトは下で root 所有の /usr/local/bin に
+# 置かれ、パスワードなし sudo の対象になる。dist-tag のまま追従させると、
+# パッケージ側の更新がそのままコンテナ内 root でのコード実行になる。
+#
+# npm のグローバル領域 (NPM_CONFIG_PREFIX) は node 所有のため、install は node の
+# まま実行する。root で入れると root 所有のファイルが混ざり、以後 node での
+# -g install が権限で失敗しうる。root が担当するのは配置と権限付与だけ。
+RUN npm install -g @himorogy/egress-guard@${EGRESS_GUARD_VERSION}
+
+USER root
+
+# sudoers は固定パスを名指しする必要があるため、グローバル node_modules を参照
+# させずにコピーする。NPM_CONFIG_PREFIX 配下は node が書き換えられるので、sudo で
+# 実行を許したファイルそのものを node が差し替えられる状態にはできない。
+#
+# sudoers 末尾の "" は「引数を取らない実行のみ許可」の意。実効設定を
+# /etc/egress-guard に固定し探索を廃止した設計意図を、引数経由での設定差し替えを
+# 塞ぐことで sudoers 側でも担保する。この "" を落とすと防御が無効になる。
+#
+# visudo -c は構文検証。sudoers.d 配下に構文エラーがあると、その後の sudo 呼び出し
+# 全体がパースエラーで失敗する。この行を編集して引用符や改行を壊すとビルドは通り、
+# 派生プロジェクトの起動時に初めて表面化するため、base のビルド時に落とす。
+RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
+         /usr/local/bin/init-project-firewall.sh \
+    && chown root:root /usr/local/bin/init-project-firewall.sh \
+    && chmod 755 /usr/local/bin/init-project-firewall.sh \
+    && printf '%s ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
+         "${USERNAME}" > /etc/sudoers.d/node-firewall \
+    && chmod 0440 /etc/sudoers.d/node-firewall \
+    && visudo -cf /etc/sudoers.d/node-firewall
+
+USER ${USERNAME}
 
 ENV SHELL=/bin/zsh
 

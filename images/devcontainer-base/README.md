@@ -20,7 +20,7 @@ ghcr.io/himorogy/devcontainer-base:1
 | 層 | 中身 | 手段 | 更新の伝播 |
 |---|---|---|---|
 | A | OS パッケージ、root 権限が要るもの、エージェントが直接使うもの | **この base image** | `FROM` の更新 |
-| B | 共通だが設定がプロジェクト別（egress-guard 等） | プロジェクトの Dockerfile（将来 Feature 化の余地あり） | プロジェクト側で更新 |
+| B | プロジェクト別の設定ファイル（egress-guard の `firewall.json` 等） | プロジェクトの Dockerfile | プロジェクト側で更新 |
 | C | 個人の対話的体験にしか効かないもの | dotfiles の後付けスクリプト | 実行するだけ |
 | D | npm で入るもの（Biome, dprint 等） | プロジェクトの devDependency | `package.json` |
 
@@ -45,14 +45,19 @@ base に入れる条件は次のいずれか。
 - `jq` / `ripgrep` / `fd-find`（`fd` として PATH に露出）
 - `vim-tiny`（`git commit` / `rebase -i` がエディタ不在で失敗しないための最小保険）
 - egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `dnsutils` / `aggregate`
+  （`curl` と `jq` は上の行と `node:24` に含まれる）
+- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`ARG EGRESS_GUARD_VERSION` で pin）と
+  `/etc/sudoers.d/node-firewall`
 - `crit`（`CRIT_HOST=0.0.0.0`、更新チェック無効）
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspace` `~/.claude` `~/.codex` を作成済み
 
 ### 非収録
 
-- egress-guard 本体（`init-project-firewall.sh` と `firewall.json`）… 実効設定が
-  プロジェクト別なため B 層。プロジェクトの Dockerfile で入れる（[examples/Dockerfile](./examples/Dockerfile)）
+- egress-guard の実効設定（`firewall.json`）… 許可ドメインがプロジェクト別で、
+  `COPY` 元がプロジェクトのビルドコンテキストにあり base のビルド時には存在しない。
+  プロジェクトの Dockerfile で入れる（[examples/Dockerfile](./examples/Dockerfile)）。
+  egress-guard のうち base に入らないのはこれだけ
 - `starship` / `helix` / `micro` / `eza` / `bat` / `fzf` / `delta` / `herdr` / `ax` … dotfiles の後付けスクリプト
 - Biome / dprint … devDependency
 - `postgresql-client` 等のプロジェクト固有パッケージ … プロジェクトの Dockerfile
@@ -101,9 +106,9 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 
 前提として、ワークスペースの内容と lifecycle command が悪意を持たないこと、
 `firewall.json` と egress-guard パッケージのバージョンが管理下にあることを要求する。
-`examples/Dockerfile` で `@himorogy/egress-guard@<VERSION>` とバージョンを固定するのは
-このため。dist-tag のまま追従させると、パッケージ側の更新がそのまま
-コンテナ内 root でのコード実行になる。
+この Dockerfile が `ARG EGRESS_GUARD_VERSION` でバージョンを固定するのはこのため。
+dist-tag のまま追従させると、パッケージ側の更新がそのままコンテナ内 root での
+コード実行になる。
 
 厳密に保護したい場合は、lifecycle command の実行前（コンテナの entrypoint 段階）で
 firewall を張る設計が必要になる。現状はそこまで踏み込んでいない。
@@ -201,12 +206,16 @@ docker run --rm --platform linux/amd64 "$IMAGE" crit --version
 docker run --rm --platform linux/arm64 "$IMAGE" crit --version
 ```
 
-egress-guard を組み込んだプロジェクトのイメージでは、加えて sudoers の引数制限を確認する。
+sudoers の引数制限は base の時点で確認できる。引数を伴う呼び出しが sudo に拒否される
+こと（スクリプトが起動して失敗するのではなく、sudo が実行そのものを断ること）を見る。
 
 ```sh
-# 前者は通り、後者は拒否されること
-docker exec <ctn> sudo /usr/local/bin/init-project-firewall.sh
-docker exec <ctn> sudo /usr/local/bin/init-project-firewall.sh --config /tmp/x
+# sudo に拒否されること
+docker run --rm -u node "$IMAGE" sudo /usr/local/bin/init-project-firewall.sh --config /tmp/x
+
+# 引数なしは sudo を通る。firewall.json と NET_ADMIN が無いため
+# スクリプト自体は失敗するが、それは sudo の拒否とは別のメッセージになる
+docker run --rm -u node "$IMAGE" sudo /usr/local/bin/init-project-firewall.sh
 ```
 
 ---
@@ -246,9 +255,8 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   - `EDITOR` / `VISUAL` の設定
   - `~/.zshrc` の冒頭に `[[ -o interactive ]] || return` のガードを入れる。
     `~/.zshenv` に書くと全起動で読まれて非対話シェルが壊れる
-- **`@himorogy/egress-guard` のパッケージ公開**。[examples/Dockerfile](./examples/Dockerfile)
-  は `npm install -g @himorogy/egress-guard@<VERSION>` を前提にしている。
-  公開後に `<VERSION>` を実バージョンへ差し替える
+- **`ARG EGRESS_GUARD_VERSION` の更新運用**。egress-guard を上げるには base の
+  再ビルドが要る。Renovate を入れていないため手動。上げ忘れの検知手段はまだない
 - **`NET_RAW` の要否確認**。egress-guard の実装が確定したら、本当に必要かを再確認し、
   不要なら雛形の `--cap-add=NET_RAW` を落とす
 - **既存プロジェクトの移行**。このリポジトリ自身の `.devcontainer/` と
