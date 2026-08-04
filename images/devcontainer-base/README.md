@@ -66,24 +66,44 @@ base に入れる条件は次のいずれか。
 
 ## プロジェクトからの使い方
 
-[examples/](./examples/) の 2 ファイルを `.devcontainer/` にコピーし、
+[examples/](./examples/) の 3 ファイルを `.devcontainer/` にコピーし、
 `<your-project>` と `CRIT_PORT` を差し替える。
 
 ```
 .devcontainer/
-├── Dockerfile          ← examples/Dockerfile
-├── devcontainer.json   ← examples/devcontainer.json
-└── firewall.json       ← プロジェクトの許可ドメイン
+├── Dockerfile           ← examples/Dockerfile
+├── docker-compose.yml   ← examples/docker-compose.yml
+├── devcontainer.json    ← examples/devcontainer.json
+└── firewall.json        ← プロジェクトの許可ドメイン
 ```
+
+雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
+プロジェクトごとにユーザー定義ネットワーク（`<name>_default`）を自動で作り、その上でだけ
+Docker の埋め込みリゾルバ `127.0.0.11` が使えるため。デフォルトブリッジのままだと
+ホスト側の DNS アドレス宛に外向きの穴が 1 つ開く。根拠と、Compose を使わない場合の代替は
+[`packages/egress-guard/README.md`](../../packages/egress-guard/README.md) の
+「ネットワーク構成（推奨）」。
 
 ### 忘れると時間を溶かす設定
 
-```jsonc
-"build": { "options": ["--pull"] }
+**`docker-compose.yml` の `build.pull`。**
+
+```yaml
+build:
+  pull: true
 ```
 
 浮動タグ `:1` を参照する運用では、ローカルに古い base が残っているとリビルドしても
-更新されない。`--pull` がないと「更新したのに反映されない」で嵌る。
+更新されない。「更新したのに反映されない」で嵌る。
+
+**`devcontainer.json` の `"build": { "options": ["--pull"] }` は `dockerComposeFile` を
+使うと効かない。** 同じ理由で `runArgs` / `containerEnv` / `mounts` / `workspaceMount` も
+無視される。`cap_add` を `runArgs` に書き戻すと、効かないまま egress-guard の適用だけが
+失敗する。
+
+**`docker-compose.yml` のマウント先と `devcontainer.json` の `workspaceFolder` を
+一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
+側に出るため、原因がマウント先の不一致だと気づきにくい。
 
 ### 既存プロジェクトを載せ替える場合
 

@@ -1,60 +1,26 @@
 // プロジェクト側 devcontainer.json の雛形。
-// .devcontainer/devcontainer.json としてコピーし、<your-project> と CRIT_PORT を差し替える。
+// .devcontainer/devcontainer.json としてコピーし、<your-project> を差し替える。
+//
+// egress-guard が第一に推奨する Docker Compose 構成。ネットワーク・cap・ポート転送・
+// 環境変数・マウントは docker-compose.yml 側にある。理由と、Compose を使わない場合の
+// 代替 (initializeCommand でユーザー定義ネットワークを用意する案) は
+// packages/egress-guard/README.md の「ネットワーク構成（推奨）」を参照。
 {
 	"name": "<your-project>",
 
-	"build": {
-		"dockerfile": "Dockerfile",
-		// 必須。これがないとローカルに残った古い base が使われ続け、
-		// リビルドしても :1 の更新が反映されない。
-		"options": ["--pull"]
-	},
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "dev",
 
-	"runArgs": [
-		"--name=<your-project>-devcontainer",
-
-		// egress-guard が iptables / ipset を操作するために必要。
-		"--cap-add=NET_ADMIN",
-		"--cap-add=NET_RAW",
-
-		// crit のポート転送。プロジェクトごとに重複しない値を割り当てる。
-		// base で CRIT_HOST=0.0.0.0 を設定済みのため、この転送が実際に届く。
-		// 127.0.0.1 に固定してホスト外へ露出させない。
-		"-p",
-		"127.0.0.1:4517:4517",
-
-		// dotenvx の local / dev 復号キーの注入。
-		// enclave-env のワークフローに合わせる場合はこの --env-file 方式を使う。
-		// prod キーはワークスペース外に置く（templates/devcontainer/prod を参照）。
-		"--env-file",
-		"${localWorkspaceFolder}/.devcontainer/dev/.env.container"
-	],
-
-	"containerEnv": {
-		"NODE_OPTIONS": "--max-old-space-size=2048",
-		"CLAUDE_CONFIG_DIR": "/home/node/.claude",
-
-		// runArgs の -p と同じ値にする。
-		"CRIT_PORT": "4517"
-
-		// --env-file を使わずホストの環境変数から直接注入する場合は以下の形。
-		// どちらか一方に統一する（二重定義すると containerEnv が勝つ）。
-		// "DOTENV_PRIVATE_KEY": "${localEnv:DOTENV_PRIVATE_KEY}",
-		// "DOTENV_PRIVATE_KEY_DEVELOPMENT": "${localEnv:DOTENV_PRIVATE_KEY_DEVELOPMENT}"
-	},
+	// **docker-compose.yml の volumes のマウント先と必ず一致させること。**
+	// ずれると postCreateCommand が exit 127 で落ちる。エラーはコマンドの側に出るので、
+	// 原因がマウント先の不一致だと気づきにくい。
+	"workspaceFolder": "/workspace",
 
 	"remoteUser": "node",
 
-	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-	"workspaceFolder": "/workspace",
-
-	"mounts": [
-		// シェル履歴を永続化。前回のコマンドを Ctrl+R で呼び出せる。
-		"source=<your-project>-history-${devcontainerId},target=/commandhistory,type=volume",
-		// エージェントの認証情報と設定を永続化。リビルドしても再ログイン不要。
-		"source=<your-project>-claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
-		"source=<your-project>-codex-config-${devcontainerId},target=/home/node/.codex,type=volume"
-	],
+	// **runArgs / containerEnv / mounts / workspaceMount はここに書いても効かない。**
+	// dockerComposeFile を使うと runArgs は黙って無視される (実測済み)。
+	// 書き戻しても cap_add は効かず、egress-guard の適用が失敗する。
 
 	"customizations": {
 		"vscode": {
@@ -66,6 +32,7 @@
 	},
 
 	// 平文 env がワークスペースに残っていないかを検査する。これはホスト側で走る。
+	// enclave-env を使わないなら消すこと。
 	"initializeCommand": "sh node_modules/@himorogy/enclave-env/scripts/init-check-dev.sh",
 
 	// エージェント CLI は Dockerfile ではなくここで入れる。prod 環境の
@@ -85,4 +52,8 @@
 	// これは UI がどの lifecycle command を待つかの指定であって、
 	// セキュリティ境界ではない。先行するコマンドの通信は制限されない。
 	"waitFor": "postStartCommand"
+
+	// shutdownAction は Compose では "stopCompose" が既定。ウィンドウを閉じるとコンテナが
+	// 止まる。複数プロジェクトを開いたまま ipset を読むときにコンテナを取り違えないので、
+	// 既定のままにしてある。止めたくない場合だけ "none" を足す。
 }

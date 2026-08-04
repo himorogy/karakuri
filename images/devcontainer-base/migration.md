@@ -151,12 +151,24 @@ base image は `node:24` なのでコンテナ側は問題ない。**CI の `set
 
 ### 4.1 忘れると時間を溶かす設定
 
+浮動タグ `:1` を参照する以上、pull を強制しないとローカルに残った古い base が使われる。
+「更新したのに反映されない」の原因になる。**書く場所は構成で変わる。**
+
+```yaml
+# Docker Compose 構成（雛形はこちら）— docker-compose.yml
+services:
+  dev:
+    build:
+      pull: true
+```
+
 ```jsonc
+// Compose を使わない構成 — devcontainer.json
 "build": { "options": ["--pull"] }
 ```
 
-浮動タグ `:1` を参照する以上、これが無いとローカルに残った古い base が使われる。
-「更新したのに反映されない」の原因になる。
+**`dockerComposeFile` を使うと `devcontainer.json` 側の `build` は使われない。**
+上の `--pull` を書いても効かないので、Compose 構成では `build.pull` に書くこと。
 
 ### 4.2 プロジェクト側 Dockerfile から削るもの
 
@@ -177,12 +189,40 @@ base image は `node:24` なのでコンテナ側は問題ない。**CI の `set
 ### 4.3 プロジェクト側に残るもの
 
 - `firewall.json`（実効設定。プロジェクトごとに異なるため base には入らない）
-- `capAdd: ["NET_ADMIN", "NET_RAW"]`。**`dockerComposeFile` を使う構成では `runArgs` が
-  黙って無視されるため、`cap_add` に書く**
+- `NET_ADMIN` / `NET_RAW`。**Compose 構成では `docker-compose.yml` の `cap_add` に書く。**
+  `dockerComposeFile` を使うと `runArgs` は黙って無視されるため、`devcontainer.json` に
+  書き戻しても効かず、egress-guard の適用だけが失敗する
 - `postStartCommand` と `waitFor`
 - プロジェクト固有の apt パッケージ（`postgresql-client` など）
 
-### 4.4 base の pnpm を上書きしたい場合
+### 4.4 Compose 構成へ移す場合に一緒に動かすもの
+
+雛形は Compose 構成（[`examples/docker-compose.yml`](./examples/docker-compose.yml)）に
+なっている。`runArgs` 方式から移すなら、次はすべて `docker-compose.yml` 側へ移す。
+`devcontainer.json` に残しても効かない。
+
+| `devcontainer.json`（効かなくなる） | `docker-compose.yml`（移す先） |
+|---|---|
+| `runArgs: ["--name=..."]` | `container_name` |
+| `runArgs: ["--cap-add=..."]` | `cap_add` |
+| `runArgs: ["-p", "..."]` | `ports` |
+| `runArgs: ["--env-file", "..."]` | `env_file` |
+| `runArgs: ["--network=..."]` + `initializeCommand` の network 作成 | 不要。Compose が `<name>_default` を自動で作る |
+| `containerEnv` | `environment` |
+| `workspaceMount` | `volumes` |
+| `mounts` | `volumes` |
+| `build.options: ["--pull"]` | `build.pull: true` |
+
+**`${devcontainerId}` は Compose では使えない。** ボリュームは固定名になるため、
+`runArgs` 方式で作られた既存ボリュームとは別物になる。**claude と codex の再ログインが
+要る。** 引き継ぎたい場合は `docker volume ls` で実名を調べ、`external: true` で名前を
+合わせる。
+
+**`docker-compose.yml` のマウント先と `devcontainer.json` の `workspaceFolder` を
+一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
+側に出るため、原因がマウント先の不一致だと気づきにくい。
+
+### 4.5 base の pnpm を上書きしたい場合
 
 派生 Dockerfile で入れ直す（例外運用）。`devcontainer.json` の `build.args` は base
 イメージには届かない。
