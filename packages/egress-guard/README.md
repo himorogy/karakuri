@@ -62,7 +62,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 
 **6 つのパッケージと 2 つの capability が要ります**（`aggregate` を入れるなら 7 つ）。**どれが何に要るかは[セットアップ](#dockerfile-に追記するもの)の Dockerfile に書いてあります。** 削れるものを判断するときはそちらを見てください。
 
-capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[ネットワーク構成](#ネットワーク構成推奨)の各案を参照）。`**dockerComposeFile` を使うと `runArgs` は無視されるため、Compose 構成では `cap_add` に書きます。**
+capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[ネットワーク構成](#ネットワーク構成推奨)の各案を参照）。**`dockerComposeFile` を使うと `runArgs` は無視されるため、Compose 構成では `cap_add` に書きます。**
 
 ## DNS リゾルバ
 
@@ -76,10 +76,15 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 # セットアップ
 
+**「エージェントが書き込める場所をポリシーの経路に入れない」という点をカバーするように設計されています。**repo 内の `.devcontainer/firewall.json` が「ソース」、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、**再解決（CDN の IP 変動への追随）とポリシー変更が別の操作になります。** パッケージの更新も同じ経路で、rebuild したときに `/usr/local/bin` のコピーが入れ替わります。
+
 ## Dockerfile に追記するもの
 
-**必要なのは 4 つです。** すべて root で、イメージビルド時に行います。**2 と 3 を `node` が書き込めない場所へ置くことが要点です。**
-**`postCreateCommand` では配置できません。** 既定で `remoteUser`（＝ `node`）として実行されるためです。
+**必要なのは 4 つです。** すべて root で、イメージビルド時に行います。
+
+**2 と 3 を `node` が書き込めない場所へ置くことが要点です。**
+**`postCreateCommand` では配置できません。** 既定で `remoteUser`（＝ `node`）として実行されるためです。  
+配置を間違えたまま静かに弱い構成で動くことがないよう、スクリプト自身が起動時に所有者とパーミッションを検証し、違反していれば panic テーブルを適用して失敗します。
 
 ```dockerfile
 USER root
@@ -108,7 +113,7 @@ RUN chown -R root:root /etc/egress-guard \
   && chmod 755 /etc/egress-guard \
   && chmod 644 /etc/egress-guard/firewall.json
 
-# 4. sudoers。末尾の "" は必須（後述）
+# 4. sudoers は init-project-firewall.sh だけを許可する
 RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
       > /etc/sudoers.d/node-firewall \
   && chmod 0440 /etc/sudoers.d/node-firewall
@@ -193,19 +198,7 @@ Compose を使用しない場合はこちらです。ネットワーク名にプ
 [firewall] WARNING: This container is not on a user defined Docker network. See the README for the stronger setup.
 ```
 
-## 配置は確認しなくて構いません
 
-**手動での確認手順はありません。** 配置を間違えたまま静かに弱い構成で動くことがないよう、スクリプト自身が起動時に所有者とパーミッションを検証し、違反していれば panic テーブルを適用して失敗します。sudoers の書き間違い（末尾 `""` の欠落）も、`SUDO_USER` 付きの引数実行を拒否することで無効化されます。検証項目は [`docs/spec.md`](./docs/spec.md) §2.1。
-
-**これが捕まえるのは設定ミスであって、攻撃者ではありません。** 差し替えられたスクリプトは検証コードごと差し替えられます（[`docs/design.md`](./docs/design.md) §3.4）。
-
-## なぜこの置き方なのか
-
-**どれも「エージェントが書き込める場所をポリシーの経路に入れない」という 1 点に還元されます。** スクリプトを `node_modules` から実行しないのは、非特権ユーザーが書ける場所を sudo 対象にすると本体を書き換えて root 実行できるからです。`firewall.json` を `/etc/egress-guard/` に置くのも同じで、**再適用が読むファイルを書き換えられるなら、root を取らずに 2 手でポリシーが無効になります。** sudoers の末尾 `""` は、書かないと「任意の引数で実行してよい」の意味になるためです。
-
-repo 内の `.devcontainer/firewall.json` が「ソース」、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、**再解決（CDN の IP 変動への追随）とポリシー変更が別の操作になります。** パッケージの更新も同じ経路で、rebuild したときに `/usr/local/bin` のコピーが入れ替わります。
-
-判断の根拠は [`docs/design.md`](./docs/design.md) §2.1・§2.16。
 
 ---
 
@@ -280,15 +273,15 @@ init-project-firewall.sh --check-config
 | `github`            | `github.com`、`api.github.com`、`codeload.github.com`、`objects.githubusercontent.com`、`raw.githubusercontent.com` |
 
 
-- `**profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
+- **`profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
 - 配列で選びます。文字列 1 つでも書けます（`"profile": "github"`）
 - `github` を選んだときだけ、GitHub meta API から取得した CIDR が追加されます
-- `**anthropic-updates` は Claude Code の自動アップデート配信元です。バージョンを固定したいなら選ばないでください**（遮断しても Claude Code は動き、更新だけが失敗します）
-- `**openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は含みません。必要なら `allowDomains` に書いてください
+- **`anthropic-updates` は Claude Code の自動アップデート配信元です。バージョンを固定したいなら選ばないでください**（遮断しても Claude Code は動き、更新だけが失敗します）
+- **`openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は含みません。必要なら `allowDomains` に書いてください
 
 **既定を「何も許可しない」にしてあるのは、ファイアウォールの既定は deny だからです。** 書き忘れは遮断として現れます。allowlist は小さいほど、漏洩先として使える宛先が減ります。
 
-> `**"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
+> **`"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
 
 **バンドルの中身は他社製品のエンドポイントなので、測り直しが要ります。** テレメトリ・ログ送信・feature flag は入れていません。**その判断基準・実測結果・測り方は [`docs/measuring-egress.md`](./docs/measuring-egress.md)、バンドル方式を選んだ理由は [`docs/design.md`](./docs/design.md) §2.17。**
 
@@ -304,7 +297,7 @@ init-project-firewall.sh --print-allowlist
 
 ## 拒否される値
 
-効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** ワイルドカードを含むドメイン、シェルのメタ文字や空白を含む文字列、`0.0.0.0/0` とプレフィックス長 8 未満の CIDR、私設アドレス帯（RFC1918・**CGNAT の `100.64.0.0/10`**・loopback・link-local・multicast / 予約）を含む CIDR、範囲外のポート番号が拒否されます。**判定は前方一致ではなく数値レンジの重複なので、`100.0.0.0/8` のような包含するスーパーネットも通りません。** 完全な一覧は [`docs/spec.md`](./docs/spec.md) §3.2。
+効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** ワイルドカードを含むドメイン、シェルのメタ文字や空白を含む文字列、`0.0.0.0/0` とプレフィックス長 8 未満の CIDR、私設アドレス帯（RFC1918・**CGNAT の `100.64.0.0/10**`・loopback・link-local・multicast / 予約）を含む CIDR、範囲外のポート番号が拒否されます。**判定は前方一致ではなく数値レンジの重複なので、`100.0.0.0/8` のような包含するスーパーネットも通りません。** 完全な一覧は [`docs/spec.md`](./docs/spec.md) §3.2。
 
 **同じ検査は DNS 応答にも掛かります。** 許可したドメインが `169.254.169.254` を返しても allowlist には入りません（[`docs/design.md`](./docs/design.md) §2.9）。
 
@@ -397,7 +390,7 @@ This container runs behind an allowlist-based egress firewall
 
 ## 適用されているか確かめる
 
-`**postStartCommand` が成功して見えても、適用されていないことがあります。** イメージが古いままだと旧版のスクリプトが残り、それが正常終了します。2026-08-03 に実際に起きました。
+**`postStartCommand` が成功して見えても、適用されていないことがあります。** イメージが古いままだと旧版のスクリプトが残り、それが正常終了します。2026-08-03 に実際に起きました。
 
 ```sh
 # 遮断されていること。到達できたら適用されていない
@@ -427,7 +420,7 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 
 ## 特定の通信だけが通らない
 
-`**enforce` にしたら何かが動かなくなった、という状況の切り分けです。** 流れはこうなります。
+**`enforce` にしたら何かが動かなくなった、という状況の切り分けです。** 流れはこうなります。
 
 1. `firewall.json` を `mode: "audit"` にして**再ビルドする**（再接続では反映されません）
 2. 問題の操作を一通り行う
@@ -476,15 +469,15 @@ out which ones those are.
 
 allowlist は**起動時に解決した IP の集合**です。**その起動の間アドレスが変わらないドメインにしか使えません。**
 
-`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。`**allowDomains` に書いてあるのに `No route to host` で落ちます。** 適用時に解決した IP と、その 1 分後に `apt` が接続する先が食い違うためです。同じ日に `nodejs.org` は問題なく通っており、**CDN の性質によって成否が分かれます。**
+`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。**`allowDomains` に書いてあるのに `No route to host` で落ちます。** 適用時に解決した IP と、その 1 分後に `apt` が接続する先が食い違うためです。同じ日に `nodejs.org` は問題なく通っており、**CDN の性質によって成否が分かれます。**
 
-`**allowCidrs` での代用は多くの場合採れません。** Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります。
+**`allowCidrs` での代用は多くの場合採れません。** Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります。
 
 仕様上の位置づけは [`docs/spec.md`](./docs/spec.md) §9.7。**構造的な解決は同 §10.1（L7 proxy 移行）です。** 名前で判定する層に移せば、アドレスがどれだけ動いても関係がなくなります。
 
 ## 起動後に外部から取得する作業は成立しません
 
-egress-guard は `**postStartCommand` で適用され、その時点でポリシーが閉じます。** したがって**適用より後に外部から何かを取ってくる作業は、そのままでは通りません。**
+egress-guard は **`postStartCommand` で適用され、その時点でポリシーが閉じます。** したがって**適用より後に外部から何かを取ってくる作業は、そのままでは通りません。**
 
 **取得はイメージビルド時に移してください。** これが唯一の推奨です。
 
@@ -533,10 +526,10 @@ pnpm test          # 設定 174 件 + ルール 220 件
 - `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 174 件**
 - `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 220 件**
 
-`**pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
+**`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
 
 > **egress-guard を導入した devcontainer の中で実行すると、ルール側が `210 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**220 件のうち 10 件**が何も検査できないためです。**設定側の 174 件は影響を受けません**（`174 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
-> `**pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
+> **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
 
-開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/spec.md`](./docs/spec.md) §8。いずれも `**sudo` 経由で引数が渡された場合は拒否されます。**
+開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/spec.md`](./docs/spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**
