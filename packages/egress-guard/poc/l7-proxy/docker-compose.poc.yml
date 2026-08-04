@@ -1,0 +1,134 @@
+# egress-guard L7 proxy PoC — sidecar 構成の検証環境。
+#
+# .devcontainer/docker-compose.yml (以下「本体」) は読むだけで変更していない。
+# これは別ファイルであり、本体とは別の Compose プロジェクトとして
+# 独立に起動・破棄できる。本体の `dev` service を模した `client` を用意し、
+# 本体と同じ書き方 (cap_add/cap_drop の書式、environment ブロックの形、
+# `command: sleep infinity` で待機させる書き方) に揃えてある。
+#
+# **ホスト側の docker compose からのみ起動できる。** devcontainer の中には
+# docker コマンドも Docker ソケットも無いため、この compose 自体をこの
+# devcontainer の中から動かすことはできない (README.md 参照)。
+#
+# 実行方法:
+#   docker compose -f docker-compose.poc.yml up -d --build
+#   docker compose -f docker-compose.poc.yml down -v
+#
+# V3〜V5, V7〜V9 は egress-proxy + client で確認する。
+# V6 (design.md §2.22 必須要件 2: PTR 逆引きによる名前偽装が通らないこと) だけは
+# 別建てにしてある (egress-proxy-v6 + ptr-spoof-harness)。理由は
+# verify.sh の V6 のコメントと README.md「V6 の判定方法」を参照。
+
+name: egress-guard-l7-poc
+
+services:
+  # ---- 検証対象の sidecar ------------------------------------------------
+  egress-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # proxy-selection-research.md §8 未確認事項 3
+    # (read-only bind mount + read_only: true で Squid が起動するか) を
+    # ここで実測する。squid.conf 側で cache / pid / log を tmpfs に逃がして
+    # あるので、read_only: true でも書き込みが必要な箇所は無いはずだが、
+    # 「はず」であって実測はしていない。verify.sh が起動確認まで行う。
+    read_only: true
+    tmpfs:
+      - /var/spool/squid
+      - /var/log/squid
+      - /run
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - ./allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
+    # ports: は書かない。ホストへ公開しない (本体の sidecar 案と同じ)。
+
+  # ---- 本体の `dev` service の代わりに使う最小クライアント ------------------
+  # 本体はこの PoC で変更しない。ここでは検証に要るツール (curl, apt) が
+  # 揃っている素の Debian イメージを proxy 経由で使う。
+  client:
+    image: debian:bookworm-slim
+    depends_on:
+      - egress-proxy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # curl は http_proxy を小文字でしか読まない。apt も小文字のみ。
+      # 両方を必ず出す (proxy-selection-research.md §5)。
+      http_proxy: "http://egress-proxy:3128"
+      https_proxy: "http://egress-proxy:3128"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      HTTPS_PROXY: "http://egress-proxy:3128"
+      no_proxy: "localhost,127.0.0.1"
+      NO_PROXY: "localhost,127.0.0.1"
+    command: sleep infinity
+
+  # ---- V6 専用: dstdomain -n の PTR 逆引き対策を確かめるための隔離環境 -----
+  #
+  # egress-proxy と同じ squid.conf / allowed-domains.txt を使う (本番相当の
+  # 設定であることが V6 の意味を持たせる条件)。違いは DNS の向き先だけ。
+  # v6-test-net 上の ptr-spoof-harness だけを見るようにして、そこが返す
+  # 偽の PTR 応答で -n が本当に効くかを確認する。
+  egress-proxy-v6:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /var/spool/squid
+      - /var/log/squid
+      - /run
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - ./allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
+    # Squid 自身の PTR 逆引きをこの偽 DNS に向ける。IP 直書きが必要
+    # (Docker の `dns:` はサービス名ではなく IP しか受け付けない) なので
+    # v6-test-net を固定サブネットにして ptr-spoof-harness の IP を決め打ちにしている。
+    dns:
+      - 203.0.113.53
+    depends_on:
+      - ptr-spoof-harness
+    networks:
+      default: {}
+      v6-test-net: {}
+
+  # 自分自身の IP への PTR 問い合わせに、allowed-domains.txt にある名前
+  # (deb.debian.org) で応答する偽 DNS。同時に 443/tcp で listen し、
+  # 偽装が実際に通った場合 (= egress-proxy-v6 がここへ接続してしまった場合)
+  # に接続を受けたことをログへ残す。
+  #
+  # 汎用の python:3-alpine を使い、test-helpers/ 配下のスクリプトを
+  # read-only でマウントするだけにしてある。単体の Dockerfile を持たせるほどの
+  # ものではない (このコンテナ自体は検証対象ではなく検証用の道具)。
+  ptr-spoof-harness:
+    image: python:3-alpine
+    volumes:
+      - ./test-helpers/ptr-spoof-harness.py:/harness.py:ro
+    command: ["python3", "/harness.py"]
+    networks:
+      v6-test-net:
+        ipv4_address: 203.0.113.53
+    # client からも egress-proxy-v6 からも直接には触らせない。
+    # egress-proxy-v6 が CONNECT 経由で到達できてしまうかどうかだけを見る。
+
+networks:
+  # **RFC 5737 の TEST-NET-3 を使うこと。私設アドレス帯 (10.0.0.0/8 等) を
+  # 使ってはいけない。**
+  #
+  # squid.conf の http_access は `deny to_private` を `deny !allowed` より前に
+  # 置いている (I6 相当の検査を先に効かせるため)。harness を私設帯に置くと、
+  # CONNECT <harness IP>:443 は dstdomain の判定に到達する前に to_private で
+  # 落ちる。**そうなると V6 は dstdomain -n が効いているかどうかに関わらず
+  # 必ず成功し、-n の検証になっていない偽陽性になる。**
+  #
+  # TEST-NET-3 (203.0.113.0/24) はドキュメント用に予約された実在しない帯で、
+  # squid.conf のどの禁止レンジにも該当しない。そのため CONNECT はきちんと
+  # dstdomain の判定まで到達し、PTR 逆引きの結果が ACL に使われるかどうかが
+  # そのまま V6 の結果になる。
+  v6-test-net:
+    ipam:
+      config:
+        - subnet: 203.0.113.0/24
