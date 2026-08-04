@@ -50,7 +50,8 @@ base に入れる条件は次のいずれか。
   `/etc/sudoers.d/node-firewall`
 - `crit`（`CRIT_HOST=0.0.0.0`、更新チェック無効）
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
-- 作業ユーザー `node`（UID/GID 1000）、`/workspace` `~/.claude` `~/.codex` を作成済み
+- 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
+  `WORKDIR` は `/workspaces`（複数形。devcontainer の既定に合わせている）
 
 ### 非収録
 

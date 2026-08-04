@@ -114,11 +114,14 @@ RUN printf '%s\n' \
     >> /etc/zsh/zshrc
 
 # --- ディレクトリ --------------------------------------------------------------
-RUN mkdir -p /workspace /home/${USERNAME}/.claude /home/${USERNAME}/.codex \
+# /workspaces は複数形。devcontainer の既定 (VS Code / Codespaces) が
+# /workspaces/<リポジトリ名> にワークスペースを置くため、そこへ合わせる。
+# 実際のリポジトリのディレクトリは bind mount で現れるので、ここでは親だけ作る。
+RUN mkdir -p /workspaces /home/${USERNAME}/.claude /home/${USERNAME}/.codex \
     && chown -R ${USERNAME}:${USERNAME} \
-         /workspace /home/${USERNAME}/.claude /home/${USERNAME}/.codex
+         /workspaces /home/${USERNAME}/.claude /home/${USERNAME}/.codex
 
-WORKDIR /workspace
+WORKDIR /workspaces
 
 # --- pnpm ----------------------------------------------------------------------
 ENV PNPM_HOME=/usr/local/share/pnpm \

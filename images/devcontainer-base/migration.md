@@ -222,7 +222,39 @@ services:
 一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
 側に出るため、原因がマウント先の不一致だと気づきにくい。
 
-### 4.5 セットアップの置き場所
+### 4.5 ワークスペースの置き場所
+
+**base の `WORKDIR` は `/workspaces`（複数形）。** devcontainer の既定
+（VS Code / Codespaces）が `/workspaces/<リポジトリ名>` にワークスペースを置くことに
+合わせている。`/workspace`（単数）を使っていたプロジェクトは、マウント先と
+`workspaceFolder` の両方を揃えて移すこと。
+
+**雛形はリポジトリ本体ではなく親ディレクトリを載せる。**
+
+```yaml
+# docker-compose.yml — ../.. は .devcontainer から見て「リポジトリの親」
+volumes:
+  - ../..:/workspaces:cached
+```
+
+```jsonc
+// devcontainer.json — リポジトリ本体はその 1 階層下
+"workspaceFolder": "/workspaces/<your-project>"
+```
+
+親を載せるのは **git worktree を使うため**。worktree の共通 git dir は
+`<親>/<repo>/.git` にあり、リポジトリ本体だけをマウントすると解決できずに壊れる。
+**同居する兄弟ディレクトリがコンテナから見えるのは引き換え。** エージェントが
+読める範囲が広がるので、無関係なリポジトリを同じ親に置いている場合は考慮すること。
+
+worktree を使わないなら、VS Code の既定どおりリポジトリ本体だけを載せればよい。
+
+```yaml
+volumes:
+  - ..:/workspaces/<your-project>:cached
+```
+
+### 4.6 セットアップの置き場所
 
 雛形では、コンテナ作成時のセットアップを 2 つに分けている。
 
@@ -238,7 +270,7 @@ services:
 制限されない。逆に言えば、firewall の適用後に外から取ってくる作業は成立しないので、
 取得を伴うものはこの段階に置くことになる（[README.md](./README.md) の「保護範囲」）。
 
-### 4.6 base の pnpm を上書きしたい場合
+### 4.7 base の pnpm を上書きしたい場合
 
 派生 Dockerfile で入れ直す（例外運用）。`devcontainer.json` の `build.args` は base
 イメージには届かない。

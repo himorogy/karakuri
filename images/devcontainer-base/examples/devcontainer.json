@@ -11,10 +11,12 @@
 	"dockerComposeFile": "docker-compose.yml",
 	"service": "dev",
 
-	// **docker-compose.yml の volumes のマウント先と必ず一致させること。**
-	// ずれると postCreateCommand が exit 127 で落ちる。エラーはコマンドの側に出るので、
-	// 原因がマウント先の不一致だと気づきにくい。
-	"workspaceFolder": "/workspace",
+	// docker-compose.yml は親ディレクトリを /workspaces に載せているので、
+	// リポジトリ本体はその 1 階層下に現れる。
+	//
+	// **マウント先と食い違わせないこと。** ずれると postCreateCommand が exit 127 で
+	// 落ちる。エラーはコマンドの側に出るので、原因がマウント先の不一致だと気づきにくい。
+	"workspaceFolder": "/workspaces/<your-project>",
 
 	"remoteUser": "node",
 

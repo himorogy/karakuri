@@ -57,10 +57,17 @@ services:
       - "127.0.0.1:4517:4517"
 
     volumes:
-      # workspaceMount の置き換え。このファイルからの相対なので、.. がリポジトリのルート。
+      # workspaceMount の置き換え。このファイルからの相対なので、../.. は
+      # **リポジトリの親ディレクトリ**。リポジトリ本体ではない。
+      #
+      # 親を載せるのは git worktree を使うため。worktree の共通 git dir は
+      # 別ディレクトリ (<親>/<repo>/.git) にあり、リポジトリ本体だけをマウントすると
+      # 解決できずに壊れる。同居する兄弟ディレクトリがコンテナから見えるのは
+      # 引き換え。worktree を使わないなら ..:/workspaces/<your-project> でよい。
+      #
       # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれると
       # postCreateCommand が exit 127 で落ち、原因に辿り着きにくい。
-      - ..:/workspace:cached
+      - ../..:/workspaces:cached
 
       # mounts の置き換え。**${devcontainerId} は Compose では使えない**ため固定名にする。
       # 名前が固定なので、プロジェクトをまたいで衝突しないよう <your-project> を含める。
