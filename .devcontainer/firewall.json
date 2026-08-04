@@ -6,6 +6,8 @@
 		"chatgpt.com",
 		"api.openai.com",
 		"auth.openai.com",
-		"nodejs.org"
+		"nodejs.org",
+		"docs.npmjs.com",
+		"docs.github.com"
 	]
 }
