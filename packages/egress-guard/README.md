@@ -405,7 +405,7 @@ allowlist 外の外向き通信を REJECT します。遮断された宛先は i
 
 ## audit
 
-新規プロジェクトの立ち上げ用です。allowlist 外の IPv4 外向き通信を**遮断せず**、遮断されるはずだった宛先を ipset `egress-audit-v4` に記録します。（`fw-audit:` プレフィックスの `LOG` ルールも入りますが、[カーネルログは多くの環境で出力されません](#カーネルログ当てにしない)。運用の前提にしないでください。）
+新規プロジェクトの立ち上げ用です。allowlist 外の IPv4 外向き通信を**遮断せず**、遮断されるはずだった宛先を ipset `egress-audit-v4` に記録します。（`fw-audit:` プレフィックスの `LOG` ルールも入りますが、**多くの環境では出力されません**。運用の前提にしないでください。理由は [`docs/measuring-egress.md`](./docs/measuring-egress.md)）
 
 ```json
 { "version": 1, "mode": "audit" }
@@ -426,53 +426,13 @@ IPv6 の試行はログ（`fw-drop6:`）に残ります。**silent DROP では�
 
 ## 遮断された宛先を調べる
 
-### ipset `egress-audit-v4`（推奨）
-
-allowlist を通らなかった宛先 IP が自動で溜まります。**enforce / audit の両モードで記録されます。**
+allowlist を通らなかった宛先 IP は ipset `egress-audit-v4` に溜まります（`enforce` / `audit` の両モード）。読むには root が要ります。
 
 ```sh
-# コンテナ内・root（ホストから: docker exec -u root <container> ipset list egress-audit-v4）
-ipset list egress-audit-v4
+docker exec -u root <container> ipset list egress-audit-v4
 ```
 
-```
-Name: egress-audit-v4
-Type: hash:ip
-Members:
-93.184.216.34 timeout 603412
-104.16.132.229 timeout 604233
-```
-
-**割り当てられたリゾルバ以外への 53 番宛（＝ DNS トンネリングの試行）もここに記録されます。** DNS の DROP は allowlist より前段にあるため、専用の記録ルールを置いています。
-
-記録されるのは IP だけなので、ホスト名は自分で引く必要があります。
-
-```sh
-dig +short -x 93.184.216.34
-```
-
-**逆引きは当てになりません。** CDN や link-local アドレスは PTR を持たないか、持っていても汎用的な名前しか返しません。**空振りすることが多いため、TLS 証明書の SAN を見るほうが確実です。** 引くときは `audit` モード中、その宛先に到達できる状態で行ってください。
-
-```sh
-echo | openssl s_client -connect 93.184.216.34:443 2>/dev/null \
-  | openssl x509 -noout -subject -ext subjectAltName
-```
-
-必要なものを `firewall.json` の `allowDomains` に転記して再適用してください。
-
-> `169.254.169.254`（クラウドのメタデータサービス）のような link-local アドレスが記録されることがあります。これらは `FORBIDDEN_CIDRS` に含まれるため `firewall.json` では許可できません。遮断されているのが正しい状態です。
-
-エントリは 7 日で自動的に消えます。set はスクリプトを再実行しても**作り直されません**（蓄積が目的のため）。手動で空にしたい場合:
-
-```sh
-ipset flush egress-audit-v4
-```
-
-> `SET` ターゲットが使えないカーネルでは、この記録ルールを外した構成に自動でフォールバックします。その場合は起動ログに `retrying without the blocked-destination recorder` が出ます。
-
-### カーネルログ（当てにしない）
-
-`fw-drop:` / `fw-audit:` / `fw-dns-drop:` / `fw-drop6:` の `LOG` ルールも入っていますが、**多くの環境では出力されません**（コンテナ内の `dmesg` は `CAP_SYSLOG` が無く読めない。`net.netfilter.nf_log_all_netns` が既定 `0` のためホストからも読めない）。**運用の前提にしないでください。** 経緯と却下した回避策は [`docs/design.md`](./docs/design.md) §2.11。
+**読み方・IP から名前を戻す手順・何を allowlist に足して何を足さないかは [`docs/measuring-egress.md`](./docs/measuring-egress.md) に集約してあります。** `timeout` の残量から新旧を判断する方法、CDN 上では名前を特定しきれないこと、その場合の決着のつけ方まで、まとめてそちらにあります。
 
 ## 再適用
 
@@ -582,7 +542,7 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 | 6 | TLS 証明書で確認 | `openssl s_client -connect <ip>:443 -servername <候補>` で候補を当てる。SNI 無しでは Cloudflare は証明書を返しません |
 | 7 | `timeout` の残量から追加時刻を逆算する | `追加時刻 = 現在 - (604800 - 残量)`。**`--exist` で再追加されると残量がリセットされるため、これは「最後に接触した時刻」です** |
 
-3〜6 で使う具体的なコマンドは[遮断された宛先を調べる](#遮断された宛先を調べる)にあります。
+3〜6 で使う具体的なコマンドは [`docs/measuring-egress.md`](./docs/measuring-egress.md) にあります。
 
 > **6 が記録を汚染します。** `openssl` で候補 IP を叩くと、**その接続自体が `egress-audit-v4` に記録されます。** 実際にこれをやってしまい、別コンテナから取った 17 件を全て自分のコンテナに書き込みました。7 の時刻で切り分けられますが、**名前解決は別のコンテナか、記録が済んでから行ってください。**
 
