@@ -18,15 +18,26 @@
 
 	"remoteUser": "node",
 
-	// **runArgs / containerEnv / mounts / workspaceMount はここに書いても効かない。**
-	// dockerComposeFile を使うと runArgs は黙って無視される (実測済み)。
-	// 書き戻しても cap_add は効かず、egress-guard の適用が失敗する。
+	// Claude Code は Feature で入れる。curl | bash と違いバージョンが
+	// devcontainer-lock.json に固定される。**このロックファイルはコミットすること。**
+	"features": {
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+	},
 
 	"customizations": {
 		"vscode": {
 			"extensions": ["anthropic.claude-code", "biomejs.biome"],
 			"settings": {
-				"terminal.integrated.defaultProfile.linux": "zsh"
+				"terminal.integrated.defaultProfile.linux": "zsh",
+				"terminal.integrated.profiles.linux": {
+					"bash": {
+						"path": "bash",
+						"icon": "terminal-bash"
+					},
+					"zsh": {
+						"path": "zsh"
+					}
+				}
 			}
 		}
 	},
@@ -35,14 +46,12 @@
 	// enclave-env を使わないなら消すこと。
 	"initializeCommand": "sh node_modules/@himorogy/enclave-env/scripts/init-check-dev.sh",
 
-	// エージェント CLI は Dockerfile ではなくここで入れる。prod 環境の
-	// イメージに含めないため。
+	// 取得を伴うセットアップはここに置く。firewall の適用後には外から取ってこられない。
 	//
-	// 注意: lifecycle の順序は postCreateCommand → postStartCommand。
-	// つまりこの curl は egress-guard が適用される「前」に、復号キーが注入済みの
-	// コンテナ内で実行される。egress-guard はコンテナ作成中の通信を保護しない。
-	// 詳細は README の「保護範囲」を参照。
-	"postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash",
+	// 注意: features も postCreateCommand も egress-guard が適用される「前」に、
+	// 復号キーが注入済みのコンテナ内で走る。egress-guard はコンテナ作成中の通信を
+	// 保護しない。詳細は README の「保護範囲」を参照。
+	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。

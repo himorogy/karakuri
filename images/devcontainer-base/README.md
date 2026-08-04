@@ -66,15 +66,17 @@ base に入れる条件は次のいずれか。
 
 ## プロジェクトからの使い方
 
-[examples/](./examples/) の 3 ファイルを `.devcontainer/` にコピーし、
+[examples/](./examples/) の 4 ファイルを `.devcontainer/` にコピーし、
 `<your-project>` と `CRIT_PORT` を差し替える。
 
 ```
 .devcontainer/
-├── Dockerfile           ← examples/Dockerfile
-├── docker-compose.yml   ← examples/docker-compose.yml
-├── devcontainer.json    ← examples/devcontainer.json
-└── firewall.json        ← プロジェクトの許可ドメイン
+├── Dockerfile             ← examples/Dockerfile
+├── docker-compose.yml     ← examples/docker-compose.yml
+├── devcontainer.json      ← examples/devcontainer.json
+├── post-create.sh         ← examples/post-create.sh
+├── firewall.json          ← プロジェクトの許可ドメイン
+└── devcontainer-lock.json ← Feature の版を固定。初回ビルドで生成される。コミットすること
 ```
 
 雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
@@ -120,15 +122,17 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 悪意あるコードを封じ込めるサンドボックスではない。以下は保護されない。
 
 - **コンテナ作成中の通信**。devcontainer の lifecycle は
-  `initializeCommand`（ホスト側）→ `postCreateCommand` → `postStartCommand` の順。
-  firewall を適用するのは `postStartCommand` なので、`postCreateCommand` の
-  `curl | bash` は制限なしで実行される。この時点で復号キーは既にコンテナ内にある
+  `initializeCommand`（ホスト側）→ **Feature の導入** → `postCreateCommand` →
+  `postStartCommand` の順。firewall を適用するのは `postStartCommand` なので、
+  Feature の取得も `post-create.sh` の `npm install` も制限なしで実行される。
+  この時点で復号キーは既にコンテナ内にある。Feature を使うと版は
+  `devcontainer-lock.json` に固定されるが、**固定されるのは取得物であって通信ではない**
 - **`waitFor` は待機指定であって境界ではない**。エディタが接続を報告するタイミングを
   制御するだけで、先行する lifecycle command の通信は止めない
 - **コンテナ内で root を取ったプロセス**。雛形は egress-guard の実装上
-  `--cap-add=NET_ADMIN` / `--cap-add=NET_RAW` を付けており、root は iptables を
-  書き換えられる。sudoers の引数制限が抑止するのは通常の `node` ユーザーによる
-  設定差し替えであって、root 奪取後の回避ではない
+  `NET_ADMIN` / `NET_RAW` を付けており、root は iptables を書き換えられる。
+  sudoers の引数制限が抑止するのは通常の `node` ユーザーによる設定差し替えであって、
+  root 奪取後の回避ではない
 - **ホストや Docker デーモンへの攻撃**
 
 前提として、ワークスペースの内容と lifecycle command が悪意を持たないこと、

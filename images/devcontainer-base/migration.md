@@ -222,7 +222,23 @@ services:
 一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
 側に出るため、原因がマウント先の不一致だと気づきにくい。
 
-### 4.5 base の pnpm を上書きしたい場合
+### 4.5 セットアップの置き場所
+
+雛形では、コンテナ作成時のセットアップを 2 つに分けている。
+
+- **Claude Code は Feature**（`ghcr.io/anthropics/devcontainer-features/claude-code`）。
+  `curl | bash` と違い、版が `devcontainer-lock.json` に固定される。**このロックファイルは
+  コミットすること**
+- **それ以外は `post-create.sh`**（[`examples/post-create.sh`](./examples/post-create.sh)）。
+  `postCreateCommand` から呼ぶ。codex の導入と `gh auth setup-git` を置いてある
+
+`postCreateCommand` に長いワンライナーを書いていた構成からは、中身をこのスクリプトへ移す。
+
+**どちらも egress-guard が適用される前に走る。** Feature の取得も `npm install` も
+制限されない。逆に言えば、firewall の適用後に外から取ってくる作業は成立しないので、
+取得を伴うものはこの段階に置くことになる（[README.md](./README.md) の「保護範囲」）。
+
+### 4.6 base の pnpm を上書きしたい場合
 
 派生 Dockerfile で入れ直す（例外運用）。`devcontainer.json` の `build.args` は base
 イメージには届かない。
