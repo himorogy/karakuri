@@ -79,6 +79,7 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 ## Dockerfile に追記するもの
 
 **必要なのは 4 つです。** すべて root で、イメージビルド時に行います。**2 と 3 を `node` が書き込めない場所へ置くことが要点です。**
+**`postCreateCommand` では配置できません。** 既定で `remoteUser`（＝ `node`）として実行されるためです。
 
 ```dockerfile
 USER root
@@ -115,10 +116,6 @@ RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""
 USER node
 ```
 
-パッケージ名の後ろのバッククォートはコメントです（`` `# ...` `` は空に展開されるため、`apt-get` にはパッケージ名だけが渡ります）。
-
-**`postCreateCommand` では配置できません。** 既定で `remoteUser`（＝ `node`）として実行されるためです。
-
 ## devcontainer.json に追記するもの
 
 構成によらず必要なのは起動フックだけです。
@@ -137,11 +134,9 @@ USER node
 - **Docker の埋め込みリゾルバ `127.0.0.11` が使えます。** デフォルトブリッジでは、ホスト側の DNS アドレス宛に外向きの穴が 1 つ開きます
 - **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナが相互に到達できる状態になります
 
-**これは推奨であって必須要件ではありません。** 埋め込みリゾルバでない構成では警告が出ますが、動作します。
-
 判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/design.md`](./docs/design.md) §4 を参照してください。
 
-### 案 A: Docker Compose を使う（推奨）
+### 案 A: Docker Compose を使う
 
 **Compose はプロジェクトごとのユーザー定義ネットワーク（`<project>_default`）を自動で作ります。** `initializeCommand` も `--network` も不要で、`docker compose down` でネットワークも消えます。
 
@@ -173,23 +168,9 @@ services:
 }
 ```
 
-**注意:** `dockerComposeFile` を使うと `runArgs` は無視されます。`--cap-add` は `cap_add`、`mounts` は `volumes` に書き換えてください。`**${devcontainerId}` は Compose では使えません**（ボリューム名を固定名にする必要があります）。
-
-> **2026-08-03 に実機で検証しました**（[`docs/verification-record.md`](./docs/verification-record.md) §1 の実施状況。手順は同 §6.22）。動く一式（`docker-compose.yml` と `devcontainer.compose.json`）をこのリポジトリの `.devcontainer/` に置いてあります。
-
-> **案 B から案 A へ切り替えるときは、先に既存コンテナを消してください。** `container_name:` を固定しているため名前が衝突します。**Compose は自分のプロジェクトに属さないコンテナを片付けない**ので、案 B のコンテナは残ったままになります。逆向き（案 A → 案 B）は問題ありません。
->
-> ```sh
-> docker rm -f <container>
-> ```
-
-> `**volumes` のマウント先と `workspaceFolder` を必ず一致させてください。** 案 B では `workspaceMount` と `workspaceFolder` が同じファイルに並びますが、**案 A ではマウント先が `docker-compose.yml`、作業ディレクトリが `devcontainer.json` に分かれ、両者の整合は誰も検査しません。**
->
-> ずれると `postCreateCommand` が **exit 127** で落ちます。`docker exec -w` は存在しない作業ディレクトリを黙って作るため、空のディレクトリの中でコマンドが走り、「スクリプトが見つからない」としか分かりません。**2026-08-03 に `/workspaces`（複数形）と `/workspace`（単数形）の取り違えで実際に踏みました。**
-
 ### 案 B: `initializeCommand` でネットワークを用意する
 
-Compose に移行しない場合はこちらです。ネットワーク名にプロジェクト名を含めることで、**設定文字列を全プロジェクトで同一にしたまま**分離できます。
+Compose を使用しない場合はこちらです。ネットワーク名にプロジェクト名を含めることで、**設定文字列を全プロジェクトで同一にしたまま**分離できます。
 
 ```jsonc
 // .devcontainer/devcontainer.json
@@ -246,35 +227,43 @@ init-project-firewall.sh --check-config
 
 ## テンプレート
 
-`templates/` に雛形があります。プロジェクトの `.devcontainer/` にコピーして使ってください。
-
-
-| ファイル                              | 用途                        |
-| --------------------------------- | ------------------------- |
-| `templates/firewall.json`         | 通常の初期設定（`enforce`、追加許可なし） |
-| `templates/firewall.audit.json`   | 新規プロジェクトの立ち上げ用（`audit`）   |
-| `templates/firewall.example.json` | 全フィールドを埋めた記入例             |
-
+`templates/` の 3 つをプロジェクトの `.devcontainer/firewall.json` にコピーして使ってください。通常は `firewall.json`（`enforce`、追加許可なし）、新規プロジェクトの立ち上げには `firewall.audit.json`（`audit` で始めて宛先を実測する）、全フィールドを埋めた見本が `firewall.example.json` です。
 
 **雛形の `profile` は Claude Code + npm + git を想定した最小構成です**（`anthropic`、`anthropic-updates`、`npm`、`github`）。**codex を使うなら `openai` を、VS Code の拡張を入れるなら `vscode` を足してください。** 使わないものは足さないでください（[基底プロファイル](#基底プロファイルprofile)）。
 
 ## 記入例
 
-```json
+**フィールドはこの 7 つだけです。** 未知のフィールドがあると設定全体が拒否されます（タイプミスが黙って無視されるのを防ぐため）。すべて `version` 以外は省略できます。
+
+```jsonc
 {
+  // スキーマ版。現在は 1 のみ。未知の版は拒否される
   "version": 1,
+
+  // 基底プロファイルの選択。省略すると空 = 何も許可しない
   "profile": ["anthropic", "anthropic-updates", "openai", "npm", "github"],
+
+  // "enforce"（既定。allowlist 外を遮断）か "audit"（遮断せず記録だけ）
   "mode": "enforce",
+
+  // 追加で許可するホスト名。ワイルドカードは書けない
   "allowDomains": ["registry.example.com"],
+
+  // 追加で許可する CIDR。私設アドレス帯・プレフィックス長 8 未満は書けない
   "allowCidrs": ["203.0.113.0/24"],
+
+  // ホスト宛に開ける TCP ポート。相手はデフォルトゲートウェイと
+  // host.docker.internal の 2 つで、サブネット全体ではない
   "allowHostPorts": [5432],
+
+  // コンテナ内 sshd のポート。既定 22
   "sshdPort": 22
 }
 ```
 
-各フィールドの型・必須・拒否条件は [`docs/spec.md`](./docs/spec.md) §3.1。`allowHostPorts` が開けるホスト宛の相手は**デフォルトゲートウェイと `host.docker.internal`** の 2 つです。`allowDomains` に**ワイルドカードは使えません**（[理由](#ワイルドカードドメインは使えません)）。
+> **実際のファイルにコメントは書けません。** `jq` でパースするため、上のコメントを残したままだと**不正な JSON として拒否され、コンテナは panic テーブル（loopback 以外すべて遮断）で起動します。** 貼るときは落としてください。
 
-未知のフィールドが含まれている場合は拒否します（タイプミスが黙って無視されるのを防ぐため）。
+型・必須・拒否条件の正確な定義は [`docs/spec.md`](./docs/spec.md) §3.1。`allowDomains` にワイルドカードが使えない理由は[こちら](#ワイルドカードドメインは使えません)。
 
 ## 基底プロファイル（`profile`）
 
@@ -315,14 +304,7 @@ init-project-firewall.sh --print-allowlist
 
 ## 拒否される値
 
-効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** 主なものは次のとおりです（完全な一覧は [`docs/spec.md`](./docs/spec.md) §3.2）。
-
-- `***` を含むドメイン**（`*.example.com`、`*`、`*.com` など。[理由](#ワイルドカードドメインは使えません)）
-- ドメイン名として不正な文字列（シェルのメタ文字、空白、改行など）
-- `0.0.0.0/0`、プレフィックス長 8 未満の CIDR
-- プライベートアドレス帯を含む CIDR — RFC1918、**CGNAT（`100.64.0.0/10`）**、loopback、link-local、multicast / 予約
-  - 前方一致ではなく数値レンジの重複判定を行うため、`100.0.0.0/8` のような包含するスーパーネットも拒否します
-- 範囲外のポート番号
+効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** ワイルドカードを含むドメイン、シェルのメタ文字や空白を含む文字列、`0.0.0.0/0` とプレフィックス長 8 未満の CIDR、私設アドレス帯（RFC1918・**CGNAT の `100.64.0.0/10`**・loopback・link-local・multicast / 予約）を含む CIDR、範囲外のポート番号が拒否されます。**判定は前方一致ではなく数値レンジの重複なので、`100.0.0.0/8` のような包含するスーパーネットも通りません。** 完全な一覧は [`docs/spec.md`](./docs/spec.md) §3.2。
 
 **同じ検査は DNS 応答にも掛かります。** 許可したドメインが `169.254.169.254` を返しても allowlist には入りません（[`docs/design.md`](./docs/design.md) §2.9）。
 
@@ -330,12 +312,7 @@ init-project-firewall.sh --print-allowlist
 
 ## ホストゲートウェイの扱い
 
-ホスト網は**既定で不許可**です。必要なポート（ローカル DB など）だけを `allowHostPorts` で開けてください。
-
-許可されるのは**ホストを指すアドレス宛の指定 TCP ポートのみ**で、サブネット全体ではありません。対象は次の 2 つです。
-
-- デフォルトゲートウェイの IP（`ip route show default`）
-- `host.docker.internal` の解決結果（私設アドレスであることを検証）
+ホスト網は**既定で不許可**です。必要なポート（ローカル DB など）だけを `allowHostPorts` で開けてください。対象になるアドレスはデフォルトゲートウェイ（`ip route show default`）と `host.docker.internal` の解決結果（私設アドレスであることを検証）の 2 つだけです。
 
 **Docker Desktop ではこの 2 つが別のアドレスになります。** 実測ではゲートウェイ経由でホストに届かず、`host.docker.internal` 側でのみ到達しました（[`docs/design.md`](./docs/design.md) §2.15）。
 
