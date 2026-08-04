@@ -23,17 +23,3 @@ fault.
 オーケストレーターのコンテキストを圧迫させないため。実装はコード全文を読む必要がある一方、ドキュメントは設計判断の経緯を保持している側が書いたほうが正確になる。
 
 委譲する前に**契約（インターフェース・命名・出力形式）を先に固定し**、それをサブエージェントとドキュメント双方の基準にする。サブエージェントには「ドキュメント・テンプレート・changeset には触るな」と明示する。並行編集の競合も防げる。
-
-## 進行中の作業（2026-08-04 時点。片付いたらこの節を消すこと）
-
-`feat/monorepo-firewall` で基底プロファイルを選択制にし、`audit` モードで宛先を実測した。手順と結果は
-`packages/egress-guard/docs/measuring-egress.md`。**残っているのは確認の 1 周分。**
-
-1. **再ビルドが要る。** `.devcontainer/firewall.json` を `mode: "enforce"` に戻し、`profile` に `openai` を追加した。**反映は再ビルド後**
-2. **再ビルド後に codex で 1 往復して、通ることを確かめる。**
-
-   ```sh
-   codex exec --sandbox read-only --skip-git-repo-check "Answer in one short sentence: what is 2+2?"
-   ```
-
-   通れば `openai` バンドルの 2 ドメインで足りると確定する。落ちたら `ipset list egress-audit-v4` に積まれたものが次の候補。**`measuring-egress.md` の「未解決」の項（`172.64.144.52`）はこれで決着する**
