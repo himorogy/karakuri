@@ -1,5 +1,11 @@
 # @himorogy/enclave-env
 
+## 0.3.0
+
+### Minor Changes
+
+- f417843: Windows で使用できるように調整
+
 ## 0.2.1
 
 ### Patch Changes

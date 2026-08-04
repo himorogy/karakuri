@@ -1,7 +1,15 @@
 {
 	"name": "@himorogy/enclave-env",
-	"version": "0.2.1",
+	"version": "0.3.0",
 	"description": "Encrypted env management that keeps secrets out of LLM reach",
+	"homepage": "https://github.com/himorogy/karakuri/tree/main/packages/enclave-env#readme",
+	"bugs": "https://github.com/himorogy/karakuri/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/himorogy/karakuri.git",
+		"directory": "packages/enclave-env"
+	},
+	"license": "MIT",
 	"type": "module",
 	"bin": {
 		"enclave-env": "dist/cli.js"
@@ -12,8 +20,7 @@
 		"typecheck": "tsc --noEmit",
 		"test": "pnpm test:ts && pnpm test:sh",
 		"test:ts": "tsc -p tsconfig.test.json && node --test dist/test/tests/config.test.js dist/test/tests/security.test.js",
-		"test:sh": "sh tests/check.test.sh && sh tests/init-check-dev.test.sh && sh tests/init-check-prod.test.sh",
-		"release": "sh release.sh"
+		"test:sh": "sh tests/check.test.sh && sh tests/init-check-dev.test.sh && sh tests/init-check-prod.test.sh"
 	},
 	"dependencies": {
 		"@dotenvx/dotenvx": "^1.63.0",
