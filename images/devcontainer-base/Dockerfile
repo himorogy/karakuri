@@ -123,9 +123,13 @@ WORKDIR /workspace
 # --- pnpm ----------------------------------------------------------------------
 ENV PNPM_HOME=/usr/local/share/pnpm \
     NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH="${PNPM_HOME}:${NPM_CONFIG_PREFIX}/bin:${PATH}"
+# PATH に載せるのは ${PNPM_HOME}/bin であって ${PNPM_HOME} ではない。
+# pnpm 10 は PNPM_HOME 直下に global bin を置いていたが、11 は bin/ の下に置く。
+# 古いレイアウトのままだと pnpm add -g したものが PATH に載らず、
+# pnpm bin -g が "global bin directory is not in PATH" で失敗する。
+ENV PATH="${PNPM_HOME}/bin:${NPM_CONFIG_PREFIX}/bin:${PATH}"
 
-RUN mkdir -p "${PNPM_HOME}" "${NPM_CONFIG_PREFIX}" \
+RUN mkdir -p "${PNPM_HOME}/bin" "${NPM_CONFIG_PREFIX}" \
     && chown -R ${USERNAME}:${USERNAME} /usr/local/share
 
 USER ${USERNAME}

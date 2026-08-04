@@ -23,9 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   vim \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# PATH gets ${PNPM_HOME}/bin, not ${PNPM_HOME}. pnpm 10 placed global binaries
+# directly under PNPM_HOME; pnpm 11 places them under bin/. Keeping the old
+# layout makes `pnpm add -g` install to a directory that is not on PATH.
 ENV PNPM_HOME="/usr/local/share/pnpm"
-ENV PATH="${PNPM_HOME}:${PATH}"
-RUN mkdir -p "${PNPM_HOME}" && \
+ENV PATH="${PNPM_HOME}/bin:${PATH}"
+RUN mkdir -p "${PNPM_HOME}/bin" && \
   chown -R node:node /usr/local/share
 
 ARG USERNAME=node
