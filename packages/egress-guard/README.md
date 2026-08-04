@@ -60,21 +60,9 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 
 # 必要な環境
 
-コンテナ内に次が必要です。配置の仕方は[セットアップ](#セットアップ)。
+**6 つのパッケージと 2 つの capability が要ります**（`aggregate` を入れるなら 7 つ）。**どれが何に要るかは[セットアップ](#dockerfile-に追記するもの)の Dockerfile に書いてあります。** 削れるものを判断するときはそちらを見てください。
 
-
-| パッケージ       | 用途                                                  |
-| ----------- | --------------------------------------------------- |
-| `iptables`  | ルール適用（`iptables-restore` / `ip6tables-restore` を含む） |
-| `ipset`     | allowlist の保持                                       |
-| `iproute2`  | デフォルトゲートウェイの検出                                      |
-| `dnsutils`  | `dig` による名前解決                                       |
-| `jq`        | `firewall.json` のパースと検証                             |
-| `curl`      | GitHub meta API の取得、自己検証                            |
-| `aggregate` | GitHub CIDR の集約（任意。無い場合は警告のみ）                       |
-
-
-capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[ネットワーク構成](#ネットワーク構成推奨)の各案を参照）。**`dockerComposeFile` を使うと `runArgs` は無視されるため、Compose 構成では `cap_add` に書きます。**
+capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[ネットワーク構成](#ネットワーク構成推奨)の各案を参照）。`**dockerComposeFile` を使うと `runArgs` は無視されるため、Compose 構成では `cap_add` に書きます。**
 
 ## DNS リゾルバ
 
@@ -90,23 +78,20 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 ## Dockerfile に追記するもの
 
-**必要なのは 4 つです。** すべて root で、イメージビルド時に行います。
-
-
-| 追記するもの                                      | 目的                           |
-| ------------------------------------------- | ---------------------------- |
-| パッケージのインストール                                | `iptables` / `ipset` などの実行環境 |
-| スクリプトを `/usr/local/bin/` へコピー               | `node` が書き換えられない場所に置く        |
-| `firewall.json` を `/etc/egress-guard/` へコピー | `node` が書き換えられない場所に置く        |
-| sudoers 行                                   | `node` が引数なしで実行できるようにする      |
-
+**必要なのは 4 つです。** すべて root で、イメージビルド時に行います。**2 と 3 を `node` が書き込めない場所へ置くことが要点です。**
 
 ```dockerfile
 USER root
 
-# 1. 必要なパッケージ（aggregate は任意）
+# 1. 必要なパッケージ
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      iptables ipset iproute2 dnsutils jq curl aggregate \
+      iptables   `# ルール適用。iptables-restore / ip6tables-restore を含む` \
+      ipset      `# allowlist の保持` \
+      iproute2   `# デフォルトゲートウェイの検出` \
+      dnsutils   `# dig による名前解決` \
+      jq         `# firewall.json のパースと検証` \
+      curl       `# GitHub meta API の取得、自己検証` \
+      aggregate  `# 任意。GitHub CIDR の集約。無ければ警告だけ出て続行する` \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 2. スクリプトを /usr/local/bin へコピー（パッケージから取得する場合）
@@ -130,7 +115,9 @@ RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""
 USER node
 ```
 
-`**postCreateCommand` では配置できません。** 既定で `remoteUser`（＝ `node`）として実行されるためです。
+パッケージ名の後ろのバッククォートはコメントです（`` `# ...` `` は空に展開されるため、`apt-get` にはパッケージ名だけが渡ります）。
+
+**`postCreateCommand` では配置できません。** 既定で `remoteUser`（＝ `node`）として実行されるためです。
 
 ## devcontainer.json に追記するもの
 
@@ -271,12 +258,6 @@ init-project-firewall.sh --check-config
 
 **雛形の `profile` は Claude Code + npm + git を想定した最小構成です**（`anthropic`、`anthropic-updates`、`npm`、`github`）。**codex を使うなら `openai` を、VS Code の拡張を入れるなら `vscode` を足してください。** 使わないものは足さないでください（[基底プロファイル](#基底プロファイルprofile)）。
 
-```sh
-cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/firewall.json
-```
-
-**JSON にコメントは書けません。** `jq` でパースするため、コメント付きの JSON5 / JSONC 形式は「不正な JSON」として拒否されます。
-
 ## 記入例
 
 ```json
@@ -310,15 +291,15 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 | `github`            | `github.com`、`api.github.com`、`codeload.github.com`、`objects.githubusercontent.com`、`raw.githubusercontent.com` |
 
 
-- **`profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
+- `**profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
 - 配列で選びます。文字列 1 つでも書けます（`"profile": "github"`）
 - `github` を選んだときだけ、GitHub meta API から取得した CIDR が追加されます
-- **`anthropic-updates` は Claude Code の自動アップデート配信元です。バージョンを固定したいなら選ばないでください**（遮断しても Claude Code は動き、更新だけが失敗します）
-- **`openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は含みません。必要なら `allowDomains` に書いてください
+- `**anthropic-updates` は Claude Code の自動アップデート配信元です。バージョンを固定したいなら選ばないでください**（遮断しても Claude Code は動き、更新だけが失敗します）
+- `**openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は含みません。必要なら `allowDomains` に書いてください
 
 **既定を「何も許可しない」にしてあるのは、ファイアウォールの既定は deny だからです。** 書き忘れは遮断として現れます。allowlist は小さいほど、漏洩先として使える宛先が減ります。
 
-> **`"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
+> `**"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
 
 **バンドルの中身は他社製品のエンドポイントなので、測り直しが要ります。** テレメトリ・ログ送信・feature flag は入れていません。**その判断基準・実測結果・測り方は [`docs/measuring-egress.md`](./docs/measuring-egress.md)、バンドル方式を選んだ理由は [`docs/design.md`](./docs/design.md) §2.17。**
 
@@ -387,7 +368,7 @@ IPv6 の試行はログ（`fw-drop6:`）に残ります。**silent DROP では�
 allowlist を通らなかった宛先 IP は ipset `egress-audit-v4` に溜まります（`enforce` / `audit` の両モード）。読むには root が要ります。
 
 ```sh
-docker exec -u root <container> ipset list egress-audit-v4
+docker exec -u root [[ORCA_RICH_MD:928c6996ad06dfd2c3b9c41420657a38:inline-html:%3Ccontainer%3E]] ipset list egress-audit-v4
 ```
 
 **読み方・IP から名前を戻す手順・何を allowlist に足して何を足さないかは [`docs/measuring-egress.md`](./docs/measuring-egress.md) に集約してあります。** `timeout` の残量から新旧を判断する方法、CDN 上では名前を特定しきれないこと、その場合の決着のつけ方まで、まとめてそちらにあります。
