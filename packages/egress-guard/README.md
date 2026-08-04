@@ -346,32 +346,17 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 | `github`            | `github.com`、`api.github.com`、`codeload.github.com`、`objects.githubusercontent.com`、`raw.githubusercontent.com` |
 
 
-- `**openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は測っていないため含みません。必要なら `allowDomains` に書いてください
-- `**profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
-- 配列で選ぶと、そこに書いたバンドルだけが入ります。文字列 1 つでも書けます（`"profile": "github"`）
+- **`profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
+- 配列で選びます。文字列 1 つでも書けます（`"profile": "github"`）
 - `github` を選んだときだけ、GitHub meta API から取得した CIDR が追加されます
+- **`anthropic-updates` は Claude Code の自動アップデート配信元です。バージョンを固定したいなら選ばないでください**（遮断しても Claude Code は動き、更新だけが失敗します）
+- **`openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は含みません。必要なら `allowDomains` に書いてください
 
-**既定を「何も許可しない」にしてあるのは、ファイアウォールの既定は deny だからです。** 書き忘れは遮断として現れます。**必要なものは明示的に選んでください。** allowlist は小さいほど、漏洩先として使える宛先が減ります。
+**既定を「何も許可しない」にしてあるのは、ファイアウォールの既定は deny だからです。** 書き忘れは遮断として現れます。allowlist は小さいほど、漏洩先として使える宛先が減ります。
 
-**ドメインを直接 `allowDomains` に列挙するのではなくバンドルで選ぶのは、更新をパッケージ側に寄せるためです。** 各プロジェクトが同じホスト名を複製すると、エンドポイントが変わったときに全プロジェクトがドリフトします。
+> **`"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
 
-> `**"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
-
-### `anthropic` と `anthropic-updates` を分けている理由
-
-`anthropic-updates` は Claude Code の自動アップデート配信元です。**遮断しても Claude Code は動き続けます**（更新が失敗し、コンソールにエラーメッセージが出ます）。
-
-**バージョンを固定したい場合は選ばないでください。** 再現性が要る環境、バージョン依存の不具合を追っているとき、組織でツールのバージョンを揃えているときは、固定するほうが正しい選択です。このパッケージ自身の設計原則（すべての変更はイメージ再ビルドを経由する）とも揃います。
-
-**最新を使いたい場合は選んでください。** 雛形には含めてあります。
-
-### 何をバンドルに入れ、何を入れないか
-
-**テレメトリ・ログ送信・feature flag はバンドルに入れていません。** 失敗しても道具は動き続ける一方、allowlist に載せた宛先はそのまま漏洩先になるためです。必要なら `allowDomains` に書いてください。
-
-**元になった Claude Code の devcontainer が無条件に許可していた 13 ドメインのうち、3 つは入れていません** — `sentry.io`、`statsig.com`、`console.anthropic.com`。**いずれも実測で観測されず、`claude` の実行ファイル（v2.1.221）にも文字列として存在しませんでした。**
-
-**判断の基準と、実際に測った結果は [`docs/measuring-egress.md`](./docs/measuring-egress.md) にあります。** バンドルの中身は他社製品のエンドポイントなので、**測り直しが要る対象**です。同じ文書に手順も書いてあります。
+**バンドルの中身は他社製品のエンドポイントなので、測り直しが要ります。** テレメトリ・ログ送信・feature flag は入れていません。**その判断基準・実測結果・測り方は [`docs/measuring-egress.md`](./docs/measuring-egress.md)、バンドル方式を選んだ理由は [`docs/design.md`](./docs/design.md) §2.17。**
 
 ## 何が許可されているか見る
 

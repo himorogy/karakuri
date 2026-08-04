@@ -10,7 +10,7 @@
 
 初版の基底プロファイルは [claude-code の devcontainer](https://github.com/anthropics/claude-code/blob/main/.devcontainer/init-firewall.sh) にある 13 ドメインをそのまま持ってきたものでした。**2026-08-04 に実測したところ、この 13 件は既に現実と合っていませんでした。**
 
-* **入っているのに使われていないもの** — `sentry.io`、`statsig.com` への接触は観測されませんでした
+* **入っているのに使われていないもの** — `sentry.io`、`statsig.com`、`console.anthropic.com`。実測でも観測されず、`claude` の実行ファイル（v2.1.221）にも文字列として存在しませんでした。**13 件のうち 3 件です**
 * **使われているのに入っていないもの** — Datadog のログ収集エンドポイントと `downloads.claude.ai` が観測されました
 
 **リストを信じて写した場合、この 2 種類のずれはどちらも見えません。** 前者は allowlist を無駄に広げ、後者は「入れたはずなのに動かない」として現れます。
