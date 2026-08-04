@@ -23,4 +23,13 @@ jobs:
 
       - run: pnpm lint
 
+      # シェルスクリプトはこのリポジトリの成果物そのもの（egress-guard）。
+      # biome は触れないため別に走らせる。shellcheck は ubuntu-latest に同梱。
+      - run: pnpm lint:sh
+
+      # .devcontainer のコピーは手作業で同期している（sudoers が node_modules を
+      # 指せないため、依存として参照できない）。ずれるとパッケージ側だけ直った状態で
+      # CI が緑になり、本番イメージには修正が届かない。
+      - run: cmp .devcontainer/init-project-firewall.sh packages/egress-guard/scripts/init-project-firewall.sh
+
       - run: pnpm test

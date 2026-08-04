@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"profile": [
+		"anthropic",
+		"anthropic-updates",
+		"openai",
+		"npm",
+		"vscode",
+		"github"
+	],
+	"mode": "enforce",
+	"allowDomains": ["nodejs.org"]
+}

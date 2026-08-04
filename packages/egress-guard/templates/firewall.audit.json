@@ -1,0 +1,8 @@
+{
+	"version": 1,
+	"profile": ["anthropic", "anthropic-updates", "npm", "github"],
+	"mode": "audit",
+	"allowDomains": [],
+	"allowCidrs": [],
+	"allowHostPorts": []
+}

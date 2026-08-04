@@ -13,5 +13,9 @@ logs
 # packages build output
 dist
 
-# Claude Code personal settings
-.claude/settings.local.json
+# Claude Code
+.claude-audit/
+
+# 作業メモと、公開できない値を含む運用スクリプト。
+# コンテナを作り直しても消えないようにワークスペース内に置く。
+.local/

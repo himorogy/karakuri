@@ -4,9 +4,30 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@types/node':
+      specifier: ^25.6.0
+      version: 25.6.0
+    tsup:
+      specifier: ^8.5.1
+      version: 8.5.1
+    typescript:
+      specifier: ^6.0.3
+      version: 6.0.3
+
 importers:
 
   .:
+    devDependencies:
+      '@biomejs/biome':
+        specifier: ^2.4.13
+        version: 2.4.13
+      '@changesets/cli':
+        specifier: ^2.31.0
+        version: 2.31.0(@types/node@25.6.0)
+
+  packages/enclave-env:
     dependencies:
       '@dotenvx/dotenvx':
         specifier: ^1.63.0
@@ -15,20 +36,14 @@ importers:
         specifier: ^14.0.3
         version: 14.0.3
     devDependencies:
-      '@biomejs/biome':
-        specifier: ^2.4.13
-        version: 2.4.13
-      '@changesets/cli':
-        specifier: ^2.31.0
-        version: 2.31.0(@types/node@25.6.0)
       '@types/node':
-        specifier: ^25.6.0
+        specifier: 'catalog:'
         version: 25.6.0
       tsup:
-        specifier: ^8.5.1
+        specifier: 'catalog:'
         version: 8.5.1(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
 
 packages:

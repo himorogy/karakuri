@@ -6,7 +6,7 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["**", "!!**/dist"]
+		"includes": ["**", "!!**/dist", "!!.devcontainer/devcontainer-lock.json"]
 	},
 	"formatter": {
 		"enabled": true,
@@ -30,5 +30,15 @@
 				"organizeImports": "on"
 			}
 		}
-	}
+	},
+	"overrides": [
+		{
+			"includes": [".devcontainer/*.json"],
+			"json": {
+				"parser": {
+					"allowComments": true
+				}
+			}
+		}
+	]
 }

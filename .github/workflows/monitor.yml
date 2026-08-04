@@ -1,9 +1,13 @@
 name: Registry Monitor
 
+# レジストリ上の版とリポジトリの状態を毎日照合し、経路を通らずに
+# 公開された版を検出する。判定の意味は docs/secure-publish.md §6 を参照。
 on:
   schedule:
-    - cron: '0 0 * * *'  # 毎日 09:00 JST
-  workflow_dispatch:       # 手動実行（テスト用）
+    - cron: "0 0 * * *" # 毎日 09:00 JST
+  workflow_dispatch: # 手動実行（テスト用）
+
+permissions: {}
 
 jobs:
   monitor:
@@ -12,46 +16,103 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0  # 全タグを取得
+          fetch-depth: 0 # 全タグを取得
 
       - name: Check registry and notify Slack
+        shell: bash
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_MONITOR_WEBHOOK_URL }}
         run: |
-          PACKAGE="@himorogy/enclave-env"
+          set -eu
+
+          # 単一パッケージ時代に v<ver> 形式で打たれたタグ。
+          # 新形式 <pkg>@<ver> へ移行済みなので、これ以上は増えない。
+          # v<ver> を無条件に受け入れると、パッケージが増えた今は
+          # 別パッケージの同じ版数に当たってしまう（egress-guard 0.2.0 が
+          # enclave-env の v0.2.0 で「タグあり」と判定される）ため、
+          # 対象を明示的に列挙する。
+          LEGACY_TAGGED="@himorogy/enclave-env@0.2.0 @himorogy/enclave-env@0.2.1"
+
           STATUS="ok"
           TEXT=""
 
-          # --- 1. バージョン整合性チェック ---
-          # npm の全バージョンと git タグを照合する
-          NPM_RAW=$(npm view "$PACKAGE" versions --json 2>/dev/null) || true
+          # ok < warn < alert。一度上げた深刻度は下げない。
+          escalate() {
+            case "$1" in
+              alert) STATUS="alert" ;;
+              warn)  [ "$STATUS" = "alert" ] || STATUS="warn" ;;
+            esac
+          }
 
-          if [ -z "$NPM_RAW" ]; then
-            STATUS="warn"
-            TEXT="${TEXT}⚠️ npm registry に未 publish（または取得失敗）\n"
-          else
+          # 監視対象はワークスペースから引く。パッケージが増えても
+          # このファイルを触らなくてよい。
+          for manifest in packages/*/package.json; do
+            PACKAGE=$(jq -r 'select(.private != true) | .name // empty' "$manifest")
+            [ -n "$PACKAGE" ] || continue
+
+            TEXT="${TEXT}*${PACKAGE}*\n"
+
+            NPM_RAW=$(npm view "$PACKAGE" versions --json 2>/dev/null) || NPM_RAW=""
+
+            if [ -z "$NPM_RAW" ]; then
+              TEXT="${TEXT}⚠️ npm registry に未 publish（または取得失敗）\n\n"
+              escalate warn
+              continue
+            fi
+
             # npm view は版数が 1 つだと文字列、複数だと配列を返すため正規化
-            VERSIONS=$(echo "$NPM_RAW" | \
+            VERSIONS=$(printf '%s' "$NPM_RAW" | \
               jq -r 'if type == "string" then [.] else . end | .[]')
 
-            UNEXPECTED=""
+            # --- 1. タグとの照合 ---
+            # タグは公開の原因であり、レジストリ上の版はその結果である。
+            # 対応するタグを持たない版は、経路を通らずに公開されたもの。
+            UNTAGGED=""
             while IFS= read -r v; do
-              [ -z "$v" ] && continue
-              if ! git rev-parse "v${v}" >/dev/null 2>&1; then
-                UNEXPECTED="${UNEXPECTED}v${v} "
+              [ -n "$v" ] || continue
+
+              if git rev-parse -q --verify "refs/tags/${PACKAGE}@${v}" >/dev/null; then
+                continue
               fi
+
+              case " ${LEGACY_TAGGED} " in
+                *" ${PACKAGE}@${v} "*)
+                  if git rev-parse -q --verify "refs/tags/v${v}" >/dev/null; then
+                    continue
+                  fi
+                  ;;
+              esac
+
+              UNTAGGED="${UNTAGGED}${v} "
             done <<< "$VERSIONS"
 
-            if [ -n "$UNEXPECTED" ]; then
-              STATUS="alert"
-              TEXT="${TEXT}🚨 git tag のない npm バージョン: ${UNEXPECTED}\n"
+            if [ -n "$UNTAGGED" ]; then
+              TEXT="${TEXT}🚨 git tag のない版: ${UNTAGGED}\n"
+              escalate alert
             else
-              LATEST=$(echo "$VERSIONS" | tail -1)
-              TEXT="${TEXT}✅ バージョン整合性 OK（最新: v${LATEST}）\n"
+              TEXT="${TEXT}✅ タグ整合 OK\n"
             fi
-          fi
+
+            # --- 2. 出所証明の確認 ---
+            # タグ照合が見ているのはタグ名の存在だけで、成果物の中身に
+            # ついては何も保証しない。attestation はビルド元を暗号的に
+            # 示すため、本来の検証はこちらにあたる。
+            #
+            # 移行前に手で公開された版には付かないので、最新版だけを見る。
+            # 移行後は常に付くはずで、付いていなければ経路外を疑う。
+            LATEST=$(printf '%s' "$VERSIONS" | tail -1)
+            ATTESTATION=$(npm view "${PACKAGE}@${LATEST}" --json 2>/dev/null \
+              | jq -r '.dist.attestations.url // empty') || ATTESTATION=""
+
+            if [ -n "$ATTESTATION" ]; then
+              TEXT="${TEXT}✅ 最新版 ${LATEST} に provenance あり\n\n"
+            else
+              TEXT="${TEXT}⚠️ 最新版 ${LATEST} に provenance なし\n\n"
+              escalate warn
+            fi
+          done
 
           # --- Slack 通知 ---
           case "$STATUS" in
@@ -62,7 +123,7 @@ jobs:
 
           jq -n \
             --arg color  "$COLOR" \
-            --arg title  "npm 監視 (${PACKAGE}): ${LABEL}" \
+            --arg title  "npm 監視: ${LABEL}" \
             --arg text   "$(printf '%b' "$TEXT")" \
             --arg footer "$(date -u '+%Y-%m-%d %H:%M UTC')" \
             '{attachments:[{

@@ -1,18 +1,18 @@
+// 案 A（Docker Compose）の検証用。既定は devcontainer.json（案 B）のまま。
+// 使うときは devcontainer.json と入れ替える。手順は
+// packages/egress-guard/docs/verification-record.md §6.22。
+//
+// 案 B から消えたもの: initializeCommand / runArgs / mounts / workspaceMount /
+// containerEnv。いずれも docker-compose.yml 側へ移した。
+// **dockerComposeFile を使うと runArgs は黙って無視される。** ここに書き戻しても
+// cap_add は効かないため、egress-guard が起動に失敗する。
 {
-	"name": "@himorogy/enclave-env development container",
-	"build": {
-		"dockerfile": "Dockerfile",
-		"args": {
-			"TZ": "${localEnv:TZ:America/Los_Angeles}", // タイムゾーンをホストと同期
-			"GIT_DELTA_VERSION": "0.18.2",
-			"ZSH_IN_DOCKER_VERSION": "1.2.0"
-		}
+	"name": "@himorogy/karakuri development container",
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "dev",
+	"features": {
+		"ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
 	},
-	"runArgs": [
-		"--name=enclave-env-dev-container",
-		"--cap-add=NET_ADMIN",
-		"--cap-add=NET_RAW"
-	],
 	"customizations": {
 		"vscode": {
 			"extensions": ["anthropic.claude-code", "biomejs.biome"],
@@ -30,21 +30,13 @@
 			}
 		}
 	},
+	// Compose では "stopCompose" が既定。案 B と挙動を揃えるため none にする。
+	"shutdownAction": "none",
 	"remoteUser": "node",
-	"mounts": [
-		// ターミナルの履歴を永続化。前回のAI実行コマンドを Ctrl+R で即座に呼び出せる
-		"source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
-		// 認証情報や設定を永続化。再ビルドしても再ログイン不要
-		"source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume"
-	],
-	"containerEnv": {
-		"NODE_OPTIONS": "--max-old-space-size=2048",
-		"CLAUDE_CONFIG_DIR": "/home/node/.claude",
-		"POWERLEVEL9K_DISABLE_GITSTATUS": "true" // シェルの描画負荷を軽減
-	},
-	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
-	"workspaceFolder": "/workspace",
-	"postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash && echo \"alias claude='/home/node/.local/bin/claude --plugin-dir ~/.claude-personal-plugin'\" >> ~/.zshrc",
-	"postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
+	"workspaceFolder": "/workspaces/karakuri",
+	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
+	// ファイアウォールを毎起動時に適用する。waitFor と組み合わせているため、適用に
+	// 失敗した状態でエディタが使えるようになる前に失敗が表面化する。
+	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
 	"waitFor": "postStartCommand"
 }
