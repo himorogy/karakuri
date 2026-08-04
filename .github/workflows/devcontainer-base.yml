@@ -89,6 +89,11 @@ jobs:
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          # annotation を index にも付ける。既定は manifest のみだが、マルチアーキの
+          # イメージで GHCR のパッケージ画面が読むのは OCI index 側の annotation。
+          # manifest だけだとプラットフォーム別の manifest に付いて表示に反映されない。
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ${{ env.IMAGE_NAME }}
           # metadata-action のデフォルト (latest=auto) は type=semver が有効なとき
@@ -106,6 +111,11 @@ jobs:
           labels: |
             org.opencontainers.image.title=devcontainer-base
             org.opencontainers.image.description=Shared devcontainer base image for @himorogy projects
+          # labels 入力は annotations に反映されない。同じ内容をここにも書かないと、
+          # annotation にはリポジトリ由来の title=karakuri と空の description が載る。
+          annotations: |
+            org.opencontainers.image.title=devcontainer-base
+            org.opencontainers.image.description=Shared devcontainer base image for @himorogy projects
 
       - name: Build and push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -115,6 +125,7 @@ jobs:
           push: ${{ steps.cond.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           # ベースの node:24 を毎回引き直す。ランナー上の古いレイヤに引きずられないため。
           pull: true
           cache-from: type=gha
@@ -126,6 +137,11 @@ jobs:
 
       # push した内容が実際に両アーキで起動するかを確認する。
       # QEMU 経由でも crit / pnpm は動くので、最低限の実行可能性は検出できる。
+      #
+      # pnpm bin -g は PATH の検査を兼ねる。pnpm 11 は global bin を
+      # ${PNPM_HOME}/bin に置くため、PATH に ${PNPM_HOME} しか載っていない
+      # 古いレイアウトへ戻ると "global bin directory is not in PATH" で落ちる。
+      # ビルドログには現れない種類の壊れ方なので、ここで検出する。
       - name: Smoke test pushed image
         if: steps.cond.outputs.push == 'true'
         run: |
@@ -137,5 +153,6 @@ jobs:
             echo "--- ${platform} ---"
             docker run --rm --platform "${platform}" "${tag}" crit --version
             docker run --rm --platform "${platform}" "${tag}" pnpm --version
+            docker run --rm --platform "${platform}" "${tag}" pnpm bin -g
             docker run --rm --platform "${platform}" "${tag}" sh -c 'echo "$LANG"'
           done
