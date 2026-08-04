@@ -232,7 +232,7 @@ echo "--check-config"
 check_config "minimal" accept '{"version":1}'
 check_config "full" accept '{
 	"version": 1,
-	"profile": "default",
+	"profile": ["anthropic", "npm", "github"],
 	"mode": "enforce",
 	"allowDomains": ["ep-cool-name-123456.ap-southeast-1.aws.neon.tech", "registry.example.com"],
 	"allowCidrs": ["203.0.113.0/24"],
@@ -301,6 +301,293 @@ if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "wildcards are not supported"
 else
 	ng "the wildcard rejection explains what to write instead (rc=$rc, out=$out)"
 fi
+
+# --- base profile bundles ----------------------------------------------------
+#
+# `profile` selects named bundles, and nothing is selected unless it says so.
+# There is deliberately no name that means "all of them": a catch-all is how an
+# allowlist ends up holding destinations nobody chose, because keeping the
+# umbrella is always easier than working out which bundles are really used.
+
+echo "profile bundles"
+check_config "profile as an array" accept '{"version":1,"profile":["anthropic","npm"]}'
+check_config "profile as a single bundle name" accept '{"version":1,"profile":"npm"}'
+check_config "profile as an empty array" accept '{"version":1,"profile":[]}'
+check_config "an omitted profile" accept '{"version":1}'
+# Asking for the same bundle twice is a merge artefact, not an error. It must
+# not be able to produce a policy that differs from asking once.
+check_config "a repeated bundle name" accept '{"version":1,"profile":["github","github","npm"]}'
+check_config "every bundle named individually" accept \
+	'{"version":1,"profile":["anthropic","npm","vscode","github"]}'
+check_config '"default" as a profile' reject '{"version":1,"profile":"default"}'
+check_config '"default" alongside a bundle name' reject '{"version":1,"profile":["default","npm"]}'
+# sentry.io and statsig.com were never shown to be required, so they are in no
+# bundle at all. The name has to be gone with them: a bundle that is accepted
+# and contributes nothing is worse than one that is refused.
+check_config "the telemetry bundle" reject '{"version":1,"profile":["telemetry"]}'
+check_config "an unknown bundle in an array" reject '{"version":1,"profile":["anthropic","wide-open"]}'
+check_config "an unknown bundle on its own" reject '{"version":1,"profile":["wide-open"]}'
+check_config "a non-string bundle name" reject '{"version":1,"profile":[1]}'
+check_config "a nested array of bundle names" reject '{"version":1,"profile":[["npm"]]}'
+# An empty name is not a bundle. Skipping it silently would mean accepting a
+# profile and then not honouring it, which is the failure mode the unknown field
+# gate exists to prevent.
+check_config "an empty bundle name" reject '{"version":1,"profile":[""]}'
+check_config "an empty profile string" reject '{"version":1,"profile":""}'
+check_config "a null profile selects no bundle" accept '{"version":1,"profile":null}'
+
+# Every configuration written before this change says "default", so this is the
+# error the reader meets first. "unknown profile: default" would tell them their
+# spelling was wrong rather than that the concept is gone, and would leave them
+# guessing at what to write instead.
+printf '%s' '{"version":1,"profile":"default"}' >"$TMPDIR_TEST/firewall.json"
+rc=0
+out="$(bash "$FIREWALL_SH" --check-config --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'no longer exists'; then
+	ok '"default" is refused with its own message, not the unknown-bundle one'
+else
+	ng '"default" is refused with its own message (rc=$rc, out='"$out"')'
+fi
+if printf '%s' "$out" | grep -q 'anthropic.*npm.*github'; then
+	ok '"default" is refused with a worked example of what to write instead'
+else
+	ng '"default" is refused with a worked example (out='"$out"')'
+fi
+if printf '%s' "$out" | grep -q 'Available bundles'; then
+	ok '"default" is refused with the list of bundles to choose from'
+else
+	ng '"default" is refused with the list of bundles (out='"$out"')'
+fi
+
+# --- --print-allowlist -------------------------------------------------------
+#
+# The listing is what an agent reads to find out where it may connect, so it has
+# to be answerable without root and without egress - the container it is asked
+# from is the one this script has already closed.
+
+echo "--print-allowlist"
+
+listing_for() { # <json> -> the listing on stdout, progress lines discarded
+	local file="$TMPDIR_TEST/firewall.json"
+	printf '%s' "$1" >"$file"
+	bash "$FIREWALL_SH" --print-allowlist --config "$file" 2>/dev/null
+}
+
+# section_of <listing> <label> -> the indented entries under "<label>:"
+section_of() {
+	printf '%s\n' "$1" | awk -v label="$2:" '
+		$0 == label { inside = 1; next }
+		inside && /^  / { line = $0; sub(/^  /, "", line); print line; next }
+		inside { inside = 0 }
+	'
+}
+
+says() { # <label> <listing> <expected line>
+	if printf '%s\n' "$2" | grep -qxF -- "$3"; then
+		ok "$1"
+	else
+		ng "$1 (missing line: $3)"
+	fi
+}
+
+# Every bundle at once, which is the largest base profile that can be asked for.
+# Sorted, because that is the order the listing prints them in. sentry.io and
+# statsig.com are absent by design: they belong to no bundle any more.
+ALL_BUNDLES="api.anthropic.com
+api.github.com
+codeload.github.com
+console.anthropic.com
+github.com
+marketplace.visualstudio.com
+objects.githubusercontent.com
+raw.githubusercontent.com
+registry.npmjs.org
+update.code.visualstudio.com
+vscode.blob.core.windows.net"
+
+ALL_LISTING="$(listing_for '{"version":1,"profile":["anthropic","npm","vscode","github"]}')"
+if [ "$(section_of "$ALL_LISTING" domains)" = "$ALL_BUNDLES" ]; then
+	ok "naming every bundle lists exactly the domains those four bundles hold"
+else
+	ng "naming every bundle lists exactly the domains those four bundles hold"
+	printf '%s\n' "$(section_of "$ALL_LISTING" domains)" | sed 's/^/    /' >&2
+fi
+# The two domains that were dropped. They are the reason a stale policy can look
+# correct: nothing else in the listing changes when they silently reappear.
+for gone in sentry.io statsig.com; do
+	if printf '%s\n' "$ALL_LISTING" | grep -qF "$gone"; then
+		ng "$gone is in no bundle"
+	else
+		ok "$gone is in no bundle"
+	fi
+done
+
+# The new default. A project that says nothing gets nothing, and the listing has
+# to say so rather than quietly showing a policy the project never chose.
+OMITTED_LISTING="$(listing_for '{"version":1}')"
+says "an omitted profile selects no bundle" "$OMITTED_LISTING" "profile: (none)"
+if [ "$(section_of "$OMITTED_LISTING" domains)" = "(none)" ]; then
+	ok "an omitted profile installs no base domain at all"
+else
+	ng "an omitted profile installs no base domain at all"
+	printf '%s\n' "$(section_of "$OMITTED_LISTING" domains)" | sed 's/^/    /' >&2
+fi
+if [ "$OMITTED_LISTING" = "$(listing_for '{"version":1,"profile":[]}')" ]; then
+	ok "an omitted profile is the same policy as an empty one"
+else
+	ng "an omitted profile is the same policy as an empty one"
+fi
+
+# Each bundle holds what it says it holds. Checked one at a time, because a
+# bundle that quietly gained a domain would still satisfy an assertion made
+# against the union.
+bundle_holds() { # <bundle> <domains, newline separated>
+	local got
+	got="$(section_of "$(listing_for "{\"version\":1,\"profile\":[\"$1\"]}")" domains)"
+	if [ "$got" = "$2" ]; then
+		ok "the $1 bundle holds exactly its documented domains"
+	else
+		ng "the $1 bundle holds exactly its documented domains (got: $got)"
+	fi
+}
+bundle_holds anthropic "api.anthropic.com
+console.anthropic.com"
+bundle_holds npm "registry.npmjs.org"
+bundle_holds vscode "marketplace.visualstudio.com
+update.code.visualstudio.com
+vscode.blob.core.windows.net"
+bundle_holds github "api.github.com
+codeload.github.com
+github.com
+objects.githubusercontent.com
+raw.githubusercontent.com"
+
+DUPED_LISTING="$(listing_for '{"version":1,"profile":["npm","github","npm","github"]}')"
+PLAIN_LISTING="$(listing_for '{"version":1,"profile":["npm","github"]}')"
+if [ "$DUPED_LISTING" = "$PLAIN_LISTING" ]; then
+	ok "a repeated bundle name produces the same listing as naming it once"
+else
+	ng "a repeated bundle name produces the same listing as naming it once"
+fi
+
+SUBSET_LISTING="$(listing_for '{"version":1,"profile":["anthropic","npm"]}')"
+says "the selected bundles are named in order" "$SUBSET_LISTING" "profile: anthropic, npm"
+if [ "$(section_of "$SUBSET_LISTING" domains)" = "api.anthropic.com
+console.anthropic.com
+registry.npmjs.org" ]; then
+	ok "a subset lists only the domains of the bundles it asked for"
+else
+	ng "a subset lists only the domains of the bundles it asked for"
+	printf '%s\n' "$(section_of "$SUBSET_LISTING" domains)" | sed 's/^/    /' >&2
+fi
+# The bundles that were left out have to be genuinely gone, not merely unlisted.
+assert_missing() { # <label> <listing> <string>
+	if printf '%s\n' "$2" | grep -qF -- "$3"; then
+		ng "$1 (unexpectedly present: $3)"
+	else
+		ok "$1"
+	fi
+}
+assert_missing "a bundle that was not selected contributes nothing" \
+	"$SUBSET_LISTING" "sentry.io"
+assert_missing "the github bundle that was not selected contributes nothing" \
+	"$SUBSET_LISTING" "github.com"
+
+EMPTY_LISTING="$(listing_for '{"version":1,"profile":[]}')"
+says "an empty profile selects no bundle" "$EMPTY_LISTING" "profile: (none)"
+says "an empty profile has no domains" "$EMPTY_LISTING" "  (none)"
+if [ -z "$(section_of "$EMPTY_LISTING" domains)" ] ||
+	[ "$(section_of "$EMPTY_LISTING" domains)" = "(none)" ]; then
+	ok "an empty profile lists no base domain at all"
+else
+	ng "an empty profile lists no base domain at all"
+fi
+
+MERGED_LISTING="$(listing_for '{"version":1,"profile":["npm"],"allowDomains":["registry.npmjs.org","alpha.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}')"
+if [ "$(section_of "$MERGED_LISTING" domains)" = "alpha.example.com
+registry.npmjs.org" ]; then
+	ok "bundle and allowDomains entries are merged, sorted and deduplicated"
+else
+	ng "bundle and allowDomains entries are merged, sorted and deduplicated"
+	printf '%s\n' "$(section_of "$MERGED_LISTING" domains)" | sed 's/^/    /' >&2
+fi
+says "configured CIDRs are listed" "$MERGED_LISTING" "  203.0.113.0/24"
+says "configured host ports are listed" "$MERGED_LISTING" "  5432"
+says "the mode is stated" "$MERGED_LISTING" "mode: enforce"
+says "audit mode is stated as such" \
+	"$(listing_for '{"version":1,"mode":"audit"}')" "mode: audit"
+
+# The meta ranges only exist after a fetch, and the listing deliberately does
+# not perform one. Saying so is the difference between an incomplete answer and
+# a wrong one - but only when the github bundle is actually in play.
+assert_missing "no GitHub note when the github bundle is not selected" \
+	"$SUBSET_LISTING" "GitHub meta API"
+if printf '%s\n' "$ALL_LISTING" | grep -qF "GitHub meta API"; then
+	ok "the GitHub note appears when the github bundle is selected"
+else
+	ng "the GitHub note appears when the github bundle is selected"
+fi
+
+# A listing is never produced from a file an apply would refuse: the same
+# validator runs first.
+rc=0
+printf '%s' '{"version":1,"allowCidrs":["0.0.0.0/0"]}' >"$TMPDIR_TEST/firewall.json"
+out="$(bash "$FIREWALL_SH" --print-allowlist --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "rejected allowCidrs entry"; then
+	ok "--print-allowlist refuses a configuration an apply would refuse"
+else
+	ng "--print-allowlist refuses a configuration an apply would refuse (rc=$rc)"
+fi
+
+# Progress lines belong on stderr. The listing is meant to be parsed, and a
+# "[firewall] reading ..." line in the middle of it would not be.
+printf '%s' '{"version":1,"profile":["npm"]}' >"$TMPDIR_TEST/firewall.json"
+out="$(bash "$FIREWALL_SH" --print-allowlist --config "$TMPDIR_TEST/firewall.json" 2>/dev/null)"
+assert_missing "stdout carries no progress lines" "$out" "[firewall]"
+
+# The development options are refused under sudo, and --print-allowlist is one
+# of them: the unprivileged user is the adversary, so it must not get to point
+# any mode of this script at a file of its own.
+rc=0
+out="$(SUDO_USER=node SUDO_UID=1000 bash "$FIREWALL_SH" --print-allowlist 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "not accepted through sudo"; then
+	ok "--print-allowlist is refused when invoked through sudo"
+else
+	ng "--print-allowlist is refused when invoked through sudo (rc=$rc)"
+fi
+
+# --- anchor domain -----------------------------------------------------------
+#
+# The liveness check used to be "api.anthropic.com must resolve", which stopped
+# being defensible the moment a project could leave that bundle out. It now
+# anchors on the first domain the configuration actually asks for.
+
+echo "anchor_domain"
+anchor_is() { # <label> <expected> <profile domains> <config domains>
+	local got
+	got="$(
+		PROFILE_DOMAINS=()
+		CFG_DOMAINS=()
+		if [ -n "$3" ]; then
+			IFS=' ' read -r -a PROFILE_DOMAINS <<<"$3"
+		fi
+		if [ -n "$4" ]; then
+			IFS=' ' read -r -a CFG_DOMAINS <<<"$4"
+		fi
+		anchor_domain
+	)"
+	if [ "$got" = "$2" ]; then
+		ok "$1"
+	else
+		ng "$1 (got '$got', expected '$2')"
+	fi
+}
+
+anchor_is "the anchor is the first base profile domain" \
+	"api.anthropic.com" "api.anthropic.com console.anthropic.com" "db.example.com"
+anchor_is "with no bundle selected the anchor falls back to allowDomains" \
+	"db.example.com" "" "db.example.com other.example.com"
+anchor_is "with nothing to resolve there is no anchor" "" "" ""
 
 # --- shipped templates -------------------------------------------------------
 #

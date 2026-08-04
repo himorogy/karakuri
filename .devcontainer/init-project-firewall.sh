@@ -72,7 +72,6 @@ readonly -a DNS_PROBES=("8.8.8.8" "1.1.1.1" "9.9.9.9")
 # passes verification.
 readonly -a EGRESS_PROBES=("example.com" "example.net" "example.org")
 readonly SUPPORTED_SCHEMA_VERSION=1
-readonly SUPPORTED_PROFILE="default"
 readonly LOG_LIMIT="5/min"
 readonly LOG_BURST="10"
 readonly MAX_CONFIG_BYTES=65536
@@ -101,33 +100,75 @@ readonly PROD_CONFIG="/etc/egress-guard/firewall.json"
 # with --config.
 
 # --- base profile (package owned, common to every project) -------------------
+#
+# The base profile is a set of named bundles that `profile` selects from, and
+# nothing is selected unless the configuration says so. An allowlist that
+# contains entries nobody can justify is one nobody reviews, and a default that
+# opens destinations the project never asked for is exactly how such entries get
+# there. Omitting `profile` therefore means no base profile at all.
+#
+# PROFILE_BUNDLE_NAMES is the canonical order. It decides which domain the
+# liveness check anchors on (see anchor_domain), so it is part of the observable
+# behaviour and not merely cosmetic. Keep the members in the order a project is
+# most likely to depend on them.
+readonly -a PROFILE_BUNDLE_NAMES=(
+	"anthropic"
+	"npm"
+	"vscode"
+	"github"
+)
 
-readonly -a BASE_DOMAINS=(
+# The minimum Claude Code needs to talk to the service at all.
+#
+# sentry.io and statsig.com used to sit here as well, on the assumption that the
+# telemetry and feature flag endpoints were required. That was never measured. A
+# domain nobody has shown to be necessary does not belong in a package owned
+# bundle: a project that turns out to need one can list it in allowDomains, and
+# if it is ever demonstrated to be required it can move into this bundle then.
+readonly -a BUNDLE_ANTHROPIC=(
 	"api.anthropic.com"
 	"console.anthropic.com"
-	"sentry.io"
-	"statsig.com"
+)
+
+readonly -a BUNDLE_NPM=(
 	"registry.npmjs.org"
+)
+
+readonly -a BUNDLE_VSCODE=(
 	"marketplace.visualstudio.com"
 	"vscode.blob.core.windows.net"
 	"update.code.visualstudio.com"
 )
 
-# If none of these resolve, the container has no working network at all and we
-# fail instead of silently installing a policy that blocks everything.
-readonly -a BASE_REQUIRED_DOMAINS=(
-	"api.anthropic.com"
-)
-
 # Resolved on every run so that GitHub works even when the meta API cannot be
-# reached; the meta ranges are added on top afterwards.
-readonly -a GITHUB_DOMAINS=(
+# reached; the meta ranges are added on top afterwards, and only when this
+# bundle is selected.
+readonly -a BUNDLE_GITHUB=(
 	"github.com"
 	"api.github.com"
 	"codeload.github.com"
 	"objects.githubusercontent.com"
 	"raw.githubusercontent.com"
 )
+
+# bundle_domains <name> -> prints the bundle's domains, one per line
+#
+# Returns non-zero for a name that is not a bundle, which is what makes the
+# lookup double as the validator for a `profile` entry.
+#
+# A case statement rather than an associative array or a nameref: the bundle
+# name comes out of attacker controlled JSON, and `local -n ref="BUNDLE_$name"`
+# would turn that string into a variable name to dereference.
+bundle_domains() {
+	case "$1" in
+	anthropic) printf '%s\n' "${BUNDLE_ANTHROPIC[@]}" ;;
+	npm) printf '%s\n' "${BUNDLE_NPM[@]}" ;;
+	vscode) printf '%s\n' "${BUNDLE_VSCODE[@]}" ;;
+	github) printf '%s\n' "${BUNDLE_GITHUB[@]}" ;;
+	*) return 1 ;;
+	esac
+	return 0
+}
 
 readonly BASE_SSHD_PORT=22
 
@@ -184,6 +225,19 @@ join_sp() {
 	printf '%s' "$*"
 }
 
+# Same, with ", " between the items.
+#
+# Joined by hand rather than through IFS: "${arr[*]}" uses only the FIRST
+# character of IFS, so an IFS of ", " would separate with a bare comma.
+join_comma() {
+	local out="" item
+	for item in "$@"; do
+		[ -z "$out" ] || out="$out, "
+		out="$out$item"
+	done
+	printf '%s' "$out"
+}
+
 # First line of a multi-line string.
 #
 # Deliberately not `... | head -n1`: head closes the pipe after one line, the
@@ -207,6 +261,18 @@ APPLY_PHASE=0
 IPV6_CONTROL=0
 AUDIT_RECORDER=1
 declare -a RESOLVERS=()
+
+# The `profile` field as written, before bundle names are expanded. Empty by
+# default, which is also what an omitted field means: a run with no
+# configuration file at all and one whose configuration omits `profile` install
+# the same (empty) base profile.
+declare -a PROFILE_INPUT=()
+
+# Filled in by resolve_profile: the selected bundles and their domains, both in
+# PROFILE_BUNDLE_NAMES order with duplicates removed.
+declare -a PROFILE_BUNDLES=()
+declare -a PROFILE_DOMAINS=()
+
 declare -a CFG_DOMAINS=()
 declare -a CFG_CIDRS=()
 declare -a CFG_HOST_PORTS=()
@@ -374,6 +440,100 @@ validate_port() {
 	[ "$1" -le 65535 ]
 }
 
+# --- base profile selection --------------------------------------------------
+
+# Expands PROFILE_INPUT into PROFILE_BUNDLES and PROFILE_DOMAINS.
+#
+# There is no name that means "all of them". A catch-all is how an allowlist
+# acquires destinations nobody chose - it is always easier to keep the umbrella
+# than to work out which bundles a project really uses - and the whole value of
+# an allowlist is that every entry was chosen.
+resolve_profile() {
+	PROFILE_BUNDLES=()
+	PROFILE_DOMAINS=()
+
+	local -a requested=()
+	local name
+	for name in "${PROFILE_INPUT[@]:-}"; do
+		[ -n "$name" ] || continue
+		# Its own message rather than the generic one. Every existing
+		# configuration says "default", so this is the error the reader meets
+		# first, and "unknown profile: default" would tell them their spelling
+		# was wrong rather than that the concept is gone.
+		[ "$name" != "default" ] ||
+			die "profile \"default\" no longer exists; list the bundles this project actually needs, e.g. \"profile\": [\"anthropic\", \"npm\", \"github\"]. Available bundles: $(join_comma "${PROFILE_BUNDLE_NAMES[@]}"). Omitting profile now selects no base profile at all."
+		# The lookup is the validator: a name with no bundle behind it would
+		# otherwise silently contribute nothing, which is the failure mode the
+		# unknown-field gate exists to prevent one level up.
+		bundle_domains "$name" >/dev/null ||
+			die "unknown profile: $name (available bundles: $(join_comma "${PROFILE_BUNDLE_NAMES[@]}"))"
+		requested+=("$name")
+	done
+
+	# Walking the canonical order and keeping what was asked for does the
+	# deduplication and the ordering in one pass, so ["github","github"] and
+	# ["github"] cannot produce different policies.
+	local bundle req domain
+	for bundle in "${PROFILE_BUNDLE_NAMES[@]}"; do
+		for req in "${requested[@]:-}"; do
+			[ "$req" = "$bundle" ] || continue
+			PROFILE_BUNDLES+=("$bundle")
+			while read -r domain; do
+				[ -n "$domain" ] || continue
+				PROFILE_DOMAINS+=("$domain")
+			done < <(bundle_domains "$bundle")
+			break
+		done
+	done
+
+	info "base profile: $(profile_label)"
+	return 0
+}
+
+# Renders the selected bundles for a human readable message.
+profile_label() {
+	if [ "${#PROFILE_BUNDLES[@]}" -eq 0 ]; then
+		printf '%s' "(none)"
+		return 0
+	fi
+	join_comma "${PROFILE_BUNDLES[@]}"
+}
+
+# profile_has_bundle <name>
+profile_has_bundle() {
+	local want="$1" bundle
+	for bundle in "${PROFILE_BUNDLES[@]:-}"; do
+		[ "$bundle" = "$want" ] && return 0
+	done
+	return 1
+}
+
+# The one domain whose failure to resolve means the container has no working
+# network, rather than that one service is having a bad day.
+#
+# It used to be api.anthropic.com, which stopped being defensible once the
+# anthropic bundle became something a project can leave out: a policy that never
+# asked for that domain would have failed the liveness check every time. The
+# anchor is now the first domain the selected bundles contribute, falling back to
+# the first configured domain when no bundle is selected at all. Both lists are
+# in a fixed order, so the anchor is a property of the configuration and not of
+# the run.
+#
+# Prints nothing when there is no domain to anchor on. That is a legitimate
+# configuration (CIDRs and host ports only), so the callers skip the check rather
+# than fail it.
+anchor_domain() {
+	if [ "${#PROFILE_DOMAINS[@]}" -gt 0 ]; then
+		printf '%s' "${PROFILE_DOMAINS[0]}"
+		return 0
+	fi
+	if [ "${#CFG_DOMAINS[@]}" -gt 0 ]; then
+		printf '%s' "${CFG_DOMAINS[0]}"
+		return 0
+	fi
+	return 0
+}
+
 # --- configuration -----------------------------------------------------------
 
 # assert_config_is_root_owned <path>
@@ -423,6 +583,7 @@ assert_config_is_root_owned() {
 read_config() {
 	if [ -z "$CONFIG_FILE" ]; then
 		info "no firewall.json found, using base profile only"
+		resolve_profile
 		return 0
 	fi
 
@@ -468,7 +629,10 @@ read_config() {
 	jq -e '
 		((.version | type) == "number")
 		and ((.version | floor) == .version)
-		and ((.profile // "default") | type == "string")
+		and ((.profile // [])
+			| if type == "string" then . != ""
+				elif type == "array" then all(.[]; (type == "string") and (. != ""))
+				else false end)
 		and ((.mode // "enforce") | . == "enforce" or . == "audit")
 		and ((.allowDomains // []) | (type == "array") and all(.[]; type == "string"))
 		and ((.allowCidrs // []) | (type == "array") and all(.[]; type == "string"))
@@ -477,17 +641,26 @@ read_config() {
 		and ((.sshdPort // 22) | (type == "number") and (floor == .))
 	' "$CONFIG_FILE" >/dev/null || die "$CONFIG_FILE does not match the schema"
 
-	local version profile
+	local version
 	version="$(jq -r '.version' "$CONFIG_FILE")"
 	[ "$version" = "$SUPPORTED_SCHEMA_VERSION" ] ||
 		die "unsupported schema version: $version (expected $SUPPORTED_SCHEMA_VERSION)"
 
-	profile="$(jq -r '.profile // "default"' "$CONFIG_FILE")"
-	[ "$profile" = "$SUPPORTED_PROFILE" ] || die "unknown profile: $profile"
+	# A bare string is read as a one element list, so the two spellings of
+	# "select this one bundle" cannot drift apart. An absent field and an empty
+	# array both come out empty, which is the same thing under this schema: no
+	# base profile.
+	PROFILE_INPUT=()
+	local entry
+	while read -r entry; do
+		PROFILE_INPUT+=("$entry")
+	done < <(jq -r '
+		(.profile // [])
+		| if type == "array" then .[] else . end
+	' "$CONFIG_FILE")
 
 	MODE="$(jq -r '.mode // "enforce"' "$CONFIG_FILE")"
 
-	local entry
 	while read -r entry; do
 		[ -n "$entry" ] || continue
 		# Worth its own message: "rejected: *.example.com" on its own reads like a
@@ -514,6 +687,10 @@ read_config() {
 
 	SSHD_PORT="$(jq -r '.sshdPort // 22' "$CONFIG_FILE")"
 	validate_port "$SSHD_PORT" || die "rejected sshdPort: $SSHD_PORT"
+
+	# Last, so that a bundle name nobody recognises is reported after the fields
+	# that can be checked without knowing what a bundle is.
+	resolve_profile
 
 	info "config ok: mode=$MODE domains=${#CFG_DOMAINS[@]} cidrs=${#CFG_CIDRS[@]} hostPorts=${#CFG_HOST_PORTS[@]}"
 	return 0
@@ -789,24 +966,35 @@ add_github_meta_ranges() {
 # Name resolution only. Everything here works under the bootstrap policy, which
 # permits the Docker resolver and nothing else.
 build_allowlist() {
-	local domain resolved_required=0
+	local domain anchor resolved_anchor=0
+	anchor="$(anchor_domain)"
 
-	for domain in "${BASE_DOMAINS[@]}" "${GITHUB_DOMAINS[@]}"; do
+	for domain in "${PROFILE_DOMAINS[@]:-}"; do
+		[ -n "$domain" ] || continue
 		if add_domain "$domain"; then
-			local required
-			for required in "${BASE_REQUIRED_DOMAINS[@]}"; do
-				[ "$domain" = "$required" ] && resolved_required=1
-			done
+			[ "$domain" = "$anchor" ] && resolved_anchor=1
 		fi
 	done
 
-	[ "$resolved_required" = "1" ] ||
-		die "none of the required base domains resolved ($(join_sp "${BASE_REQUIRED_DOMAINS[@]}")); the container has no working DNS"
-
 	for domain in "${CFG_DOMAINS[@]:-}"; do
 		[ -n "$domain" ] || continue
-		add_domain "$domain" || true
+		if add_domain "$domain"; then
+			[ "$domain" = "$anchor" ] && resolved_anchor=1
+		fi
 	done
+
+	# Checked after both lists rather than after the base profile, because with
+	# no bundle selected the anchor comes from allowDomains and does not exist
+	# yet at the earlier point.
+	if [ -n "$anchor" ]; then
+		[ "$resolved_anchor" = "1" ] ||
+			die "the anchor domain did not resolve ($anchor); the container has no working network"
+	else
+		# A policy of nothing but CIDRs and host ports has no name to resolve, so
+		# there is no way to tell a dead network from an empty allowlist. Saying
+		# so is better than inventing a domain to probe.
+		warn "no domain is configured, so DNS liveness could not be checked"
+	fi
 
 	local cidr
 	for cidr in "${CFG_CIDRS[@]:-}"; do
@@ -1163,8 +1351,18 @@ pick_blocked_probe() {
 self_verify() {
 	info "running self verification"
 
-	verify_step "DNS via the assigned resolver returns an answer" pass \
-		dns_answers "" api.anthropic.com
+	# The same anchor the allowlist was built against, so that a policy which
+	# left the anthropic bundle out is not checked against a domain it never
+	# asked for.
+	local anchor
+	anchor="$(anchor_domain)"
+
+	if [ -n "$anchor" ]; then
+		verify_step "DNS via the assigned resolver returns an answer" pass \
+			dns_answers "" "$anchor"
+	else
+		warn "verify SKIP: DNS resolution (no domain is configured to resolve)"
+	fi
 
 	# Probing a configured resolver would prove nothing, so pick one that is not.
 	local probe="" candidate resolver
@@ -1181,8 +1379,12 @@ self_verify() {
 	else
 		warn "verify SKIP: every DNS probe address is also a configured resolver"
 	fi
-	verify_step "allowed host is reachable (api.anthropic.com)" pass \
-		curl -sS -o /dev/null --connect-timeout 5 --max-time 15 https://api.anthropic.com/
+	if [ -n "$anchor" ]; then
+		verify_step "allowed host is reachable ($anchor)" pass \
+			curl -sS -o /dev/null --connect-timeout 5 --max-time 15 "https://$anchor/"
+	else
+		warn "verify SKIP: allowed host reachability (no domain is configured to reach)"
+	fi
 
 	if [ "$MODE" = "enforce" ]; then
 		# The probe has to be a host that is genuinely outside the allowlist.
@@ -1238,17 +1440,74 @@ self_verify() {
 	info "self verification passed"
 }
 
+# --- allowlist listing --------------------------------------------------------
+
+# print_list <label>, entries on stdin one per line
+#
+# Prints a section of the listing. An empty section is spelled out as "(none)"
+# rather than left blank, so that "nothing is configured here" and "the output
+# was cut off" cannot look the same to whoever is reading it.
+#
+# Entries arrive on stdin rather than as arguments because the caller's arrays
+# are frequently empty, and "${arr[@]}" under `set -u` is the kind of expansion
+# that turns an empty section into a stray blank entry.
+print_list() {
+	local label="$1" line count=0
+	printf '%s:\n' "$label"
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		printf '  %s\n' "$line"
+		count=$((count + 1))
+	done
+	[ "$count" -gt 0 ] || printf '  %s\n' "(none)"
+	return 0
+}
+
+# Writes the policy that an apply would install, without applying anything.
+#
+# This resolves no names and fetches nothing: the whole point is that an agent
+# can ask what it is allowed to reach without that question itself needing
+# egress, and without root. What it cannot show is the GitHub meta ranges, which
+# only exist after a fetch - hence the note at the bottom.
+print_allowlist() {
+	printf 'mode: %s\n' "$MODE"
+	printf 'profile: %s\n' "$(profile_label)"
+
+	# The two sources are merged, sorted and deduplicated: which of them a domain
+	# came from is not something the reader can act on, and a project that also
+	# lists a bundle domain should not see it twice.
+	printf '%s\n' "${PROFILE_DOMAINS[@]:-}" "${CFG_DOMAINS[@]:-}" |
+		LC_ALL=C sort -u | print_list "domains"
+
+	# CIDRs and host ports keep the order they were written in. There is no
+	# second source to merge them with, and an author looking for the entry they
+	# added finds it where they put it.
+	printf '%s\n' "${CFG_CIDRS[@]:-}" | print_list "cidrs"
+	printf '%s\n' "${CFG_HOST_PORTS[@]:-}" | print_list "hostPorts"
+
+	if profile_has_bundle github; then
+		printf '\n'
+		printf '%s\n' "Note: when the github bundle is selected, CIDR ranges from the GitHub meta API"
+		printf '%s\n' "are also allowed at apply time. They are not listed here."
+	fi
+	return 0
+}
+
 # --- entry point -------------------------------------------------------------
 
 usage() {
 	cat <<EOF
-Usage: $SCRIPT_NAME [--check-config] [--config <path>] [--resolv-conf <path>]
+Usage: $SCRIPT_NAME [--check-config] [--print-allowlist] [--config <path>]
+                                [--resolv-conf <path>]
 
   (no arguments)      apply the firewall policy (requires root). The policy is
                       read from $PROD_CONFIG and
                       nowhere else; there is no search.
   --check-config      validate the configuration and exit without touching any
                       rule (safe to run unprivileged)
+  --print-allowlist   print the policy that an apply would install and exit.
+                      Resolves nothing and fetches nothing, so it works from
+                      inside a container whose egress is already closed.
   --config <path>     read this file instead of the fixed one. Combined with
                       --check-config this validates the copy in the repo before
                       an image rebuild installs it.
@@ -1270,7 +1529,7 @@ EOF
 }
 
 main() {
-	local check_only=0 config_from_option=0
+	local check_only=0 print_only=0 config_from_option=0
 
 	# Belt and braces for the sudoers rule above: even if it is written without
 	# the empty argument list, the options stay out of reach of the unprivileged
@@ -1283,6 +1542,10 @@ main() {
 		case "$1" in
 		--check-config)
 			check_only=1
+			shift
+			;;
+		--print-allowlist)
+			print_only=1
 			shift
 			;;
 		--config)
@@ -1325,6 +1588,17 @@ main() {
 		exit 0
 	fi
 
+	if [ "$print_only" = "1" ]; then
+		[ -z "$CONFIG_FILE" ] || [ -f "$CONFIG_FILE" ] || die "no such file: $CONFIG_FILE"
+		# The configuration goes through exactly the same validation as an apply,
+		# so a listing is never produced from a file that would be refused. Its
+		# progress lines go to stderr: the listing is meant to be read by whatever
+		# asked for it, and mixing the two would make it parse-hostile.
+		read_config >&2
+		print_allowlist
+		exit 0
+	fi
+
 	require_root
 	require_commands
 
@@ -1364,8 +1638,14 @@ main() {
 	resolve_host_targets
 	apply_rules
 
-	# Only now, with the real table live, is api.github.com reachable.
-	add_github_meta_ranges
+	# Only now, with the real table live, is api.github.com reachable - and only
+	# when the github bundle put it in the allowlist in the first place. Calling
+	# it unconditionally would warn that the meta API is unavailable on every run
+	# of a policy that deliberately left GitHub out, which trains the reader to
+	# ignore the one message that means the ranges really are missing.
+	if profile_has_bundle github; then
+		add_github_meta_ranges
+	fi
 
 	info "policy applied (mode=$MODE, entries=$(ipset list "$SET_V4" | awk '/^Number of entries/ {print $NF}'))"
 	if [ "$AUDIT_RECORDER" = "1" ]; then

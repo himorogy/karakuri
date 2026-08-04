@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"profile": "default",
+	"profile": ["anthropic", "npm", "github"],
 	"mode": "enforce",
 	"allowDomains": [
 		"registry.example.com",

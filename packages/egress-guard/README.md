@@ -11,6 +11,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 | 本 README | 使い方（セットアップと運用） | 導入する / 運用でつまずいた |
 | [`docs/spec.md`](./docs/spec.md) | **何が成り立つか**（不変条件・スクリプト仕様・受け入れ基準） | 挙動の正確な定義が要る |
 | [`docs/design.md`](./docs/design.md) | **なぜそう作ったか**（脅威モデル・設計判断・受容した残余リスク） | 「なぜこうなっていないのか」と思った |
+| [`docs/agent-brief.md`](./docs/agent-brief.md) | エージェント向け詳説（遮断の見え方・切り分け・設定変更の制約） | エージェントに allowlist の変更を頼む |
 | [`docs/known-issues.md`](./docs/known-issues.md) | 未解決のもの（未実装・未検証・保留） | 踏んだ問題が既知かどうか調べる |
 | [`docs/verification-record.md`](./docs/verification-record.md) | 受け入れ検証の記録（カバレッジ・見逃した欠陥・手順） | 何がどこまで確かめられているか知りたい |
 | [`docs/web-search-fetch.md`](./docs/web-search-fetch.md) | 参考: Claude Code の WebSearch / WebFetch と egress の関係（本パッケージの仕様ではありません） | Web 取得が通らない |
@@ -281,7 +282,7 @@ init-project-firewall.sh --check-config
 
 ## テンプレート
 
-`templates/` に雛形があります。`firewall.json` の 3 つは、プロジェクトの `.devcontainer/` にコピーして使ってください。
+`templates/` に雛形があります。プロジェクトの `.devcontainer/` にコピーして使ってください。
 
 | ファイル | 用途 |
 |---|---|
@@ -295,14 +296,12 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 
 **JSON にコメントは書けません。** `jq` でパースするため、コメント付きの JSON5 / JSONC 形式は「不正な JSON」として拒否されます。
 
-`templates/` にはもう 1 つ `AGENTS.md` があります。これだけはコピー先も用途も違います（[エージェントへの指示書](#エージェントへの指示書)）。
-
 ## 記入例
 
 ```json
 {
   "version": 1,
-  "profile": "default",
+  "profile": ["anthropic", "npm", "github"],
   "mode": "enforce",
   "allowDomains": ["registry.example.com"],
   "allowCidrs": ["203.0.113.0/24"],
@@ -314,6 +313,43 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 各フィールドの型・必須・拒否条件は [`docs/spec.md`](./docs/spec.md) §3.1。`allowHostPorts` が開けるホスト宛の相手は**デフォルトゲートウェイと `host.docker.internal`** の 2 つです。`allowDomains` に**ワイルドカードは使えません**（[理由](#ワイルドカードドメインは使えません)）。
 
 未知のフィールドが含まれている場合は拒否します（タイプミスが黙って無視されるのを防ぐため）。
+
+## 基底プロファイル（`profile`）
+
+パッケージ側が保守しているドメインの束です。**必要なものだけを明示的に選びます。**
+
+| バンドル | ドメイン |
+|---|---|
+| `anthropic` | `api.anthropic.com`、`console.anthropic.com` |
+| `npm` | `registry.npmjs.org` |
+| `vscode` | `marketplace.visualstudio.com`、`vscode.blob.core.windows.net`、`update.code.visualstudio.com` |
+| `github` | `github.com`、`api.github.com`、`codeload.github.com`、`objects.githubusercontent.com`、`raw.githubusercontent.com` |
+
+* **`profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
+* 配列で選ぶと、そこに書いたバンドルだけが入ります。文字列 1 つでも書けます（`"profile": "github"`）
+* `github` を選んだときだけ、GitHub meta API から取得した CIDR が追加されます
+
+**既定を「何も許可しない」にしてあるのは、ファイアウォールの既定は deny だからです。** 書き忘れは遮断として現れます。**必要なものは明示的に選んでください。** allowlist は小さいほど、漏洩先として使える宛先が減ります。
+
+**ドメインを直接 `allowDomains` に列挙するのではなくバンドルで選ぶのは、更新をパッケージ側に寄せるためです。** 各プロジェクトが同じホスト名を複製すると、エンドポイントが変わったときに全プロジェクトがドリフトします。
+
+> **`"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
+
+### `sentry.io` と `statsig.com` はバンドルに含めていません
+
+このパッケージの元になった Claude Code の devcontainer では、この 2 つが無条件に許可されていました。**Claude Code のテレメトリと feature flag です。**
+
+**動作に必須かどうかを実測していないため、バンドルには入れていません。** 必要なら `allowDomains` に書いてください。実測して必要だと分かった時点で `anthropic` バンドルに入れます。
+
+## 何が許可されているか見る
+
+```sh
+init-project-firewall.sh --print-allowlist
+```
+
+基底プロファイルと `firewall.json` の内容をマージした結果を出力します。**非特権で実行でき、ネットワークにも触りません**（DNS 解決も meta API の取得も行いません）。遮断されている状態でも読めます。
+
+**「常に許可されているドメイン」は無くなりました。** `profile` で選べる以上、切り分けの基準はこの出力から取ってください。
 
 ## 拒否される値
 
@@ -360,6 +396,13 @@ allowlist 外の外向き通信を REJECT します。遮断された宛先は i
 ```
 
 数日運用して `egress-audit-v4` から必要な宛先を収集し、`firewall.json` に転記してから `enforce` に切り替える、という流れを想定しています。静的 allowlist の「事前に全部知らないと使えない」問題への緩和策です。
+
+### なぜ収集に `enforce` を使わないのか
+
+記録自体は `enforce` でも行われます。それでも収集は `audit` で行ってください。理由が 2 つあります。
+
+* **`enforce` では依存の連鎖が途中で切れます。** ドメイン A に接続してから、その応答をもとに B へ接続する、という処理は珍しくありません。A が遮断されるとそこで止まり、**B への接続はそもそも試行されないため記録にも残りません。** A を許可して再実行するまで B の存在は分かりません。**必要な宛先を一度に洗い出せるのは `audit` だけです**
+* **`enforce` で「動いているように見える」ことは、必要でなかったことの証明になりません。** テレメトリやログ送信のように、失敗しても呼び出し側が黙って続行する通信があります。feature flag のように、遮断された結果として**静かに挙動が変わる**ものもあります。遮断して支障が出るかどうかを目で見て確かめる方法では、この種の依存を取りこぼします
 
 **audit でも遮断されるものが 3 つあります** — DNS 固定・IPv6・INPUT です。緩むのは IPv4 の外向き通信だけで、一覧と各項目の理由は [`docs/spec.md`](./docs/spec.md) §6.2。
 
@@ -433,25 +476,62 @@ sudoers の設定上、**エージェント自身も再適用できます。** �
 
 **遮断に当たったエージェントは、それをネットワーク障害と診断して迂回を試みます。** allowlist に無い宛先への通信が落ちるのは設計どおりですが、その前提を渡していないエージェントには区別がつきません。想定される振る舞いは、リポジトリ側の `firewall.json` を書き換えて「直した」と報告する（[反映には再ビルドが要ります](#firewalljson)）、別のミラーや CDN を探して回る、といったものです。
 
-`templates/AGENTS.md` はこれを防ぐための指示書の雛形です。**コピー先はリポジトリ直下**で、`.devcontainer/` ではありません。
+## 常時読ませるもの（これだけで足ります）
 
-```sh
-cp node_modules/@himorogy/egress-guard/templates/AGENTS.md AGENTS.md
+**エージェントの指示書に次を貼ってください。** Claude Code なら `CLAUDE.md` です。
+
+```markdown
+## Network egress is restricted
+
+This container runs behind an allowlist-based egress firewall
+(`@himorogy/egress-guard`). Outbound traffic to hosts that are not on the
+allowlist is blocked by design — it is not a network fault.
+
+- If a connection fails, suspect this first. Do not look for a mirror, proxy,
+  tunnel, or any other route around it.
+- To see what is allowed: `init-project-firewall.sh --print-allowlist`
+- Editing `.devcontainer/firewall.json` changes nothing until the image is
+  rebuilt. Never report a blocked host as fixed because you edited that file.
+- If you need a host that is blocked, stop and ask a human (<依頼先を書く>).
+- If you are asked to change the allowlist, read /etc/egress-guard/agent-brief.md first.
 ```
 
-書いてある内容は次のとおりです。
+**`<依頼先を書く>` だけプロジェクトごとに埋めてください。** 許可されているドメインもモードも `--print-allowlist` で読めるので、ここに書き写す必要はありません（書き写すと実効設定とずれます）。
 
-* 遮断は故障ではなく設計であること、それがどう見えるか（ICMP `admin-prohibited` による即時失敗、WebFetch が無出力で終わること、**名前解決は通ること**）
-* **エージェント自身にできるのは[再適用](#再適用)を 1 回試すことだけ**であること。ポリシーの変更には人間の操作とイメージの再ビルドが要ること
-* 遮断に当たったときに人間へ何を伝えるか（具体的なホスト名、用途、[取得をイメージビルド時に移せないか](#コンテナ起動後にセットアップを行う場合)）
-* やってはいけないこと（プロキシやトンネルを立てる、allowlist を通る別経路を探す、`mode` を `audit` に変える、`/etc/egress-guard/` や sudoers を書き換える）
-* WebSearch と WebFetch の違い（[Web 検索は使えます。Web 取得は許可したドメインだけです](#web-検索は使えますweb-取得は許可したドメインだけです)）
-* 基底プロファイルに入っているドメインと、**入っていない**もの（PyPI、`deb.debian.org`、`nodejs.org`、[VS Code 拡張の配信 CDN](./docs/known-issues.md)）
-* `firewall.json` への追加を提案するときの制約（未知キー・コメント・ワイルドカード・私設アドレス帯の拒否、`--check-config` での事前検証）
+**英語なのは、常時読み込まれるぶんトークン単価が全ターンに掛かるからです。** 日本語で書いても挙動は変わりません。
 
-**HTML コメントで示した記入欄はプロジェクトごとに埋めてください。** モード、追加で許可しているドメイン、再ビルドの手順、許可の追加を依頼する先の 4 つは、埋めないと役に立ちません。**実効設定（`/etc/egress-guard/firewall.json`）を見て書いてください。**
+**これ以上は載せないことを勧めます。** 常時読み込みのコストは毎ターン掛かる一方、`firewall.json` の書式やスキーマ制約が要るのは実際に設定を変更するターンだけです。長い指示書には、行数が増えるほど個々の項目が守られにくくなるという副作用もあります。
 
-**AGENTS.md に形式の規約はありません。** ネットワーク以外の指示（ビルド手順、コーディング規約など）を同じファイルに足して構いません。
+## 詳説は必要になったときに読ませる
+
+[`docs/agent-brief.md`](./docs/agent-brief.md) に、遮断の見え方・切り分け手順・報告の雛形・やってはいけないこと・`firewall.json` の書式制約をまとめてあります。上の断片の最終行がこれを指しています。
+
+イメージビルド時に置いてください。
+
+```dockerfile
+RUN cp "$(npm root -g)/@himorogy/egress-guard/docs/agent-brief.md" \
+       /etc/egress-guard/agent-brief.md \
+  && chown root:root /etc/egress-guard/agent-brief.md \
+  && chmod 644 /etc/egress-guard/agent-brief.md
+```
+
+root 所有にしておくと、エージェント自身には書き換えられません。**HTML コメントで示した記入欄（許可の追加を依頼する先、再ビルドの手順）は埋めてください。**
+
+## Claude Code に読ませる場合の制約
+
+**2026-08-03 に Claude Code v2.1.221 で実測した結果です。**
+
+| 置き方 | 読まれるか |
+|---|---|
+| `CLAUDE.md`（プロジェクト直下） | 読まれる |
+| `AGENTS.md`（プロジェクト直下） | **読まれない** |
+| `~/.claude/CLAUDE.md`（ユーザーメモリ） | 読まれる |
+| `CLAUDE.md` からの `@` インポート（相対パス、およびプロジェクト内の絶対パス） | 読まれる |
+| `CLAUDE.md` からの `@` インポート（**プロジェクト外の絶対パス**、`@/etc/...` など） | **展開されない** |
+
+したがって、`/etc/egress-guard/` に置いたファイルを `@` インポートで常時読み込ませることはできません。**上の断片は `CLAUDE.md` に直接書いてください。** `agent-brief.md` のほうは `@` ではなく、必要になった時点でエージェントがファイルとして読みます（読み取りにパスの制約はありません）。
+
+**`AGENTS.md` は Codex など他のエージェント向けです。** Claude Code しか使わないなら置く意味はありません。
 
 ---
 
@@ -640,16 +720,16 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 ```sh
 pnpm lint          # biome
 pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
-pnpm test          # 設定 95 件 + ルール 145 件
+pnpm test          # 設定 154 件 + ルール 202 件
 ```
 
-* `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 95 件**
-* `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 145 件**
+* `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 154 件**
+* `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 202 件**
 
 **`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
 
-> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `140 passed, 0 failed, 5 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**145 件のうち 5 件**が何も検査できないためです。**設定側の 95 件は影響を受けません**（`95 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
+> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `192 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**202 件のうち 10 件**が何も検査できないためです。**設定側の 154 件は影響を受けません**（`154 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
-> **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。GitHub は基底プロファイルに入っているため `enforce` のままでも取得できます。
+> **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
 
 開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/spec.md`](./docs/spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**

@@ -1,7 +1,7 @@
 {
 	"version": 1,
-	"profile": "default",
-	"mode": "enforce",
+	"profile": ["anthropic", "npm", "vscode", "github"],
+	"mode": "audit",
 	"allowDomains": [
 		"chatgpt.com",
 		"api.openai.com",

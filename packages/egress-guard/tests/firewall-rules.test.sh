@@ -362,7 +362,10 @@ assert_before() { # <label> <haystack> <first> <second>
 # --- enforce mode ------------------------------------------------------------
 
 echo "enforce mode"
-run_firewall enforce '{"version":1,"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
+# The bundles are named because nothing is selected unless a configuration says
+# so. This run is the one that asserts the whole table, the GitHub meta path and
+# the ordering of the rebuild, so it wants a policy with something in it.
+run_firewall enforce '{"version":1,"profile":["anthropic","npm","github"],"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
 
 RC="$(cat "$WORK/rc.enforce")"
 if [ "$RC" = "0" ]; then
@@ -520,7 +523,7 @@ case "$*" in
 	*example.*) exit 7 ;;
 esac
 exit 0'
-run_firewall metabounds '{"version":1}'
+run_firewall metabounds '{"version":1,"profile":["github"]}'
 healthy_net_stubs
 META_LOG="$(cat "$WORK/log.metabounds")"
 
@@ -560,7 +563,7 @@ case "$*" in
 	*example.*) exit 7 ;;
 esac
 exit 0'
-run_firewall metatruncated '{"version":1}'
+run_firewall metatruncated '{"version":1,"profile":["github"]}'
 healthy_net_stubs
 
 if [ "$(cat "$WORK/rc.metatruncated")" = "0" ]; then
@@ -575,7 +578,7 @@ assert_contains "an unreadable meta response is reported" "$(cat "$WORK/out.meta
 # --- idempotency -------------------------------------------------------------
 
 echo "idempotency"
-run_firewall second '{"version":1,"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
+run_firewall second '{"version":1,"profile":["anthropic","npm","github"],"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
 if [ "$(cat "$WORK/rc.second")" = "0" ]; then
 	ok "a second consecutive run exits 0"
 else
@@ -715,16 +718,20 @@ assert_contains "the bootstrap table still drops by default" \
 echo "panic on a failed rebuild"
 # No resolver at all: the allowlist cannot be built, and the run must end closed
 # rather than leaving whatever policy happened to be in place.
+#
+# A bundle is named on purpose. The liveness check needs a domain to anchor on,
+# and a configuration that asks for none has nothing to fail against - that case
+# is covered separately, under "base profile bundles".
 make_stub dig 'exit 9'
 make_stub curl 'exit 7'
-run_firewall panic '{"version":1}'
+run_firewall panic '{"version":1,"profile":["anthropic"]}'
 if [ "$(cat "$WORK/rc.panic")" != "0" ]; then
 	ok "a rebuild failure exits non-zero"
 else
 	ng "a rebuild failure exits non-zero"
 fi
 assert_contains "the rebuild failure is reported" "$(cat "$WORK/out.panic")" \
-	'none of the required base domains resolved'
+	'the anchor domain did not resolve (api.anthropic.com)'
 TP="$(v4_table panic)"
 assert_well_formed_table "every rule in the panic table is a single well-formed line" "$TP"
 assert_contains "the panic table drops OUTPUT" "$TP" '^:OUTPUT DROP'
@@ -744,7 +751,7 @@ echo "self verification probes"
 healthy_net_stubs
 # Allowing the default egress probe host must not break verification: the check
 # has to fall through to a probe that really is outside the allowlist.
-run_firewall probeallowed '{"version":1,"allowDomains":["example.com"]}'
+run_firewall probeallowed '{"version":1,"profile":["anthropic"],"allowDomains":["example.com"]}'
 if [ "$(cat "$WORK/rc.probeallowed")" = "0" ]; then
 	ok "allowing the default egress probe still verifies"
 else
@@ -763,7 +770,7 @@ echo "self verification under DNS rotation"
 # verification compares one address picked at build time against one picked at
 # verify time, a perfectly correct policy fails at random - and a failed
 # verification takes the container down with it.
-run_firewall rotation '{"version":1,"allowDomains":["rotate.example.com"]}'
+run_firewall rotation '{"version":1,"profile":["anthropic"],"allowDomains":["rotate.example.com"]}'
 if [ "$(cat "$WORK/rc.rotation")" = "0" ]; then
 	ok "a rotating answer set still verifies"
 else
@@ -814,7 +821,7 @@ echo "forbidden addresses from DNS"
 # allowed domain whose zone is attacker controlled could therefore answer
 # 169.254.169.254 and put the cloud metadata service into the allowlist - and
 # the agent picks the moment to re-apply, so it also picks the rebinding window.
-run_firewall dnsprivate '{"version":1,"allowDomains":["private.example.com"]}'
+run_firewall dnsprivate '{"version":1,"profile":["anthropic"],"allowDomains":["private.example.com"]}'
 if [ "$(cat "$WORK/rc.dnsprivate")" = "0" ]; then
 	ok "a domain with mixed public and private answers exits 0"
 else
@@ -834,7 +841,7 @@ assert_contains "the rejected addresses are reported" "$(cat "$WORK/out.dnspriva
 
 # A domain that resolves to nothing but forbidden addresses is the same case as
 # one that does not resolve: warn and carry on, do not fail the run.
-run_firewall dnsallprivate '{"version":1,"allowDomains":["allprivate.example.com"]}'
+run_firewall dnsallprivate '{"version":1,"profile":["anthropic"],"allowDomains":["allprivate.example.com"]}'
 if [ "$(cat "$WORK/rc.dnsallprivate")" = "0" ]; then
 	ok "a domain with only private answers does not fail the run"
 else
@@ -954,16 +961,36 @@ assert_contains "--check-config says which file it read" "$out" \
 # because there is no search to find it with.
 rc=0
 out="$(cd "$WS" && bash "$FIREWALL_SH" --check-config 2>&1)" || rc=$?
-if [ "$rc" -eq 0 ]; then
+# The exit code belongs to the installed policy when there is one, and this case
+# is about what is NOT read rather than about that file's contents.
+if [ "$prod_config_present" -eq 1 ]; then
+	skip_installed "--check-config without --config exits 0"
+	skip_installed "--check-config does not search the working directory"
+elif [ "$rc" -eq 0 ]; then
 	ok "--check-config without --config exits 0"
+	assert_contains "--check-config does not search the working directory" "$out" \
+		'no firewall.json found'
 else
 	ng "--check-config without --config exits 0 (rc=$rc)"
 fi
+
+# With no configuration installed at all, the listing is the base profile and
+# nothing else - the same treatment read_config gives an absent file. Which,
+# since nothing is selected unless a configuration selects it, is empty.
+rc=0
+out="$(cd "$WS" && bash "$FIREWALL_SH" --print-allowlist 2>/dev/null)" || rc=$?
 if [ "$prod_config_present" -eq 1 ]; then
-	skip_installed "--check-config does not search the working directory"
+	skip_installed "--print-allowlist without a configuration exits 0"
+	skip_installed "--print-allowlist falls back to an empty base profile"
+	skip_installed "--print-allowlist does not read the workspace copy"
+elif [ "$rc" -eq 0 ]; then
+	ok "--print-allowlist without a configuration exits 0"
+	assert_contains "--print-allowlist falls back to an empty base profile" "$out" \
+		'^profile: (none)$'
+	assert_absent "--print-allowlist does not read the workspace copy" "$out" \
+		'attacker\.example'
 else
-	assert_contains "--check-config does not search the working directory" "$out" \
-		'no firewall.json found'
+	ng "--print-allowlist without a configuration exits 0 (rc=$rc)"
 fi
 
 FW_STATE="$WORK/state"
@@ -974,7 +1001,11 @@ rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
 rc=0
 out="$(cd "$WS" && env "FW_LOG=$WORK/log.srcsplit" "FW_STATE=$FW_STATE" "PATH=$BIN:$PATH" \
 	bash "$FIREWALL_SH" --resolv-conf "$WORK/resolv.conf" 2>&1)" || rc=$?
-if [ "$rc" -eq 0 ]; then
+if [ "$prod_config_present" -eq 1 ]; then
+	# Same reasoning as above: with a policy installed, this run applies THAT
+	# policy, and whether it exits 0 says nothing about the workspace copy.
+	skip_installed "applying from a workspace with a firewall.json exits 0"
+elif [ "$rc" -eq 0 ]; then
 	ok "applying from a workspace with a firewall.json exits 0"
 else
 	ng "applying from a workspace with a firewall.json exits 0 (rc=$rc)"
@@ -1101,6 +1132,203 @@ else
 	ng "the same script runs fine when not invoked through sudo (got $(cat "$WORK/rc.placementdev"))"
 	sed 's/^/    /' "$WORK/out.placementdev" >&2
 fi
+
+# --- base profile bundles -------------------------------------------------------
+#
+# `profile` selects named bundles, and selects nothing unless it says so. What
+# used to be safe to assume - api.anthropic.com is always allowed, GitHub is
+# always in the policy - is now derived from the configuration, and a
+# configuration that says nothing gets nothing.
+
+echo "base profile bundles"
+healthy_net_stubs
+
+# Every bundle at once. sentry.io and statsig.com are absent on purpose: they
+# were never shown to be required and now belong to no bundle, so the largest
+# base profile that can be asked for is these eleven domains.
+ALL_BUNDLE_DOMAINS=(
+	api.anthropic.com console.anthropic.com
+	registry.npmjs.org
+	marketplace.visualstudio.com vscode.blob.core.windows.net update.code.visualstudio.com
+	github.com api.github.com codeload.github.com
+	objects.githubusercontent.com raw.githubusercontent.com
+)
+run_firewall bundleall '{"version":1,"profile":["anthropic","npm","vscode","github"]}'
+if [ "$(cat "$WORK/rc.bundleall")" = "0" ]; then
+	ok "naming every bundle exits 0"
+else
+	ng "naming every bundle exits 0 (got $(cat "$WORK/rc.bundleall"))"
+	sed 's/^/    /' "$WORK/out.bundleall" >&2
+fi
+missing=""
+for d in "${ALL_BUNDLE_DOMAINS[@]}"; do
+	grep -q " A $d\$" "$WORK/log.bundleall" || missing="$missing $d"
+done
+if [ -z "$missing" ]; then
+	ok "every bundle domain is resolved when every bundle is named"
+else
+	ng "every bundle domain is resolved when every bundle is named (missing:$missing)"
+fi
+# The set is additive and DNS is the only thing standing between a bundle
+# definition and the allowlist, so a domain that quietly came back would be
+# allowed without anyone having asked for it.
+for gone in sentry.io statsig.com; do
+	assert_absent "$gone is resolved by no bundle" "$(cat "$WORK/log.bundleall")" " A $gone\$"
+done
+
+# The new default, and the case every new user meets first: a configuration that
+# names no profile and no domain. It must not die - there is simply nothing to
+# anchor the liveness check on, which is a policy, not a failure.
+run_firewall bundleomitted '{"version":1}'
+if [ "$(cat "$WORK/rc.bundleomitted")" = "0" ]; then
+	ok "an omitted profile with no allowDomains exits 0"
+else
+	ng "an omitted profile with no allowDomains exits 0 (got $(cat "$WORK/rc.bundleomitted"))"
+	sed 's/^/    /' "$WORK/out.bundleomitted" >&2
+fi
+assert_absent "an omitted profile resolves no base domain" \
+	"$(cat "$WORK/log.bundleomitted")" ' A api\.anthropic\.com$'
+assert_absent "an omitted profile does not reach the meta API" \
+	"$(cat "$WORK/log.bundleomitted")" 'api\.github\.com/meta'
+assert_contains "an omitted profile still installs a closed table" \
+	"$(v4_table bundleomitted)" '^-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited'
+assert_contains "an omitted profile still pins DNS" \
+	"$(v4_table bundleomitted)" '^-A OUTPUT -p udp --dport 53 -j DROP'
+assert_contains "the missing anchor is reported rather than fatal" \
+	"$(cat "$WORK/out.bundleomitted")" 'DNS liveness could not be checked'
+
+# "default" is gone. Every configuration written before this change says it, so
+# the message has to explain what to write instead rather than read as a typo.
+run_firewall bundledefault '{"version":1,"profile":"default"}'
+if [ "$(cat "$WORK/rc.bundledefault")" != "0" ]; then
+	ok '"default" is refused by the apply path too'
+else
+	ng '"default" is refused by the apply path too'
+fi
+assert_contains '"default" is refused with its own message' \
+	"$(cat "$WORK/out.bundledefault")" 'no longer exists'
+assert_contains '"default" is refused with a worked example' \
+	"$(cat "$WORK/out.bundledefault")" 'anthropic.*npm.*github'
+# A configuration error inside the apply phase closes the container. On a first
+# boot the policy it would otherwise leave behind is ACCEPT everything.
+assert_contains '"default" falls back to the panic table' \
+	"$(v4_table bundledefault)" '^:OUTPUT DROP'
+
+# A project that only needs the registry should not be carrying a model API and
+# five GitHub hosts in its policy just to get it.
+run_firewall bundlenpm '{"version":1,"profile":["npm"]}'
+if [ "$(cat "$WORK/rc.bundlenpm")" = "0" ]; then
+	ok "a single bundle profile exits 0"
+else
+	ng "a single bundle profile exits 0 (got $(cat "$WORK/rc.bundlenpm"))"
+	sed 's/^/    /' "$WORK/out.bundlenpm" >&2
+fi
+assert_contains "the selected bundle is resolved" "$(cat "$WORK/log.bundlenpm")" \
+	' A registry\.npmjs\.org$'
+assert_absent "a bundle that was not selected is never resolved" \
+	"$(cat "$WORK/log.bundlenpm")" ' A api\.anthropic\.com$'
+assert_absent "the github bundle that was not selected is never resolved" \
+	"$(cat "$WORK/log.bundlenpm")" ' A github\.com$'
+
+# Skipping the meta fetch is not the same as failing it. A run that deliberately
+# left GitHub out must not warn that the meta API is unreachable, or the warning
+# stops meaning anything on the runs where it matters.
+assert_absent "the meta API is not fetched without the github bundle" \
+	"$(cat "$WORK/log.bundlenpm")" 'api\.github\.com/meta'
+assert_absent "no meta failure is reported for a deliberate skip" \
+	"$(cat "$WORK/out.bundlenpm")" 'GitHub meta API unavailable'
+assert_contains "the meta API is still fetched when github is selected" \
+	"$(cat "$WORK/log.bundleall")" 'api\.github\.com/meta'
+
+# The liveness check and the reachability check anchor on the first domain the
+# configuration actually asks for. Anchored on api.anthropic.com they would fail
+# on every correct policy that leaves the anthropic bundle out.
+assert_contains "self verification anchors on a domain of the selected bundle" \
+	"$(cat "$WORK/out.bundlenpm")" 'allowed host is reachable (registry.npmjs.org)'
+assert_absent "self verification does not reach for an unselected bundle's domain" \
+	"$(cat "$WORK/out.bundlenpm")" 'api.anthropic.com'
+
+# With no bundle at all the anchor falls back to the first configured domain.
+run_firewall anchorcfg '{"version":1,"profile":[],"allowDomains":["registry.acme.test"]}'
+if [ "$(cat "$WORK/rc.anchorcfg")" = "0" ]; then
+	ok "an empty profile with a configured domain exits 0"
+else
+	ng "an empty profile with a configured domain exits 0 (got $(cat "$WORK/rc.anchorcfg"))"
+	sed 's/^/    /' "$WORK/out.anchorcfg" >&2
+fi
+assert_contains "the anchor falls back to allowDomains" "$(cat "$WORK/out.anchorcfg")" \
+	'allowed host is reachable (registry.acme.test)'
+assert_absent "an empty profile resolves no base domain" \
+	"$(cat "$WORK/log.anchorcfg")" ' A registry\.npmjs\.org$'
+
+# Nothing to resolve at all is a legitimate policy (CIDRs and host ports only).
+# There is then no way to tell a dead network from an empty allowlist, so the
+# checks are skipped and said to be skipped - not failed, and not silently
+# dropped either.
+run_firewall anchornone '{"version":1,"profile":[],"allowCidrs":["203.0.113.0/24"]}'
+if [ "$(cat "$WORK/rc.anchornone")" = "0" ]; then
+	ok "a profile-less, domain-less policy exits 0"
+else
+	ng "a profile-less, domain-less policy exits 0 (got $(cat "$WORK/rc.anchornone"))"
+	sed 's/^/    /' "$WORK/out.anchornone" >&2
+fi
+assert_contains "the missing anchor is reported when the allowlist is built" \
+	"$(cat "$WORK/out.anchornone")" 'DNS liveness could not be checked'
+assert_contains "self verification says it skipped the DNS check" \
+	"$(cat "$WORK/out.anchornone")" 'verify SKIP: DNS resolution'
+assert_contains "self verification says it skipped the reachability check" \
+	"$(cat "$WORK/out.anchornone")" 'verify SKIP: allowed host reachability'
+assert_contains "the configured CIDR is still allowed" "$(cat "$WORK/log.anchornone")" \
+	'^ipset add -exist egress-allow-v4-stg 203\.0\.113\.0/24$'
+
+# A dead network still fails closed, and the message names the domain that was
+# actually tried rather than one the policy never asked for.
+make_stub dig 'exit 9'
+make_stub curl 'exit 7'
+run_firewall anchordead '{"version":1,"profile":["npm"]}'
+healthy_net_stubs
+if [ "$(cat "$WORK/rc.anchordead")" != "0" ]; then
+	ok "a dead network still fails a bundle-selected policy"
+else
+	ng "a dead network still fails a bundle-selected policy"
+fi
+assert_contains "the liveness failure names the anchor that was tried" \
+	"$(cat "$WORK/out.anchordead")" \
+	'the anchor domain did not resolve (registry.npmjs.org)'
+assert_contains "a dead network falls back to the panic table" \
+	"$(v4_table anchordead)" '^:OUTPUT DROP'
+
+# --- --print-allowlist -----------------------------------------------------------
+
+echo "--print-allowlist"
+# The listing exists to be readable from inside a container whose egress is
+# already closed, by a user who is not root. That only holds if it resolves
+# nothing and fetches nothing - and the stub log is the only way to prove it
+# rather than assert it.
+FW_STATE="$WORK/state"
+mkdir -p "$FW_STATE"
+printf '%s' printonly >"$FW_STATE/run"
+rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
+: >"$WORK/log.printonly"
+printf '%s' '{"version":1,"profile":["npm","github"],"allowDomains":["registry.example.com"]}' \
+	>"$WORK/print.json"
+rc=0
+out="$(env "FW_LOG=$WORK/log.printonly" "FW_STATE=$FW_STATE" "PATH=$BIN:$PATH" \
+	bash "$FIREWALL_SH" --print-allowlist --config "$WORK/print.json" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "--print-allowlist exits 0"
+else
+	ng "--print-allowlist exits 0 (rc=$rc)"
+fi
+if [ ! -s "$WORK/log.printonly" ]; then
+	ok "--print-allowlist invokes no external command that touches the network or netfilter"
+else
+	ng "--print-allowlist invokes no external command ($(tr '\n' ';' <"$WORK/log.printonly"))"
+fi
+assert_contains "the listing names the selected bundles" "$out" '^profile: npm, github$'
+assert_contains "the listing merges the configured domain in" "$out" '^  registry\.example\.com$'
+assert_contains "the listing warns that the meta ranges are not in it" "$out" \
+	'GitHub meta API'
 
 # --- result ------------------------------------------------------------------
 
