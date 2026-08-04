@@ -467,24 +467,20 @@ sudoers の設定上、**エージェント自身も再適用できます。** �
 ## Network egress is restricted
 
 This container runs behind an allowlist-based egress firewall
-(`@himorogy/egress-guard`). Outbound traffic to hosts that are not on the
-allowlist is blocked by design — it is not a network fault.
+(`@himorogy/egress-guard`). A blocked connection is by design, not a fault.
 
-- If a connection fails, suspect this first. Do not look for a mirror, proxy,
-  tunnel, or any other route around it.
-- To see what is allowed: `init-project-firewall.sh --print-allowlist`
-- If a host that IS on that list stops working, the allowlist has gone stale —
-  it holds addresses resolved at startup, and CDNs move. Re-apply it once:
-  `sudo init-project-firewall.sh`. This re-resolves the same policy; it cannot
-  change what is allowed.
-- Editing `.devcontainer/firewall.json` changes nothing until the image is
-  rebuilt. Never report a blocked host as fixed because you edited that file.
-- If you need a host that is blocked, stop and ask a human.
-- If you are asked to change the allowlist, read the `agent-brief.md` that ships
-  with `@himorogy/egress-guard` first.
+- Do not look for a mirror, proxy, tunnel, or any other way around it.
+- What is allowed: `init-project-firewall.sh --print-allowlist`
+- An allowed host that starts failing means stale addresses (resolved at
+  startup; CDNs move). Re-apply once: `sudo init-project-firewall.sh` — it only
+  re-resolves, so do not retry it.
+- Editing `.devcontainer/firewall.json` does nothing until the image is rebuilt.
+  Never report a blocked host as fixed because you edited it.
+- Anything else: stop and ask a human. Before changing the allowlist, read
+  `agent-brief.md` from `@himorogy/egress-guard`.
 ```
 
-**再適用の 1 行を入れているのは、これがエージェントに自力で直せる唯一の失敗だからです。** allowlist は起動時に解決した IP の集合なので、**長い作業の途中で CDN のアドレスが動くと、許可してあるはずのホストに到達できなくなります。** 渡していないと、エージェントは設定が間違っていると診断して余計なことを始めます。
+**5 行のうち 1 行を再適用に使っているのは、これがエージェントに自力で直せる唯一の失敗だからです。** allowlist は起動時に解決した IP の集合なので、長い作業の途中で CDN のアドレスが動くと、許可してあるはずのホストに落ちます。**「once」と「do not retry」は意図的です。** 効かないなら人間の操作が要る状況であり、繰り返させても意味がありません。
 
 
 

@@ -3,22 +3,18 @@
 ## Network egress is restricted
 
 This container runs behind an allowlist-based egress firewall
-(`@himorogy/egress-guard`, developed in this repository). Outbound traffic to
-hosts that are not on the allowlist is blocked by design — it is not a network
-fault.
+(`@himorogy/egress-guard`, developed in this repository). A blocked connection
+is by design, not a fault.
 
-- If a connection fails, suspect this first. Do not look for a mirror, proxy,
-  tunnel, or any other route around it.
-- To see what is allowed: `init-project-firewall.sh --print-allowlist`
-- If a host that IS on that list stops working, the allowlist has gone stale —
-  it holds addresses resolved at startup, and CDNs move. Re-apply it once:
-  `sudo init-project-firewall.sh`. This re-resolves the same policy; it cannot
-  change what is allowed.
-- Editing `.devcontainer/firewall.json` changes nothing until the image is
-  rebuilt. Never report a blocked host as fixed because you edited that file.
-- If you need a host that is blocked, stop and ask the repository owner.
-- If you are asked to change the allowlist, read
-  `packages/egress-guard/docs/agent-brief.md` first.
+- Do not look for a mirror, proxy, tunnel, or any other way around it.
+- What is allowed: `init-project-firewall.sh --print-allowlist`
+- An allowed host that starts failing means stale addresses (resolved at
+  startup; CDNs move). Re-apply once: `sudo init-project-firewall.sh` — it only
+  re-resolves, so do not retry it.
+- Editing `.devcontainer/firewall.json` does nothing until the image is rebuilt.
+  Never report a blocked host as fixed because you edited it.
+- Anything else: stop and ask the repository owner. Before changing the
+  allowlist, read `packages/egress-guard/docs/agent-brief.md`.
 
 ## 作業の分担
 
