@@ -508,11 +508,14 @@ allowlist is blocked by design — it is not a network fault.
 - To see what is allowed: `init-project-firewall.sh --print-allowlist`
 - Editing `.devcontainer/firewall.json` changes nothing until the image is
   rebuilt. Never report a blocked host as fixed because you edited that file.
-- If you need a host that is blocked, stop and ask a human (<依頼先を書く>).
-- If you are asked to change the allowlist, read /etc/egress-guard/agent-brief.md first.
+- If you need a host that is blocked, stop and ask a human.
+- If you are asked to change the allowlist, read the `agent-brief.md` that ships
+  with `@himorogy/egress-guard` first.
 ```
 
-**`<依頼先を書く>` だけプロジェクトごとに埋めてください。** 許可されているドメインもモードも `--print-allowlist` で読めるので、ここに書き写す必要はありません（書き写すと実効設定とずれます）。
+**そのまま貼れます。埋めるところはありません。** 許可されているドメインもモードも `--print-allowlist` で読めるので、書き写す必要はありません（書き写すと実効設定とずれます）。
+
+**パスを書いていないのは意図的です。** `init-project-firewall.sh` は PATH 上にあるのでファイル名だけで足り、`agent-brief.md` はパッケージに同梱されているのでエージェントが探せます。**絶対パスを書くと、その配置をしていないプロジェクトで壊れます。** この断片は任意のリポジトリにコピーされるものなので、環境の作りに依存させないでください。
 
 **英語なのは、常時読み込まれるぶんトークン単価が全ターンに掛かるからです。** 日本語で書いても挙動は変わりません。
 
@@ -522,32 +525,16 @@ allowlist is blocked by design — it is not a network fault.
 
 [`docs/agent-brief.md`](./docs/agent-brief.md) に、遮断の見え方・切り分け手順・報告の雛形・やってはいけないこと・`firewall.json` の書式制約をまとめてあります。上の断片の最終行がこれを指しています。
 
-イメージビルド時に置いてください。
+**配置作業は要りません。** [セットアップ](#dockerfile-に追記するもの)でパッケージをグローバルインストールしていれば、イメージの中に既にあります。エージェントは必要になった時点で探して読みます。
 
-```dockerfile
-RUN cp "$(npm root -g)/@himorogy/egress-guard/docs/agent-brief.md" \
-       /etc/egress-guard/agent-brief.md \
-  && chown root:root /etc/egress-guard/agent-brief.md \
-  && chmod 644 /etc/egress-guard/agent-brief.md
+```sh
+# 場所を確かめたいとき
+ls "$(npm root -g)/@himorogy/egress-guard/docs/agent-brief.md"
 ```
 
-root 所有にしておくと、エージェント自身には書き換えられません。**HTML コメントで示した記入欄（許可の追加を依頼する先、再ビルドの手順）は埋めてください。**
+**HTML コメントで示した記入欄（許可の追加を依頼する先、再ビルドの手順）を埋めたい場合は、プロジェクト側にコピーしてください。** 埋めなくても読めます。
 
-## Claude Code に読ませる場合の制約
-
-**2026-08-03 に Claude Code v2.1.221 で実測した結果です。**
-
-| 置き方 | 読まれるか |
-|---|---|
-| `CLAUDE.md`（プロジェクト直下） | 読まれる |
-| `AGENTS.md`（プロジェクト直下） | **読まれない** |
-| `~/.claude/CLAUDE.md`（ユーザーメモリ） | 読まれる |
-| `CLAUDE.md` からの `@` インポート（相対パス、およびプロジェクト内の絶対パス） | 読まれる |
-| `CLAUDE.md` からの `@` インポート（**プロジェクト外の絶対パス**、`@/etc/...` など） | **展開されない** |
-
-したがって、`/etc/egress-guard/` に置いたファイルを `@` インポートで常時読み込ませることはできません。**上の断片は `CLAUDE.md` に直接書いてください。** `agent-brief.md` のほうは `@` ではなく、必要になった時点でエージェントがファイルとして読みます（読み取りにパスの制約はありません）。
-
-**`AGENTS.md` は Codex など他のエージェント向けです。** Claude Code しか使わないなら置く意味はありません。
+> **エージェントはこのファイルを書き換えられます**（`npm root -g` の所有者はイメージの作り方によります）。**それで困ることはありません。** これは助言であって統制ではなく、無視できるものを書き換えても何も得られないためです。**効力を持つのは root 所有の `/etc/egress-guard/firewall.json` だけ**という前提は変わりません（[なぜこの置き方なのか](#なぜこの置き方なのか)）。
 
 ---
 
