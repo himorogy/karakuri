@@ -682,7 +682,7 @@ grep -v 'metadata.test' /etc/hosts > /tmp/h && cat /tmp/h > /etc/hosts
 
 **手順は [`measuring-egress.md`](./measuring-egress.md) へ移しました**（切り分けの入口は [README](../README.md) の「特定の通信だけが通らない」）。`enforce` にしたら何かが動かなくなった、という状況の切り分けであり、受け入れ検証の項目ではないためです。当時の項目 21.1〜21.7 が対応します。**ここから読み取れるパターンは §5 に残してあります。**
 
-結果は §1・§2 と [README](../README.md) の「コンテナ起動後にセットアップを行う場合」、[known-issues #7](./known-issues.md)。
+結果は §1・§2 と [README](../README.md) の「起動後に外部から取得する作業は成立しません」、[known-issues #7](./known-issues.md)。
 
 ### 6.22 Docker Compose 構成（README の第一推奨）
 

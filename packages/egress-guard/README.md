@@ -579,60 +579,19 @@ out which ones those are.
 
 allowlist は**起動時に解決した IP の集合**です。**その起動の間アドレスが変わらないドメインにしか使えません。**
 
-`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。**`allowDomains` に書いてあるのに落ちます。**
+`deb.debian.org`（Fastly、**TTL 25 秒**）が実例です。**`allowDomains` に書いてあるのに `No route to host` で落ちます。** 適用時に解決した IP と、その 1 分後に `apt` が接続する先が食い違うためです。同じ日に `nodejs.org` は問題なく通っており、**CDN の性質によって成否が分かれます。**
 
-仕様上の位置づけは [`docs/spec.md`](./docs/spec.md) §9.7、実害の詳細と回避策は[コンテナ起動後にセットアップを行う場合](#コンテナ起動後にセットアップを行う場合)。
+**`allowCidrs` での代用は多くの場合採れません。** Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります。
 
-## コンテナ起動後にセットアップを行う場合
+仕様上の位置づけは [`docs/spec.md`](./docs/spec.md) §9.7。**構造的な解決は同 §10.1（L7 proxy 移行）です。** 名前で判定する層に移せば、アドレスがどれだけ動いても関係がなくなります。
 
-egress-guard は **`postStartCommand` で適用され、その時点でポリシーが閉じます。** したがって**適用より後に外部から何かを取ってくる作業は、そのままでは成立しません。**
+## 起動後に外部から取得する作業は成立しません
 
-実際に踏んだ例です。
+egress-guard は **`postStartCommand` で適用され、その時点でポリシーが閉じます。** したがって**適用より後に外部から何かを取ってくる作業は、そのままでは通りません。**
 
-* `apt-get install openssh-server ...` — 下記のとおり `deb.debian.org` は `allowDomains` に書いても直りません
-* `node-gyp` による Node ヘッダの取得 — `nodejs.org` を `allowDomains` に足せば通ります
+**取得はイメージビルド時に移してください。** これが唯一の推奨です。
 
-**`deb.debian.org` で何が起きたか。** 2026-08-03 に実測した例です。
-
-* Fastly 上にあり、**TTL は 25 秒**
-* 応答は複数の IP を持ち回る（同じ実体を指す `ftp.debian.org` は `146.75.114.132` と `199.232.162.132` の両方を返す）
-* 適用時のスナップショットと、その 1 分後に `apt` が接続した先が食い違い、`No route to host` になった
-
-```
-Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
-- connect (113: No route to host)
-```
-
-**`No route to host` は egress-guard の `REJECT` です。書いてあるのに落ちます。** 同じ日に `nodejs.org` は問題なく通っており、**CDN の性質によって成否が分かれます。**
-
-回避策は 3 つで、いずれも本体の制限を消しません。
-
-* **取得をイメージビルド時に移す。** 起動後に外部から取ってくる作業を無くします。実運用ではこれが第一選択です
-* **CIDR で許可する**（`allowCidrs`）。**多くの場合これは採れません。** Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります
-* **アドレスが安定した別ホストを使う。** Debian のミラーには該当するものが見当たりませんでした
-
-**構造的な解決は [`docs/spec.md`](./docs/spec.md) §10.1（L7 proxy 移行）です。** 名前で判定する層に移せば、アドレスがどれだけ動いても関係がなくなります。
-
-**取得をイメージビルド時に移せない場合。** プロビジョニングの間だけ `mode` を `audit` にして再適用し、終わったら元に戻して再適用してください。ホスト側から次の順で行います。
-
-```sh
-# [ホスト] コンテナ内の実効設定を audit に落とす
-docker exec -u root <container> sh -c '
-  cp -a /etc/egress-guard/firewall.json /root/fw.bak
-  jq ".mode = \"audit\"" /root/fw.bak > /etc/egress-guard/firewall.json'
-docker exec -u root <container> /usr/local/bin/init-project-firewall.sh
-
-# ここでセットアップを流す
-
-# [ホスト] 元に戻して閉じ直す
-docker exec -u root <container> sh -c '
-  cp -a /root/fw.bak /etc/egress-guard/firewall.json && rm -f /root/fw.bak'
-docker exec -u root <container> /usr/local/bin/init-project-firewall.sh
-```
-
-**この窓の間、コンテナは外へ出られます。** 途中で失敗しても必ず閉じ直せるように、スクリプト化して `trap` で復元してください。`audit` のまま残ると、以後の `docker start` でも `audit` で立ち上がります。
-
-**コンテナ内から行う手段は用意していません。** 実効設定を書き換えられるのは root だけで、それは I1 の前提です（[`docs/design.md`](./docs/design.md) §2.1）。
+`mode` を一時的に `audit` にして窓を開ける運用も、成立はします（[`docs/design.md`](./docs/design.md) §3.5）。**ただし窓の間コンテナは外へ出られ、閉じ忘れれば以後の `docker start` でも `audit` で立ち上がります。手順はここには書きません。**
 
 ## 許可済みドメインへの GET 経由の漏洩は防げません
 
