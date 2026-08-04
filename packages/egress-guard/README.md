@@ -74,7 +74,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 | `aggregate` | GitHub CIDR の集約（任意。無い場合は警告のみ）                       |
 
 
-capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[capability の付け方](#capability-の付け方は構成で変わる)）。
+capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わります**（[ネットワーク構成](#ネットワーク構成推奨)の各案を参照）。**`dockerComposeFile` を使うと `runArgs` は無視されるため、Compose 構成では `cap_add` に書きます。**
 
 ## DNS リゾルバ
 
@@ -225,55 +225,19 @@ Compose に移行しない場合はこちらです。ネットワーク名にプ
 [firewall] WARNING: This container is not on a user defined Docker network. See the README for the stronger setup.
 ```
 
-## capability の付け方は構成で変わる
+## 配置は確認しなくて構いません
 
-`NET_ADMIN` と `NET_RAW` が要ります。**書く場所が構成で違います。**
+**手動での確認手順はありません。** 配置を間違えたまま静かに弱い構成で動くことがないよう、スクリプト自身が起動時に所有者とパーミッションを検証し、違反していれば panic テーブルを適用して失敗します。sudoers の書き間違い（末尾 `""` の欠落）も、`SUDO_USER` 付きの引数実行を拒否することで無効化されます。検証項目は [`docs/spec.md`](./docs/spec.md) §2.1。
 
-
-| 構成                                                              | 書く場所                             |
-| --------------------------------------------------------------- | -------------------------------- |
-| Docker Compose（[案 A](#案-a-docker-compose-を使う推奨)。推奨）             | `docker-compose.yml` の `cap_add` |
-| `build` + `runArgs`（[案 B](#案-b-initializecommand-でネットワークを用意する)） | `devcontainer.json` の `runArgs`  |
-
-
-`**dockerComposeFile` を使うと `runArgs` は無視されます。** Compose 構成では `devcontainer.json` に `runArgs` を書いても効きません。具体的な書き方は直前の[ネットワーク構成（推奨）](#ネットワーク構成推奨)の各案を参照してください。
-
-## 配置はスクリプトが検証します
-
-**手動での確認手順はありません。** 配置を間違えたまま静かに弱い構成で動く、という状態を避けるため、スクリプト自身が起動時に検証して失敗します。
-
-
-| 検証されること                                                        | 失敗したときのメッセージ                                                               |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| スクリプト自身が root 所有・非書き込み可（sudo 経由の実行時のみ）                         | `must be owned by root ... privilege escalation path`                      |
-| `/etc/egress-guard/firewall.json` が root 所有・非書き込み可・symlink でない | `must be owned by root` / `must not be a symlink`                          |
-| 親ディレクトリ `/etc/egress-guard` が root 所有・非書き込み可                   | `must be owned by root ... a writable directory lets the file be replaced` |
-
-
-sudoers の書き間違い（末尾 `""` の欠落）は、スクリプト側が `SUDO_USER` 付きの引数実行を拒否することで無効化されます。
-
-> **検証の限界。** 悪意をもって差し替えられたスクリプトに対しては、これらの検証は意味を持ちません（差し替えた側が検証コードごと消せます）。捕まえられるのは**設定ミス**であり、それがこの手順で現実に起きる失敗です。詳細は [`docs/design.md`](./docs/design.md) §3.4。
-
----
+**これが捕まえるのは設定ミスであって、攻撃者ではありません。** 差し替えられたスクリプトは検証コードごと差し替えられます（[`docs/design.md`](./docs/design.md) §3.4）。
 
 ## なぜこの置き方なのか
 
-要点だけ。詳細は [`docs/design.md`](./docs/design.md) を参照してください。
+**どれも「エージェントが書き込める場所をポリシーの経路に入れない」という 1 点に還元されます。** スクリプトを `node_modules` から実行しないのは、非特権ユーザーが書ける場所を sudo 対象にすると本体を書き換えて root 実行できるからです。`firewall.json` を `/etc/egress-guard/` に置くのも同じで、**再適用が読むファイルを書き換えられるなら、root を取らずに 2 手でポリシーが無効になります。** sudoers の末尾 `""` は、書かないと「任意の引数で実行してよい」の意味になるためです。
 
+repo 内の `.devcontainer/firewall.json` が「ソース」、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、**再解決（CDN の IP 変動への追随）とポリシー変更が別の操作になります。** パッケージの更新も同じ経路で、rebuild したときに `/usr/local/bin` のコピーが入れ替わります。
 
-| 決まりごと                                      | 理由                                                                                                                 |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| スクリプトを `node_modules` から実行しない              | 非特権ユーザーが書き込める場所を sudo 対象にすると、**エージェントがスクリプト本体を書き換えて root 実行**できます（[design §2.16](./docs/design.md)）                |
-| sudoers の末尾 `""`                           | Cmnd に引数を書かないと「**任意の引数で実行してよい**」という意味になります（[design §2.16](./docs/design.md)）                                       |
-| `firewall.json` を `/etc/egress-guard/` に置く | エージェントは再適用をいつでも実行できます。**再適用が読むファイルをエージェントが書き換えられるなら、root を取らずに 2 手でポリシーが無効になります**（[design §2.1](./docs/design.md)） |
-| `chattr +i` を使わない                          | Docker の既定 capability では失敗し、防御価値も限定的（[design §2.16](./docs/design.md)）                                             |
-
-
-repo 内の `.devcontainer/firewall.json` が「ソース」で、`/etc/egress-guard/firewall.json` が「実効設定」という分離により、**再解決（CDN の IP 変動への追随）と、ポリシー変更とが別の操作になります**（それぞれ誰が何をすれば済むかの対応表は [`docs/design.md`](./docs/design.md) §2.1）。
-
-## パッケージを更新する
-
-**伝播はこの 1 経路だけです。** パッケージ更新 → コンテナ rebuild で `/usr/local/bin` のコピーが更新されます。
+判断の根拠は [`docs/design.md`](./docs/design.md) §2.1・§2.16。
 
 ---
 
