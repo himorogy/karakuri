@@ -1145,15 +1145,17 @@ healthy_net_stubs
 
 # Every bundle at once. sentry.io and statsig.com are absent on purpose: they
 # were never shown to be required and now belong to no bundle, so the largest
-# base profile that can be asked for is these eleven domains.
+# base profile that can be asked for is these fifteen domains.
 ALL_BUNDLE_DOMAINS=(
 	api.anthropic.com console.anthropic.com
+	downloads.claude.ai downloads.claude.com
+	auth.openai.com chatgpt.com
 	registry.npmjs.org
 	marketplace.visualstudio.com vscode.blob.core.windows.net update.code.visualstudio.com
 	github.com api.github.com codeload.github.com
 	objects.githubusercontent.com raw.githubusercontent.com
 )
-run_firewall bundleall '{"version":1,"profile":["anthropic","npm","vscode","github"]}'
+run_firewall bundleall '{"version":1,"profile":["anthropic","anthropic-updates","openai","npm","vscode","github"]}'
 if [ "$(cat "$WORK/rc.bundleall")" = "0" ]; then
 	ok "naming every bundle exits 0"
 else
@@ -1172,7 +1174,7 @@ fi
 # The set is additive and DNS is the only thing standing between a bundle
 # definition and the allowlist, so a domain that quietly came back would be
 # allowed without anyone having asked for it.
-for gone in sentry.io statsig.com; do
+for gone in sentry.io statsig.com api.openai.com; do
 	assert_absent "$gone is resolved by no bundle" "$(cat "$WORK/log.bundleall")" " A $gone\$"
 done
 
@@ -1247,6 +1249,64 @@ assert_contains "self verification anchors on a domain of the selected bundle" \
 	"$(cat "$WORK/out.bundlenpm")" 'allowed host is reachable (registry.npmjs.org)'
 assert_absent "self verification does not reach for an unselected bundle's domain" \
 	"$(cat "$WORK/out.bundlenpm")" 'api.anthropic.com'
+
+# The update channel is a bundle of its own so that a project can allow the
+# service and pin its version, or take updates without the rest. Its position in
+# the canonical order decides the anchor when it is the only bundle selected.
+run_firewall bundleupdates '{"version":1,"profile":["anthropic-updates"]}'
+if [ "$(cat "$WORK/rc.bundleupdates")" = "0" ]; then
+	ok "the update channel bundle on its own exits 0"
+else
+	ng "the update channel bundle on its own exits 0 (got $(cat "$WORK/rc.bundleupdates"))"
+	sed 's/^/    /' "$WORK/out.bundleupdates" >&2
+fi
+assert_contains "the update hosts are resolved" "$(cat "$WORK/log.bundleupdates")" \
+	' A downloads\.claude\.ai$'
+assert_contains "the second update host is resolved" "$(cat "$WORK/log.bundleupdates")" \
+	' A downloads\.claude\.com$'
+assert_contains "the update bundle anchors on its first domain" \
+	"$(cat "$WORK/out.bundleupdates")" 'allowed host is reachable (downloads.claude.ai)'
+assert_absent "the update bundle does not drag the service in with it" \
+	"$(cat "$WORK/log.bundleupdates")" ' A api\.anthropic\.com$'
+
+# And the other way round: allowing the service must not allow the updater, or
+# pinning a version would mean writing an exception to a bundle.
+run_firewall bundleanthropic '{"version":1,"profile":["anthropic"]}'
+assert_contains "the service bundle is resolved" "$(cat "$WORK/log.bundleanthropic")" \
+	' A api\.anthropic\.com$'
+assert_absent "the service bundle does not carry the update channel" \
+	"$(cat "$WORK/log.bundleanthropic")" ' A downloads\.claude\.ai$'
+assert_absent "the service bundle does not carry the .com update host" \
+	"$(cat "$WORK/log.bundleanthropic")" ' A downloads\.claude\.com$'
+
+# One vendor per bundle. A project that runs only one of the two agents should
+# be able to read that off its policy, and neither vendor may arrive as a side
+# effect of asking for the other.
+assert_absent "the anthropic bundle does not resolve another vendor's hosts" \
+	"$(cat "$WORK/log.bundleanthropic")" ' A auth\.openai\.com$'
+run_firewall bundleopenai '{"version":1,"profile":["openai"]}'
+if [ "$(cat "$WORK/rc.bundleopenai")" = "0" ]; then
+	ok "the openai bundle on its own exits 0"
+else
+	ng "the openai bundle on its own exits 0 (got $(cat "$WORK/rc.bundleopenai"))"
+	sed 's/^/    /' "$WORK/out.bundleopenai" >&2
+fi
+assert_contains "the login host is resolved" "$(cat "$WORK/log.bundleopenai")" \
+	' A auth\.openai\.com$'
+assert_contains "the host codex exec was measured to reach is resolved" \
+	"$(cat "$WORK/log.bundleopenai")" ' A chatgpt\.com$'
+assert_contains "the openai bundle anchors on its first domain" \
+	"$(cat "$WORK/out.bundleopenai")" 'allowed host is reachable (auth.openai.com)'
+# The API key path was never exercised, so api.openai.com has not been shown to
+# be needed and stays out until it has.
+assert_absent "the openai bundle does not include the unmeasured API host" \
+	"$(cat "$WORK/log.bundleopenai")" ' A api\.openai\.com$'
+# Observed in the same window, but a Cloudflare anycast address fronts many
+# zones - the match is not evidence of what was connected to.
+assert_absent "the openai bundle does not include the unexplained sandbox host" \
+	"$(cat "$WORK/log.bundleopenai")" 'oaiusercontent'
+assert_absent "the openai bundle does not resolve the anthropic hosts" \
+	"$(cat "$WORK/log.bundleopenai")" ' A api\.anthropic\.com$'
 
 # With no bundle at all the anchor falls back to the first configured domain.
 run_firewall anchorcfg '{"version":1,"profile":[],"allowDomains":["registry.acme.test"]}'

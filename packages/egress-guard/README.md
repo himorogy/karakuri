@@ -12,6 +12,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 | [`docs/spec.md`](./docs/spec.md) | **何が成り立つか**（不変条件・スクリプト仕様・受け入れ基準） | 挙動の正確な定義が要る |
 | [`docs/design.md`](./docs/design.md) | **なぜそう作ったか**（脅威モデル・設計判断・受容した残余リスク） | 「なぜこうなっていないのか」と思った |
 | [`docs/agent-brief.md`](./docs/agent-brief.md) | エージェント向け詳説（遮断の見え方・切り分け・設定変更の制約） | エージェントに allowlist の変更を頼む |
+| [`docs/measuring-egress.md`](./docs/measuring-egress.md) | **宛先の実測手順とバンドルの保守**（IP の特定方法・何を許可しないか・実測記録） | 許可先を決める / バンドルを測り直す |
 | [`docs/known-issues.md`](./docs/known-issues.md) | 未解決のもの（未実装・未検証・保留） | 踏んだ問題が既知かどうか調べる |
 | [`docs/verification-record.md`](./docs/verification-record.md) | 受け入れ検証の記録（カバレッジ・見逃した欠陥・手順） | 何がどこまで確かめられているか知りたい |
 | [`docs/web-search-fetch.md`](./docs/web-search-fetch.md) | 参考: Claude Code の WebSearch / WebFetch と egress の関係（本パッケージの仕様ではありません） | Web 取得が通らない |
@@ -321,10 +322,13 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 | バンドル | ドメイン |
 |---|---|
 | `anthropic` | `api.anthropic.com`、`console.anthropic.com` |
+| `anthropic-updates` | `downloads.claude.ai`、`downloads.claude.com` |
+| `openai` | `auth.openai.com`、`chatgpt.com` |
 | `npm` | `registry.npmjs.org` |
 | `vscode` | `marketplace.visualstudio.com`、`vscode.blob.core.windows.net`、`update.code.visualstudio.com` |
 | `github` | `github.com`、`api.github.com`、`codeload.github.com`、`objects.githubusercontent.com`、`raw.githubusercontent.com` |
 
+* **`openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は測っていないため含みません。必要なら `allowDomains` に書いてください
 * **`profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
 * 配列で選ぶと、そこに書いたバンドルだけが入ります。文字列 1 つでも書けます（`"profile": "github"`）
 * `github` を選んだときだけ、GitHub meta API から取得した CIDR が追加されます
@@ -335,11 +339,19 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 
 > **`"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
 
-### `sentry.io` と `statsig.com` はバンドルに含めていません
+### `anthropic` と `anthropic-updates` を分けている理由
 
-このパッケージの元になった Claude Code の devcontainer では、この 2 つが無条件に許可されていました。**Claude Code のテレメトリと feature flag です。**
+`anthropic-updates` は Claude Code の自動アップデート配信元です。**遮断しても Claude Code は動き続けます**（更新が失敗し、コンソールにエラーメッセージが出ます）。
 
-**動作に必須かどうかを実測していないため、バンドルには入れていません。** 必要なら `allowDomains` に書いてください。実測して必要だと分かった時点で `anthropic` バンドルに入れます。
+**バージョンを固定したい場合は選ばないでください。** 再現性が要る環境、バージョン依存の不具合を追っているとき、組織でツールのバージョンを揃えているときは、固定するほうが正しい選択です。このパッケージ自身の設計原則（すべての変更はイメージ再ビルドを経由する）とも揃います。
+
+**最新を使いたい場合は選んでください。** 雛形には含めてあります。
+
+### 何をバンドルに入れ、何を入れないか
+
+**テレメトリ・ログ送信・feature flag はバンドルに入れていません。** `sentry.io` と `statsig.com`（元になった Claude Code の devcontainer が無条件に許可していたもの）も外してあります。失敗しても道具は動き続ける一方、allowlist に載せた宛先はそのまま漏洩先になるためです。必要なら `allowDomains` に書いてください。
+
+**判断の基準と、実際に測った結果は [`docs/measuring-egress.md`](./docs/measuring-egress.md) にあります。** バンドルの中身は他社製品のエンドポイントなので、**測り直しが要る対象**です。同じ文書に手順も書いてあります。
 
 ## 何が許可されているか見る
 
@@ -720,15 +732,15 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 ```sh
 pnpm lint          # biome
 pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
-pnpm test          # 設定 154 件 + ルール 202 件
+pnpm test          # 設定 173 件 + ルール 219 件
 ```
 
-* `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 154 件**
-* `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 202 件**
+* `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 173 件**
+* `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 219 件**
 
 **`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
 
-> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `192 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**202 件のうち 10 件**が何も検査できないためです。**設定側の 154 件は影響を受けません**（`154 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
+> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `209 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**219 件のうち 10 件**が何も検査できないためです。**設定側の 173 件は影響を受けません**（`173 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
 > **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
 

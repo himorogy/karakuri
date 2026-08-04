@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"profile": ["anthropic", "npm", "github"],
+	"profile": ["anthropic", "anthropic-updates", "npm", "github"],
 	"mode": "audit",
 	"allowDomains": [],
 	"allowCidrs": [],

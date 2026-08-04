@@ -254,6 +254,8 @@ root スクリプト側で実施し、違反は **panic テーブルを適用し
 | バンドル | ドメイン |
 |---|---|
 | `anthropic` | `api.anthropic.com`、`console.anthropic.com` |
+| `anthropic-updates` | `downloads.claude.ai`、`downloads.claude.com` |
+| `openai` | `auth.openai.com`、`chatgpt.com` |
 | `npm` | `registry.npmjs.org` |
 | `vscode` | `marketplace.visualstudio.com`、`vscode.blob.core.windows.net`、`update.code.visualstudio.com` |
 | `github` | `github.com`、`api.github.com`、`codeload.github.com`、`objects.githubusercontent.com`、`raw.githubusercontent.com` |
@@ -264,7 +266,8 @@ root スクリプト側で実施し、違反は **panic テーブルを適用し
 * **`"default"` は拒否する。** 旧版で「全バンドル」を意味した名前であり、汎用の unknown bundle エラーではなく、列挙を促す専用のメッセージを出す
 * 空文字列のバンドル名はスキーマ段階で拒否する（受理して適用しない状態を作らないため）
 * 重複は解決後に除去する
-* **`sentry.io` と `statsig.com` はどのバンドルにも含めない。** Claude Code のテレメトリと feature flag であり、動作への必要性が未実測。必要な利用者は `allowDomains` に書く（[`design.md`](./design.md) §2.17）
+* **テレメトリ・ログ送信・feature flag の宛先はどのバンドルにも含めない**（`sentry.io`、`statsig.com` を含む）。失敗しても道具の動作は続く一方、allowlist に載せた宛先は漏洩先になる。必要な利用者は `allowDomains` に書く（[`design.md`](./design.md) §2.17、判断基準と実測結果は [`measuring-egress.md`](./measuring-egress.md)）
+* **`anthropic-updates` を `anthropic` から分けているのは、バージョン固定を選べるようにするため。** 遮断しても動作は継続し、更新だけが失敗する
 * **GitHub meta API の CIDR 取得（§4.5）は `github` バンドル選択時のみ**行う。未選択のときは取得を試みず、警告も出さない（意図的なスキップと取得失敗を区別するため）
 
 **既定は「何も許可しない」です。** 使っていないサービスのドメインを載せたままにすると、その分だけ漏洩先として使える宛先が増えます。書き忘れは遮断として現れ、開いた状態にはなりません（§1 の設計原則）。設計上の根拠は [`design.md`](./design.md) §2.17。

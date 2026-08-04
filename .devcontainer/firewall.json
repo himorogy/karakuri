@@ -1,13 +1,13 @@
 {
 	"version": 1,
-	"profile": ["anthropic", "npm", "vscode", "github"],
-	"mode": "audit",
-	"allowDomains": [
-		"chatgpt.com",
-		"api.openai.com",
-		"auth.openai.com",
-		"nodejs.org",
-		"docs.npmjs.com",
-		"docs.github.com"
-	]
+	"profile": [
+		"anthropic",
+		"anthropic-updates",
+		"openai",
+		"npm",
+		"vscode",
+		"github"
+	],
+	"mode": "enforce",
+	"allowDomains": ["nodejs.org", "docs.npmjs.com", "docs.github.com"]
 }

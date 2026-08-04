@@ -113,6 +113,8 @@ readonly PROD_CONFIG="/etc/egress-guard/firewall.json"
 # most likely to depend on them.
 readonly -a PROFILE_BUNDLE_NAMES=(
 	"anthropic"
+	"anthropic-updates"
+	"openai"
 	"npm"
 	"vscode"
 	"github"
@@ -128,6 +130,39 @@ readonly -a PROFILE_BUNDLE_NAMES=(
 readonly -a BUNDLE_ANTHROPIC=(
 	"api.anthropic.com"
 	"console.anthropic.com"
+)
+
+# Where Claude Code fetches its own updates from. Found by running in audit mode
+# and reading back the blocked destinations: 35.190.46.17 turned up in the audit
+# set, and the SANs on the certificate it presents are these two names.
+#
+# Deliberately not part of the anthropic bundle. Updating is not needed to talk
+# to the service - blocking it produces a message and the tool carries on
+# working, which was measured rather than assumed - so a project that wants its
+# version pinned should be able to drop one word instead of writing an exception
+# to a bundle it otherwise wants whole.
+readonly -a BUNDLE_ANTHROPIC_UPDATES=(
+	"downloads.claude.ai"
+	"downloads.claude.com"
+)
+
+# What the codex CLI (v0.146.0) was measured to need. Found the same way as the
+# update channel: audit mode, then the difference in egress-audit-v4 either side
+# of a command. `codex login` produced 172.64.146.15, `codex exec` produced
+# 172.64.155.209, and those are the A records of these two names.
+#
+# api.openai.com is NOT here. The API key path was not exercised, and a domain
+# goes into a package owned bundle when it has been shown to be needed, not when
+# it seems likely; a project on that path can list it in allowDomains.
+#
+# 172.64.144.52 turned up in the same window and is deliberately left out. It
+# matches the A record of web-sandbox.oaiusercontent.com, but Cloudflare anycast
+# addresses front many zones at once, so an address match is not evidence that
+# the connection went to that host. A destination whose purpose cannot be stated
+# does not go in a bundle.
+readonly -a BUNDLE_OPENAI=(
+	"auth.openai.com"
+	"chatgpt.com"
 )
 
 readonly -a BUNDLE_NPM=(
@@ -162,6 +197,8 @@ readonly -a BUNDLE_GITHUB=(
 bundle_domains() {
 	case "$1" in
 	anthropic) printf '%s\n' "${BUNDLE_ANTHROPIC[@]}" ;;
+	anthropic-updates) printf '%s\n' "${BUNDLE_ANTHROPIC_UPDATES[@]}" ;;
+	openai) printf '%s\n' "${BUNDLE_OPENAI[@]}" ;;
 	npm) printf '%s\n' "${BUNDLE_NPM[@]}" ;;
 	vscode) printf '%s\n' "${BUNDLE_VSCODE[@]}" ;;
 	github) printf '%s\n' "${BUNDLE_GITHUB[@]}" ;;

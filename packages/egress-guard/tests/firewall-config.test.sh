@@ -318,7 +318,7 @@ check_config "an omitted profile" accept '{"version":1}'
 # not be able to produce a policy that differs from asking once.
 check_config "a repeated bundle name" accept '{"version":1,"profile":["github","github","npm"]}'
 check_config "every bundle named individually" accept \
-	'{"version":1,"profile":["anthropic","npm","vscode","github"]}'
+	'{"version":1,"profile":["anthropic","anthropic-updates","openai","npm","vscode","github"]}'
 check_config '"default" as a profile' reject '{"version":1,"profile":"default"}'
 check_config '"default" alongside a bundle name' reject '{"version":1,"profile":["default","npm"]}'
 # sentry.io and statsig.com were never shown to be required, so they are in no
@@ -358,6 +358,27 @@ if printf '%s' "$out" | grep -q 'Available bundles'; then
 else
 	ng '"default" is refused with the list of bundles (out='"$out"')'
 fi
+# The list has to be the real one. A bundle that exists but is never named in
+# the message is a bundle nobody discovers, and this message is where a reader
+# who has just lost "default" goes looking for what to write.
+for b in anthropic anthropic-updates openai npm vscode github; do
+	if printf '%s' "$out" | grep -q "Available bundles:.*$b"; then
+		ok "the bundle list offered to the reader includes $b"
+	else
+		ng "the bundle list offered to the reader includes $b (out=$out)"
+	fi
+done
+
+# The generic message earns its own check: it is what a typo produces, and it
+# has to point at the same list.
+printf '%s' '{"version":1,"profile":["anthropic-update"]}' >"$TMPDIR_TEST/firewall.json"
+rc=0
+out="$(bash "$FIREWALL_SH" --check-config --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'available bundles:.*anthropic-updates'; then
+	ok "a near-miss bundle name is refused with the list of real ones"
+else
+	ng "a near-miss bundle name is refused with the list of real ones (rc=$rc, out=$out)"
+fi
 
 # --- --print-allowlist -------------------------------------------------------
 #
@@ -395,8 +416,12 @@ says() { # <label> <listing> <expected line>
 # statsig.com are absent by design: they belong to no bundle any more.
 ALL_BUNDLES="api.anthropic.com
 api.github.com
+auth.openai.com
+chatgpt.com
 codeload.github.com
 console.anthropic.com
+downloads.claude.ai
+downloads.claude.com
 github.com
 marketplace.visualstudio.com
 objects.githubusercontent.com
@@ -405,16 +430,20 @@ registry.npmjs.org
 update.code.visualstudio.com
 vscode.blob.core.windows.net"
 
-ALL_LISTING="$(listing_for '{"version":1,"profile":["anthropic","npm","vscode","github"]}')"
+ALL_LISTING="$(listing_for '{"version":1,"profile":["anthropic","anthropic-updates","openai","npm","vscode","github"]}')"
 if [ "$(section_of "$ALL_LISTING" domains)" = "$ALL_BUNDLES" ]; then
-	ok "naming every bundle lists exactly the domains those four bundles hold"
+	ok "naming every bundle lists exactly the domains those six bundles hold"
 else
-	ng "naming every bundle lists exactly the domains those four bundles hold"
+	ng "naming every bundle lists exactly the domains those six bundles hold"
 	printf '%s\n' "$(section_of "$ALL_LISTING" domains)" | sed 's/^/    /' >&2
 fi
 # The two domains that were dropped. They are the reason a stale policy can look
 # correct: nothing else in the listing changes when they silently reappear.
-for gone in sentry.io statsig.com; do
+# api.openai.com joins them: the API key path was never exercised, so it has
+# not been shown to be needed. web-sandbox.oaiusercontent.com likewise - its
+# address was observed, but a Cloudflare anycast address fronts many zones, so
+# the match is not evidence of what was connected to.
+for gone in sentry.io statsig.com api.openai.com web-sandbox.oaiusercontent.com; do
 	if printf '%s\n' "$ALL_LISTING" | grep -qF "$gone"; then
 		ng "$gone is in no bundle"
 	else
@@ -452,6 +481,10 @@ bundle_holds() { # <bundle> <domains, newline separated>
 }
 bundle_holds anthropic "api.anthropic.com
 console.anthropic.com"
+bundle_holds anthropic-updates "downloads.claude.ai
+downloads.claude.com"
+bundle_holds openai "auth.openai.com
+chatgpt.com"
 bundle_holds npm "registry.npmjs.org"
 bundle_holds vscode "marketplace.visualstudio.com
 update.code.visualstudio.com
@@ -490,6 +523,24 @@ assert_missing() { # <label> <listing> <string>
 }
 assert_missing "a bundle that was not selected contributes nothing" \
 	"$SUBSET_LISTING" "sentry.io"
+# The update channel is its own bundle precisely so that it can be left out
+# while the service itself is allowed. If it leaked into the anthropic bundle,
+# pinning a version would stop being a matter of dropping one word.
+assert_missing "the anthropic bundle does not carry the update channel" \
+	"$SUBSET_LISTING" "downloads.claude.ai"
+assert_missing "the anthropic bundle does not carry the .com update host either" \
+	"$SUBSET_LISTING" "downloads.claude.com"
+# One vendor's bundle must not open another vendor's destinations. A project
+# that runs only one of the two agents should be able to see that in its policy.
+assert_missing "selecting anthropic does not allow the openai hosts" \
+	"$SUBSET_LISTING" "auth.openai.com"
+assert_missing "selecting anthropic does not allow chatgpt.com" \
+	"$SUBSET_LISTING" "chatgpt.com"
+OPENAI_LISTING="$(listing_for '{"version":1,"profile":["openai"]}')"
+assert_missing "selecting openai does not allow the anthropic hosts" \
+	"$OPENAI_LISTING" "api.anthropic.com"
+assert_missing "selecting openai does not allow the update channel" \
+	"$OPENAI_LISTING" "downloads.claude.ai"
 assert_missing "the github bundle that was not selected contributes nothing" \
 	"$SUBSET_LISTING" "github.com"
 
@@ -585,6 +636,12 @@ anchor_is() { # <label> <expected> <profile domains> <config domains>
 
 anchor_is "the anchor is the first base profile domain" \
 	"api.anthropic.com" "api.anthropic.com console.anthropic.com" "db.example.com"
+# anthropic-updates sits after anthropic in the canonical order, so a profile
+# that takes the update channel without the service anchors on the update host.
+anchor_is "the anchor follows the canonical bundle order" \
+	"downloads.claude.ai" "downloads.claude.ai downloads.claude.com" ""
+anchor_is "a vendor bundle on its own anchors on that vendor" \
+	"auth.openai.com" "auth.openai.com chatgpt.com" "db.example.com"
 anchor_is "with no bundle selected the anchor falls back to allowDomains" \
 	"db.example.com" "" "db.example.com other.example.com"
 anchor_is "with nothing to resolve there is no anchor" "" "" ""

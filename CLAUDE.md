@@ -24,11 +24,16 @@ fault.
 
 委譲する前に**契約（インターフェース・命名・出力形式）を先に固定し**、それをサブエージェントとドキュメント双方の基準にする。サブエージェントには「ドキュメント・テンプレート・changeset には触るな」と明示する。並行編集の競合も防げる。
 
-## 進行中の作業（2026-08-03 時点。片付いたらこの節を消すこと）
+## 進行中の作業（2026-08-04 時点。片付いたらこの節を消すこと）
 
-`feat/monorepo-firewall` で基底プロファイルの選択制化を入れた。**未完了の人手作業が残っている。**
+`feat/monorepo-firewall` で基底プロファイルを選択制にし、`audit` モードで宛先を実測した。手順と結果は
+`packages/egress-guard/docs/measuring-egress.md`。**残っているのは確認の 1 周分。**
 
-1. **コンテナの再ビルドが必要。** インストール済みの `/etc/egress-guard/firewall.json` は `"profile": "default"` のままで、新しいスクリプトはこれを拒否する。**再ビルドするまで、このコンテナでファイアウォールは適用されない**（`postStartCommand` が panic テーブルで終わる）。リポジトリ側の `.devcontainer/firewall.json` は更新済みなので、再ビルドすれば両方が同時に入れ替わる
-2. **`sentry.io` / `statsig.com` の必要性を計測する。** この 2 つはどのバンドルからも外した。`.devcontainer/firewall.json` を `mode: "audit"` にしてあるので、再ビルド後に Claude Code を一通り使い、`docker exec -u root <container> ipset list egress-audit-v4` を読む
-3. **計測が終わったら `mode` を `enforce` に戻す。** audit の間、IPv4 の外向き通信は遮断されない
-4. `shellcheck` はまだコンテナに入っていない（`d32f048` で追加済みだが未再ビルド）。1 と同時に解消する
+1. **再ビルドが要る。** `.devcontainer/firewall.json` を `mode: "enforce"` に戻し、`profile` に `openai` を追加した。**反映は再ビルド後**
+2. **再ビルド後に codex で 1 往復して、通ることを確かめる。**
+
+   ```sh
+   codex exec --sandbox read-only --skip-git-repo-check "Answer in one short sentence: what is 2+2?"
+   ```
+
+   通れば `openai` バンドルの 2 ドメインで足りると確定する。落ちたら `ipset list egress-audit-v4` に積まれたものが次の候補。**`measuring-egress.md` の「未解決」の項（`172.64.144.52`）はこれで決着する**
