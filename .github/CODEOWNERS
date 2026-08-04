@@ -1,0 +1,16 @@
+# 公開経路に触れる変更は、必ずここに挙げた誰かの承認を要する。
+# 根拠は docs/secure-publish.md §3.2。
+#
+# npm 側の信頼された公開元は「このリポジトリの、この名前のワークフロー」
+# という形で登録されている。中身は検証されないため、ワークフローを
+# 書き換えられる者は、任意の内容を正規の経路として公開できる。
+
+/.github/workflows/      @nori-y @erika-abe-dev
+/.github/CODEOWNERS      @nori-y @erika-abe-dev
+
+# パッケージ名とバージョンは、公開先そのもの。
+/packages/*/package.json @nori-y @erika-abe-dev
+
+# 公開経路の設計と、脆弱性報告の窓口。
+/docs/secure-publish.md  @nori-y @erika-abe-dev
+/SECURITY.md             @nori-y @erika-abe-dev
