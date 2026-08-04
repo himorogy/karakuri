@@ -366,18 +366,13 @@ sudoers の設定上、**エージェント自身も再適用できます。** �
 ```markdown
 ## Network egress is restricted
 
-This container runs behind an allowlist-based egress firewall
-(`@himorogy/egress-guard`). A blocked connection is by design, not a fault.
+This container runs behind an allowlist-based egress firewall (`@himorogy/egress-guard`). A blocked connection is by design, not a fault.
 
 - Do not look for a mirror, proxy, tunnel, or any other way around it.
 - What is allowed: `init-project-firewall.sh --print-allowlist`
-- An allowed host that starts failing means stale addresses (resolved at
-  startup; CDNs move). Re-apply once: `sudo init-project-firewall.sh` — it only
-  re-resolves, so do not retry it.
-- Editing `.devcontainer/firewall.json` does nothing until the image is rebuilt.
-  Never report a blocked host as fixed because you edited it.
-- Anything else: stop and ask a human. Before changing the allowlist, read
-  `agent-brief.md` from `@himorogy/egress-guard`.
+- An allowed host that starts failing means stale addresses (resolved at startup; CDNs move). Re-apply once: `sudo init-project-firewall.sh` — it only re-resolves, so do not retry it.
+- Editing `.devcontainer/firewall.json` does nothing until the image is rebuilt. Never report a blocked host as fixed because you edited it.
+- Anything else: stop and ask a human. Before changing the allowlist, read `agent-brief.md` from `@himorogy/egress-guard`.
 ```
 
 **5 行のうち 1 行を再適用に使っているのは、これがエージェントに自力で直せる唯一の失敗だからです。** allowlist は起動時に解決した IP の集合なので、長い作業の途中で CDN のアドレスが動くと、許可してあるはずのホストに落ちます。**「once」と「do not retry」は意図的です。** 効かないなら人間の操作が要る状況であり、繰り返させても意味がありません。
