@@ -61,7 +61,7 @@ base に入れる条件は次のいずれか。
 | Node バージョン | base に単一固定 | 再現性が最も強い（イメージ digest が Node を一意に決める）。Radwisp の 510(k) 文脈で説明しやすい |
 | Node の切替機構（mise 等） | **不採用** | ①コンテナ起動後に nodejs.org へのダウンロードが走り、egress-guard の設計思想（実効設定を root 固定・self-service 遮断）と衝突する ②再現性が `mise.toml` 側に移り base digest だけで環境が確定しなくなる ③shim 経由で PATH 解決が複雑になりエージェント運用のデバッグが困難になる |
 | アーキ別タグ分岐 | 当面しない | Electron は自前の Node を内包するのでホスト Node はツールチェーンを動かすだけ。実際にはバージョンが割れにくい。割れた時点で `:1-node22` を切る |
-| pnpm | base に pin（`10.30.0`） | 未 pin だとビルド日時で変わり、`packageManager` フィールドと乖離する |
+| pnpm | base に pin（作成時 `10.30.0`、現在 `11.20.0`） | 未 pin だとビルド日時で変わり、`packageManager` フィールドと乖離する |
 | pnpm のプロジェクト別上書き | 可能だが**例外運用** | `devcontainer.json` の `build.args` は base イメージには届かない。プロジェクトの Dockerfile で入れ直す形になる（§6 参照） |
 | 適用範囲 | 自分の org のプロジェクトのみ | 受託案件は対象外 |
 | レジストリ | GHCR、**public** | pull 認証が不要になる。base は中立な開発基盤のみを収録するので公開して問題ない |
@@ -130,7 +130,8 @@ case 文）が完全に消える。マルチアーキビルドが素直になり
    `/etc/bash.bashrc` への追記を実装。
 
 4. **pnpm を pin**
-   `ARG PNPM_VERSION=10.30.0` + `npm install -g pnpm@${PNPM_VERSION}`。
+   `ARG PNPM_VERSION` + `npm install -g pnpm@${PNPM_VERSION}`。
+   作成時の値は `10.30.0`。現在の値は Dockerfile を参照すること。
 
 5. **sudoers の引数制限**
    `NOPASSWD: /usr/local/bin/init-project-firewall.sh ""` の `""` は
@@ -233,7 +234,7 @@ docker exec <ctn> bash -c 'echo $PS1'                     # 空
 docker exec <ctn> sh -c 'echo $LANG; locale'              # C.UTF-8
 
 # 6. pnpm が packageManager と一致しているか
-docker exec <ctn> pnpm --version                          # 10.30.0
+docker exec <ctn> pnpm --version                          # ARG PNPM_VERSION と同じ値
 
 # 7. sudoers の引数制限が効いているか（後者は拒否されるべき）
 docker exec <ctn> sudo /usr/local/bin/init-project-firewall.sh

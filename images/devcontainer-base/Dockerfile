@@ -37,7 +37,7 @@ FROM node:24
 
 ARG USERNAME=node
 ARG TZ=Asia/Tokyo
-ARG PNPM_VERSION=10.30.0
+ARG PNPM_VERSION=11.20.0
 ARG EGRESS_GUARD_VERSION=0.1.0
 
 # --- ロケール / タイムゾーン --------------------------------------------------

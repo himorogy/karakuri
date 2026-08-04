@@ -6,3 +6,13 @@ catalog:
   typescript: ^6.0.3
   '@types/node': ^25.6.0
   tsup: ^8.5.1
+
+# 依存のビルドスクリプトを走らせるかどうかを、パッケージごとに明示する。
+# pnpm 11 は strictDepBuilds を既定で有効にしており、判断が書かれていない
+# ビルドスクリプトが残っていると install が ERR_PNPM_IGNORED_BUILDS で失敗する。
+#
+# esbuild は false。プラットフォーム別のバイナリは @esbuild/<platform> という
+# optional 依存として入るため、postinstall を走らせなくても tsup のビルドは通る。
+# pnpm 10 の頃も実行しておらず、挙動を変えないという意味でもこちらが既存に沿う。
+allowBuilds:
+  esbuild: false
