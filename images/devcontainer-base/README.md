@@ -85,6 +85,13 @@ base に入れる条件は次のいずれか。
 浮動タグ `:1` を参照する運用では、ローカルに古い base が残っているとリビルドしても
 更新されない。`--pull` がないと「更新したのに反映されない」で嵌る。
 
+### 既存プロジェクトを載せ替える場合
+
+新規ではなく pnpm 10 の devcontainer を移す場合は [migration.md](./migration.md) を先に
+読むこと。base は pnpm 11 を焼いており、`strictDepBuilds` の既定変更で `pnpm install` が
+失敗する、`.npmrc` の設定が読まれなくなる、`pnpm/action-setup` が v6 以上でないと動かない、
+といった当たりがある。
+
 ---
 
 ## 保護範囲（egress-guard の前提）
@@ -260,4 +267,5 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
 - **`NET_RAW` の要否確認**。egress-guard の実装が確定したら、本当に必要かを再確認し、
   不要なら雛形の `--cap-add=NET_RAW` を落とす
 - **既存プロジェクトの移行**。このリポジトリ自身の `.devcontainer/` と
-  `templates/devcontainer/` はまだ旧構成のまま
+  `packages/enclave-env/templates/devcontainer/` はまだ旧構成のまま。
+  手順と注意点は [migration.md](./migration.md)
