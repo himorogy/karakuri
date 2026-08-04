@@ -9,6 +9,14 @@ name: devcontainer-base
 #
 # main への push はトリガーにしていない。浮動タグ :1 を参照する運用では
 # 利用側が引くのはリリースタグだけで、main の各コミットを GHCR に積む必要がないため。
+#
+# action は全て commit SHA で固定する。タグは移動しうるため、上流が侵害されたときに
+# そのまま実行されることを防ぐ。併記しているタグは、更新時に何を見ればよいかの手がかり。
+#
+# docker/* の 5 つはリポジトリの action 許可リストに明示的に載せてある。このジョブは
+# packages: write を持つため、第三者 action を動かすこと自体が
+# docs/secure-publish.md §4.3 の原則から外れる。判断の根拠と、将来これを外す道筋は
+# 同 §4.6 を参照。
 
 on:
   push:
@@ -38,7 +46,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # タグ名 devcontainer-base-v1.4.2 から 1.4.2 を取り出す。
       # metadata-action の type=semver は value を明示すれば ref に依存しない。
@@ -66,13 +74,13 @@ jobs:
             echo "push=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
         if: steps.cond.outputs.push == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -80,7 +88,7 @@ jobs:
 
       - name: Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.IMAGE_NAME }}
           # metadata-action のデフォルト (latest=auto) は type=semver が有効なとき
@@ -100,7 +108,7 @@ jobs:
             org.opencontainers.image.description=Shared devcontainer base image for @himorogy projects
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ env.CONTEXT }}
           platforms: linux/amd64,linux/arm64

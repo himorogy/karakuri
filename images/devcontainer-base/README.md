@@ -276,6 +276,12 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
 条件でスキップされるので現状の書き込み経路はない。ビルド定義の重複を避けるために
 1 ジョブのままにしているが、step を追加する際は権限の広さを意識すること。
 
+**`docker/*` の action を 5 つ使っている。** リポジトリの action 許可リストに明示的に
+載せたうえで、commit SHA で固定している。`packages: write` を持つジョブで第三者の
+コードを動かすことになり、[`docs/secure-publish.md`](../../docs/secure-publish.md) §4.3 の
+原則から外れる。判断の根拠と、ネイティブ arm64 ランナーへの移行でこれを外す道筋は
+同 §4.6。
+
 ---
 
 ## 残タスク
