@@ -346,17 +346,17 @@ out="$(bash "$FIREWALL_SH" --check-config --config "$TMPDIR_TEST/firewall.json" 
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'no longer exists'; then
 	ok '"default" is refused with its own message, not the unknown-bundle one'
 else
-	ng '"default" is refused with its own message (rc=$rc, out='"$out"')'
+	ng "\"default\" is refused with its own message (rc=$rc, out=$out)"
 fi
 if printf '%s' "$out" | grep -q 'anthropic.*npm.*github'; then
 	ok '"default" is refused with a worked example of what to write instead'
 else
-	ng '"default" is refused with a worked example (out='"$out"')'
+	ng "\"default\" is refused with a worked example (out=$out)"
 fi
 if printf '%s' "$out" | grep -q 'Available bundles'; then
 	ok '"default" is refused with the list of bundles to choose from'
 else
-	ng '"default" is refused with the list of bundles (out='"$out"')'
+	ng "\"default\" is refused with the list of bundles (out=$out)"
 fi
 # The list has to be the real one. A bundle that exists but is never named in
 # the message is a bundle nobody discovers, and this message is where a reader
@@ -684,6 +684,147 @@ if grep -q '"mode": *"enforce"' "$TEMPLATE_DIR/firewall.json"; then
 	ok "the default template selects enforce mode"
 else
 	ng "the default template selects enforce mode"
+fi
+
+# --- every firewall.json example the repository shows a reader ----------------
+#
+# The schema is the one thing here that a reader copies rather than calls, so an
+# example that no longer validates is a defect in the same sense a broken
+# function is: whoever pastes it gets a container that boots into the panic
+# table. Three rounds of adding bundles produced exactly that, in the templates
+# and in the README, and both were caught by eye - which is to say, they were
+# caught the one time somebody happened to look.
+#
+# So every example is collected from where it actually lives and put through the
+# real validator. Nothing is transcribed into this file: a copy of the examples
+# here would be one more thing to keep in step, and it would go stale in the
+# same way and just as quietly.
+
+echo "documented examples"
+
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+PKG_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BLOCK_DIR="$TMPDIR_TEST/blocks"
+STRIPPED_DIR="$TMPDIR_TEST/blocks-stripped"
+mkdir -p "$BLOCK_DIR" "$STRIPPED_DIR"
+
+# extract_blocks <markdown file> <prefix>
+#
+# Writes every fenced json/jsonc block to $BLOCK_DIR/<prefix>.<n>.<lang>. The
+# language tag is kept in the name because it decides how the block is handled
+# below, and the fence is the only place it is recorded.
+#
+# SC2016: the awk program is single quoted on purpose - $0 and friends belong to
+# awk, not to the shell.
+# shellcheck disable=SC2016
+extract_blocks() {
+	awk -v outdir="$BLOCK_DIR" -v prefix="$2" '
+		!inblock && $0 ~ /^[ \t]*```json$/ {
+			n++; file = outdir "/" prefix "." n ".json"; inblock = 1; next
+		}
+		!inblock && $0 ~ /^[ \t]*```jsonc$/ {
+			n++; file = outdir "/" prefix "." n ".jsonc"; inblock = 1; next
+		}
+		inblock && $0 ~ /^[ \t]*```[ \t]*$/ { inblock = 0; close(file); next }
+		inblock { print >> file }
+	' "$1"
+}
+
+for md in "$PKG_ROOT/README.md" "$PKG_ROOT"/docs/*.md; do
+	[ -f "$md" ] || continue
+	extract_blocks "$md" "$(basename "$md" .md)"
+done
+
+examples_checked=0
+doc_examples=0
+commented_examples=0
+
+check_example() { # <label> <path>
+	local out rc=0
+	out="$(bash "$FIREWALL_SH" --check-config --config "$2" 2>&1)" || rc=$?
+	if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "configuration is valid"; then
+		ok "example validates: $1"
+	else
+		ng "example validates: $1 (rc=$rc, out=$out)"
+	fi
+	examples_checked=$((examples_checked + 1))
+}
+
+# The templates are the examples a reader copies wholesale.
+for template in "$TEMPLATE_DIR"/*.json; do
+	[ -f "$template" ] || continue
+	check_example "templates/$(basename "$template")" "$template"
+done
+
+# This repository's own policy. It is the example a reader meets before any
+# documentation, because it is the file they are already looking at.
+DEVCONTAINER_CONFIG="$REPO_ROOT/.devcontainer/firewall.json"
+if [ -f "$DEVCONTAINER_CONFIG" ]; then
+	check_example ".devcontainer/firewall.json" "$DEVCONTAINER_CONFIG"
+else
+	ng "no .devcontainer/firewall.json under $REPO_ROOT; the repository's own policy went unchecked"
+fi
+
+# Not every json block is a firewall.json. devcontainer.json fragments and
+# Feature options are in there too, and they are not even complete objects.
+# Mentioning "version" is what makes a block one of ours.
+for block in "$BLOCK_DIR"/*; do
+	[ -f "$block" ] || continue
+	grep -q '"version"' "$block" || continue
+	name="$(basename "$block")"
+	doc_examples=$((doc_examples + 1))
+
+	case "$name" in
+	*.jsonc)
+		# Comments come off the way a reader takes them off: whole lines whose
+		# first non-blank characters are //. Deliberately NOT `s|//.*||`, which
+		# would swallow the rest of any line holding an https:// URL - the
+		# example would then be repaired by the test that is supposed to judge
+		# it, and the day a URL appears in one, this would go quietly wrong.
+		stripped="$STRIPPED_DIR/$name.json"
+		sed '/^[[:space:]]*\/\//d' "$block" >"$stripped"
+		check_example "$name (comments stripped)" "$stripped"
+
+		# The README tells the reader that pasting the block with its comments
+		# still in gives them a container in the panic table. That claim is only
+		# worth printing if it is true.
+		if grep -q '^[[:space:]]*//' "$block"; then
+			commented_examples=$((commented_examples + 1))
+			rc=0
+			out="$(bash "$FIREWALL_SH" --check-config --config "$block" 2>&1)" || rc=$?
+			if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "is not valid JSON"; then
+				ok "example is refused with its comments left in: $name"
+			else
+				ng "example is refused with its comments left in: $name (rc=$rc, out=$out)"
+			fi
+		fi
+		;;
+	*)
+		check_example "$name" "$block"
+		;;
+	esac
+done
+
+# A count, because the failure this section exists to prevent has a silent form:
+# an extractor that stops matching finds nothing, and a suite that checked
+# nothing looks exactly like a suite where everything passed.
+if [ "$examples_checked" -gt 0 ]; then
+	ok "$examples_checked firewall.json examples were checked"
+else
+	ng "no firewall.json example was found anywhere; the extraction is broken"
+fi
+# Counted separately: the templates and .devcontainer/firewall.json would keep
+# the total above zero on their own, so the total cannot show that the fenced
+# blocks are still being found.
+if [ "$doc_examples" -gt 0 ]; then
+	ok "$doc_examples of them came from fenced blocks in README.md and docs/"
+else
+	ng "no fenced firewall.json example was extracted from the documentation"
+fi
+if [ "$commented_examples" -gt 0 ]; then
+	ok "$commented_examples commented example(s) were confirmed to be refused"
+else
+	ng "no commented jsonc example was found, so the 'comments are refused' claim went unchecked"
 fi
 
 # --- result ------------------------------------------------------------------

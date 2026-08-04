@@ -520,15 +520,15 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 ```sh
 pnpm lint          # biome
 pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
-pnpm test          # 設定 174 件 + ルール 220 件
+pnpm test          # 設定 187 件 + ルール 220 件
 ```
 
-- `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 174 件**
+- `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 187 件**
 - `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 220 件**
 
 **`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
 
-> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `210 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**220 件のうち 10 件**が何も検査できないためです。**設定側の 174 件は影響を受けません**（`174 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
+> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `210 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**220 件のうち 10 件**が何も検査できないためです。**設定側の 187 件は影響を受けません**（`187 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
 > **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
 
