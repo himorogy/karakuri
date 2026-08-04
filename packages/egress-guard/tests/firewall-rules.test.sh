@@ -1145,9 +1145,9 @@ healthy_net_stubs
 
 # Every bundle at once. sentry.io and statsig.com are absent on purpose: they
 # were never shown to be required and now belong to no bundle, so the largest
-# base profile that can be asked for is these fifteen domains.
+# base profile that can be asked for is these fourteen domains.
 ALL_BUNDLE_DOMAINS=(
-	api.anthropic.com console.anthropic.com
+	api.anthropic.com
 	downloads.claude.ai downloads.claude.com
 	auth.openai.com chatgpt.com
 	registry.npmjs.org
@@ -1174,7 +1174,7 @@ fi
 # The set is additive and DNS is the only thing standing between a bundle
 # definition and the allowlist, so a domain that quietly came back would be
 # allowed without anyone having asked for it.
-for gone in sentry.io statsig.com api.openai.com; do
+for gone in sentry.io statsig.com console.anthropic.com api.openai.com; do
 	assert_absent "$gone is resolved by no bundle" "$(cat "$WORK/log.bundleall")" " A $gone\$"
 done
 

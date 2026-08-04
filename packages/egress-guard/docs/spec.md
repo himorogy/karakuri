@@ -253,7 +253,7 @@ root スクリプト側で実施し、違反は **panic テーブルを適用し
 
 | バンドル | ドメイン |
 |---|---|
-| `anthropic` | `api.anthropic.com`、`console.anthropic.com` |
+| `anthropic` | `api.anthropic.com` |
 | `anthropic-updates` | `downloads.claude.ai`、`downloads.claude.com` |
 | `openai` | `auth.openai.com`、`chatgpt.com` |
 | `npm` | `registry.npmjs.org` |

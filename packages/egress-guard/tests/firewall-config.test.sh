@@ -419,7 +419,6 @@ api.github.com
 auth.openai.com
 chatgpt.com
 codeload.github.com
-console.anthropic.com
 downloads.claude.ai
 downloads.claude.com
 github.com
@@ -437,13 +436,17 @@ else
 	ng "naming every bundle lists exactly the domains those six bundles hold"
 	printf '%s\n' "$(section_of "$ALL_LISTING" domains)" | sed 's/^/    /' >&2
 fi
-# The two domains that were dropped. They are the reason a stale policy can look
-# correct: nothing else in the listing changes when they silently reappear.
-# api.openai.com joins them: the API key path was never exercised, so it has
-# not been shown to be needed. web-sandbox.oaiusercontent.com likewise - its
-# address was observed, but a Cloudflare anycast address fronts many zones, so
-# the match is not evidence of what was connected to.
-for gone in sentry.io statsig.com api.openai.com web-sandbox.oaiusercontent.com; do
+# The domains that were dropped, and the ones that were never let in. They are
+# the reason a stale policy can look correct: nothing else in the listing
+# changes when one of them silently reappears.
+#
+# sentry.io, statsig.com and console.anthropic.com came in with the thirteen
+# domains inherited from the claude-code devcontainer and appear zero times in
+# the claude binary. api.openai.com was never exercised, so it has not been
+# shown to be needed. web-sandbox.oaiusercontent.com had its address observed,
+# but a Cloudflare anycast address fronts many zones, so the match is not
+# evidence of what was connected to.
+for gone in sentry.io statsig.com console.anthropic.com api.openai.com web-sandbox.oaiusercontent.com; do
 	if printf '%s\n' "$ALL_LISTING" | grep -qF "$gone"; then
 		ng "$gone is in no bundle"
 	else
@@ -479,8 +482,7 @@ bundle_holds() { # <bundle> <domains, newline separated>
 		ng "the $1 bundle holds exactly its documented domains (got: $got)"
 	fi
 }
-bundle_holds anthropic "api.anthropic.com
-console.anthropic.com"
+bundle_holds anthropic "api.anthropic.com"
 bundle_holds anthropic-updates "downloads.claude.ai
 downloads.claude.com"
 bundle_holds openai "auth.openai.com
@@ -506,7 +508,6 @@ fi
 SUBSET_LISTING="$(listing_for '{"version":1,"profile":["anthropic","npm"]}')"
 says "the selected bundles are named in order" "$SUBSET_LISTING" "profile: anthropic, npm"
 if [ "$(section_of "$SUBSET_LISTING" domains)" = "api.anthropic.com
-console.anthropic.com
 registry.npmjs.org" ]; then
 	ok "a subset lists only the domains of the bundles it asked for"
 else
@@ -635,7 +636,7 @@ anchor_is() { # <label> <expected> <profile domains> <config domains>
 }
 
 anchor_is "the anchor is the first base profile domain" \
-	"api.anthropic.com" "api.anthropic.com console.anthropic.com" "db.example.com"
+	"api.anthropic.com" "api.anthropic.com registry.npmjs.org" "db.example.com"
 # anthropic-updates sits after anthropic in the canonical order, so a profile
 # that takes the update channel without the service anchors on the update host.
 anchor_is "the anchor follows the canonical bundle order" \

@@ -120,16 +120,18 @@ readonly -a PROFILE_BUNDLE_NAMES=(
 	"github"
 )
 
-# The minimum Claude Code needs to talk to the service at all.
+# The minimum Claude Code needs to talk to the service at all. One domain.
 #
-# sentry.io and statsig.com used to sit here as well, on the assumption that the
-# telemetry and feature flag endpoints were required. That was never measured. A
-# domain nobody has shown to be necessary does not belong in a package owned
-# bundle: a project that turns out to need one can list it in allowDomains, and
-# if it is ever demonstrated to be required it can move into this bundle then.
+# Established by scanning the strings of the claude binary (v2.1.221, 285MB):
+# api.anthropic.com appears 79 times. console.anthropic.com, sentry.io and
+# statsig.com appear zero times, and none of the three was ever observed in an
+# audit run either. All three came in with the thirteen domains inherited from
+# the claude-code devcontainer and none of them meets this bundle's definition,
+# so none of them is here. A project that turns out to need one can list it in
+# allowDomains, and it can move into a bundle once something demonstrates it is
+# required.
 readonly -a BUNDLE_ANTHROPIC=(
 	"api.anthropic.com"
-	"console.anthropic.com"
 )
 
 # Where Claude Code fetches its own updates from. Found by running in audit mode
@@ -141,6 +143,10 @@ readonly -a BUNDLE_ANTHROPIC=(
 # working, which was measured rather than assumed - so a project that wants its
 # version pinned should be able to drop one word instead of writing an exception
 # to a bundle it otherwise wants whole.
+#
+# The .com name does not appear in the binary either, and is kept anyway: it
+# resolves to the same address as the .ai one, so it costs the allowlist
+# nothing, and it is what the policy will need if the name ever moves.
 readonly -a BUNDLE_ANTHROPIC_UPDATES=(
 	"downloads.claude.ai"
 	"downloads.claude.com"

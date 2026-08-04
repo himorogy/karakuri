@@ -184,7 +184,7 @@ CI には `/etc/egress-guard` が無いため緑のままで、**この依存は
 `PROD_CONFIG` が存在する環境では、当該 5 件を **`SKIP` にして件数を集計に出す**ようにしました。緑にするより、**その環境では確かめられないと表示するほう**が正確です。
 
 ```
-209 passed, 0 failed, 10 skipped
+210 passed, 0 failed, 10 skipped
 ```
 
 **skip の件数はその後 10 件に増えました。** 上記の 5 件に加えて、`--print-allowlist` や `--check-config` を**引数なしで**実行する経路の検査が対象です。これらはインストール済みの `/etc/egress-guard/firewall.json` を読むため、**その環境では終了コードが自分の検査対象について何も言っていません。** 期待値を環境で分岐させるのではなく、同じ `prod_config_present` の仕組みで skip します（分岐が空振りを生むことは上に書いたとおりです）。
