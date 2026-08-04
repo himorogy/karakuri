@@ -109,9 +109,17 @@ RUN npm install -g @himorogy/egress-guard@0.1.0
 # Editing this file therefore means rebuilding the image, which is a step a human
 # performs. See packages/egress-guard/docs/spec.md section 2.1.
 #
-# It allows chatgpt.com, api.openai.com and auth.openai.com for the codex CLI,
-# and nodejs.org because node-gyp fetches headers there during setup. Drop what
-# this project does not use.
+# What is allowed is the union of the base profile bundles named in firewall.json
+# and its allowDomains. That list is not restated here: this comment already went
+# stale once, when the bundles replaced an explicit set of domains. Read it from
+# the file, or from `init-project-firewall.sh --print-allowlist`, which resolves
+# nothing and works from inside a container whose egress is already closed.
+#
+# The one entry that needs a reason is nodejs.org in allowDomains: node-gyp
+# fetches headers there during setup. Note that the openai bundle covers the
+# subscription path only (auth.openai.com, chatgpt.com); api.openai.com was never
+# measured and is not in it. Add it to allowDomains if this project starts using
+# the API key path.
 COPY firewall.json /etc/egress-guard/firewall.json
 
 USER root
