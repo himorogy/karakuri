@@ -2,6 +2,10 @@ name: Registry Monitor
 
 # レジストリ上の版とリポジトリの状態を毎日照合し、経路を通らずに
 # 公開された版を検出する。判定の意味は docs/secure-publish.md §6 を参照。
+#
+# あわせて devcontainer base image が pin している egress-guard の版が
+# レジストリの最新から遅れていないかも見る。base の再ビルドは手動のため、
+# 上げ忘れをここで拾う。
 on:
   schedule:
     - cron: "0 0 * * *" # 毎日 09:00 JST
@@ -113,6 +117,34 @@ jobs:
               escalate warn
             fi
           done
+
+          # --- 3. base image が pin している egress-guard の版 ---
+          # egress-guard のスクリプト本体は base image に焼かれており、
+          # プロジェクト側から差し替えられない。上げるレバーは base の ARG しか
+          # ないため、上げ忘れると全プロジェクトが古い版のまま動き続ける。
+          # 落ちるのはセキュリティ制御そのものなので、乖離をここで見る。
+          BASE_DOCKERFILE="images/devcontainer-base/Dockerfile"
+          GUARD_PACKAGE="@himorogy/egress-guard"
+
+          if [ -f "$BASE_DOCKERFILE" ]; then
+            TEXT="${TEXT}*devcontainer-base*\n"
+
+            PINNED=$(sed -n 's/^ARG EGRESS_GUARD_VERSION=//p' "$BASE_DOCKERFILE" | head -1)
+            GUARD_LATEST=$(npm view "$GUARD_PACKAGE" version 2>/dev/null) || GUARD_LATEST=""
+
+            if [ -z "$PINNED" ]; then
+              TEXT="${TEXT}⚠️ ${BASE_DOCKERFILE} から ARG EGRESS_GUARD_VERSION を読めない\n\n"
+              escalate warn
+            elif [ -z "$GUARD_LATEST" ]; then
+              TEXT="${TEXT}⚠️ ${GUARD_PACKAGE} の最新版を取得できない\n\n"
+              escalate warn
+            elif [ "$PINNED" != "$GUARD_LATEST" ]; then
+              TEXT="${TEXT}⚠️ egress-guard の pin が ${PINNED}、最新は ${GUARD_LATEST}。base の再ビルドが要る\n\n"
+              escalate warn
+            else
+              TEXT="${TEXT}✅ egress-guard ${PINNED} は最新\n\n"
+            fi
+          fi
 
           # --- Slack 通知 ---
           case "$STATUS" in

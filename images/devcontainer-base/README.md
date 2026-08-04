@@ -256,16 +256,25 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
 
 ## 残タスク
 
-- **dotfiles の後付けスクリプトへの移管**（別リポジトリ）
-  - `starship` / `helix` / `micro` / `eza` / `bat` / `fzf` / `delta` / `herdr` / `ax` の導入
-  - 現行 base の `/etc/zsh/zshrc` にあった starship 初期化と fzf keybinding を `~/.zshrc` へ
-  - `EDITOR` / `VISUAL` の設定
-  - `~/.zshrc` の冒頭に `[[ -o interactive ]] || return` のガードを入れる。
-    `~/.zshenv` に書くと全起動で読まれて非対話シェルが壊れる
-- **`ARG EGRESS_GUARD_VERSION` の更新運用**。egress-guard を上げるには base の
-  再ビルドが要る。Renovate を入れていないため手動。上げ忘れの検知手段はまだない
-- **`NET_RAW` の要否確認**。egress-guard の実装が確定したら、本当に必要かを再確認し、
-  不要なら雛形の `--cap-add=NET_RAW` を落とす
+- **初回ビルド**。[devcontainer-base.yml](../../.github/workflows/devcontainer-base.yml) は
+  まだ一度も実行されていない。GHCR にイメージが無い限り、どのプロジェクトも `FROM` を
+  切り替えられない。ここが最初の一手
 - **既存プロジェクトの移行**。このリポジトリ自身の `.devcontainer/` と
   `packages/enclave-env/templates/devcontainer/` はまだ旧構成のまま。
   手順と注意点は [migration.md](./migration.md)
+- **`ARG EGRESS_GUARD_VERSION` の更新運用**。egress-guard を上げるには base の再ビルドが
+  要る。Renovate は入れていないので、上げる操作自体は手動のまま。上げ忘れは
+  [monitor.yml](../../.github/workflows/monitor.yml) が毎日 npm と照合して Slack に出す
+
+### 判断済み（再検討するときに読む）
+
+- **`NET_RAW` は雛形に残す。** 実測すると Docker 既定の bounding set
+  （`0xa80425fb`）に `NET_RAW` が含まれており、`--cap-add=NET_RAW` は既定構成では
+  no-op だった（`--cap-add` で増えるのは `NET_ADMIN` のビットだけ）。落として得られる
+  実利がなく、`--cap-drop=ALL` を併用する構成でだけ壊れる。なお `iptables` は netfilter と
+  話すのに `AF_INET SOCK_RAW` を開くため、そもそも `CAP_NET_RAW` を要求するはずだが、
+  これは未検証。イメージができたら
+  `--cap-drop=NET_RAW --cap-add=NET_ADMIN` で起動し、init が失敗することで確かめられる
+- **dotfiles の後付けスクリプトへの移管は行わない。** base の守備範囲外として整理した
+  ツール群（`starship` / `helix` / `micro` / `eza` / `bat` / `fzf` / `delta` / `herdr` /
+  `ax`）は、base から外したままにする
