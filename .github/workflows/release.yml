@@ -1,0 +1,223 @@
+name: Release
+
+# 公開の起点はタグの push。
+# 設計の根拠は docs/secure-publish.md を参照。
+#
+# タグの形式: <パッケージ名>@<バージョン>
+#   例) @himorogy/egress-guard@0.1.0
+#
+# 注意: このワークフローのファイル名は npm 側の信頼された公開元として
+# 登録されている。リネームすると公開が失敗する。
+on:
+  push:
+    tags:
+      - "@himorogy/*@*"
+
+# 既定では何も与えない。必要なジョブで最小限だけ宣言する。
+permissions: {}
+
+# 同一タグの二重実行を防ぐ。公開は不可逆なので、進行中のものは止めない。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------
+  # タグの内容を検証し、後段に渡す値を確定させる。
+  # ここで弾けるものは、承認者の目に触れる前に弾く。
+  # ------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      name: ${{ steps.parse.outputs.name }}
+      version: ${{ steps.parse.outputs.version }}
+      dir: ${{ steps.parse.outputs.dir }}
+    steps:
+      # action は全て commit SHA で固定する。タグは移動しうるため、
+      # 上流が侵害されたときにそのまま実行されることを防ぐ。
+      # 併記しているタグは、更新時に何を見ればよいかの手がかり。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: タグを分解する
+        id: parse
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+
+          # 最後の @ でパッケージ名とバージョンに分ける。
+          # スコープ付きの名前は先頭にも @ を含むため、後方から切る。
+          NAME="${TAG%@*}"
+          VERSION="${TAG##*@}"
+
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::バージョンの形式が不正です: ${VERSION}"; exit 1 ;;
+          esac
+
+          # パッケージ名から作業ディレクトリを引く。
+          # タグの文字列をそのままパスに使うと、任意のディレクトリを
+          # 指せてしまうため、package.json の name と照合して解決する。
+          DIR=""
+          for d in packages/*/; do
+            [ -f "${d}package.json" ] || continue
+            if [ "$(jq -r .name "${d}package.json")" = "$NAME" ]; then
+              DIR="$d"
+              break
+            fi
+          done
+
+          if [ -z "$DIR" ]; then
+            echo "::error::該当するパッケージがありません: ${NAME}"
+            exit 1
+          fi
+
+          echo "name=${NAME}"       >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "dir=${DIR}"         >> "$GITHUB_OUTPUT"
+          echo "解決: ${NAME} ${VERSION} (${DIR})"
+
+      - name: タグが main の履歴に含まれることを確認する
+        run: |
+          set -eu
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::このタグは main の履歴にありません。レビューを経ていないコミットは公開できません。"
+            exit 1
+          fi
+
+      - name: package.json のバージョンとタグが一致することを確認する
+        run: |
+          set -eu
+          DIR="${{ steps.parse.outputs.dir }}"
+          ACTUAL="$(jq -r .version "${DIR}package.json")"
+          EXPECTED="${{ steps.parse.outputs.version }}"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::タグは ${EXPECTED} だが package.json は ${ACTUAL}。changeset version の結果をコミットし忘れていませんか。"
+            exit 1
+          fi
+
+      - name: repository フィールドが公開元と一致することを確認する
+        run: |
+          set -eu
+          DIR="${{ steps.parse.outputs.dir }}"
+          URL="$(jq -r '.repository.url // .repository // ""' "${DIR}package.json")"
+
+          # provenance の生成には、package.json の repository が
+          # 公開元リポジトリを指している必要がある。大文字小文字も区別される。
+          if [ -z "$URL" ]; then
+            echo "::error::package.json に repository がありません。provenance を生成できません。"
+            exit 1
+          fi
+          case "$URL" in
+            *"${GITHUB_REPOSITORY}"*) ;;
+            *) echo "::error::repository (${URL}) が公開元 (${GITHUB_REPOSITORY}) と一致しません。"; exit 1 ;;
+          esac
+
+      - name: 未公開のバージョンであることを確認する
+        run: |
+          set -eu
+          NAME="${{ steps.parse.outputs.name }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+
+          # 既存バージョンへの publish はレジストリ側でも拒否されるが、
+          # 承認者を呼び出す前に落とす。
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "::error::${NAME}@${VERSION} は既に公開されています。"
+            exit 1
+          fi
+
+  # ------------------------------------------------------------------
+  # ビルド。
+  # 依存のインストールを伴うため、このジョブには id-token を与えない。
+  # ここで第三者のコードが動いても、公開に必要な資格情報は取得できない。
+  # ------------------------------------------------------------------
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      # pnpm 10 は依存のビルドスクリプトを既定で実行しないが、
+      # 意図を明示するために指定する。
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: ビルド
+        run: |
+          set -eu
+          NAME="${{ needs.prepare.outputs.name }}"
+          # build スクリプトを持たないパッケージもあるため、
+          # 存在するときだけ実行する。
+          pnpm --filter "$NAME" run --if-present build
+
+      # 公開ジョブへ渡すのは、公開対象のディレクトリのみ。
+      # node_modules は渡さない。
+      - name: 成果物を退避する
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package
+          path: |
+            ${{ needs.prepare.outputs.dir }}
+            !${{ needs.prepare.outputs.dir }}node_modules
+          include-hidden-files: true
+          retention-days: 1
+
+  # ------------------------------------------------------------------
+  # 公開。
+  # このジョブだけが id-token を持つ。したがってこのジョブでは
+  # 第三者のコードを一切実行しない（依存のインストールをしない）。
+  #
+  # environment の承認設定が、実質的な公開権限になる。
+  # ------------------------------------------------------------------
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # OIDC。信頼された公開元として認証するために必要
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # ビルド済みの内容で上書きする。
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: package
+          path: ${{ needs.prepare.outputs.dir }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      # registry-url は指定しない。
+      # 指定すると .npmrc にトークン参照が書き込まれ、OIDC の経路と競合する。
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: 公開
+        working-directory: ${{ needs.prepare.outputs.dir }}
+        run: |
+          set -eu
+          # --ignore-scripts: prepare 等のライフサイクルを走らせない。
+          #   ビルドは build ジョブで完了しており、ここで再実行する理由がない。
+          # --no-git-checks: タグ上の detached HEAD で動くため。
+          # provenance は信頼された公開元からの publish で自動生成される。
+          pnpm publish --access public --ignore-scripts --no-git-checks
+
+      - name: 公開されたことを確認する
+        run: |
+          set -eu
+          NAME="${{ needs.prepare.outputs.name }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          npm view "${NAME}@${VERSION}" version
