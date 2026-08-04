@@ -10,6 +10,10 @@ fault.
 - If a connection fails, suspect this first. Do not look for a mirror, proxy,
   tunnel, or any other route around it.
 - To see what is allowed: `init-project-firewall.sh --print-allowlist`
+- If a host that IS on that list stops working, the allowlist has gone stale —
+  it holds addresses resolved at startup, and CDNs move. Re-apply it once:
+  `sudo init-project-firewall.sh`. This re-resolves the same policy; it cannot
+  change what is allowed.
 - Editing `.devcontainer/firewall.json` changes nothing until the image is
   rebuilt. Never report a blocked host as fixed because you edited that file.
 - If you need a host that is blocked, stop and ask the repository owner.
