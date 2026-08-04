@@ -14,16 +14,16 @@
 
 ### イメージ
 
-* **[`images/devcontainer-base`](./images/devcontainer-base)** — 全プロジェクト共通の
-  devcontainer ベースイメージ。Node / pnpm / エージェントが直接使う CLI 群 /
-  egress-guard 本体を収録している。各プロジェクトは `FROM` で参照する
+- [**`images/devcontainer-base`**](./images/devcontainer-base) — 全プロジェクト共通の
+devcontainer ベースイメージ。Node / pnpm / エージェントが直接使う CLI 群 /
+egress-guard 本体を収録している。各プロジェクトは `FROM` で参照する
 
 ### パッケージ
 
-* **[`@himorogy/egress-guard`](./packages/egress-guard)** — allowlist に無い宛先への
-  外向き通信を遮断する egress ファイアウォール。**漏洩先を限定する**
-* **[`@himorogy/enclave-env`](./packages/enclave-env)** — dotenvx による暗号化と実行時
-  ガードで、**本番用の秘密情報をエージェントの手元に置かない**ようにする env 管理 CLI
+- [**`@himorogy/egress-guard`**](./packages/egress-guard) — allowlist に無い宛先への
+外向き通信を遮断する egress ファイアウォール。**漏洩先を限定する**
+- [**`@himorogy/enclave-env`**](./packages/enclave-env) — dotenvx による暗号化と実行時
+ガードで、**本番用の秘密情報をエージェントの手元に置かない**ようにする env 管理 CLI
 
 ### 三者の関係
 
@@ -65,16 +65,12 @@ allowlist の変更をエージェントに頼むときは
 
 ## 使い始める
 
-**ベースイメージはまだ GHCR に公開されていません。**
-[`.github/workflows/devcontainer-base.yml`](./.github/workflows/devcontainer-base.yml) が
-一度も実行されていないためです。下記はイメージができてからの手順です。
-
-* **新しいプロジェクトに入れる** — [`images/devcontainer-base/examples/`](./images/devcontainer-base/examples)
-  の 2 ファイルを `.devcontainer/` にコピーし、`firewall.json` を書く
-* **既存の devcontainer を載せ替える** — [`images/devcontainer-base/migration.md`](./images/devcontainer-base/migration.md)。
-  ベースイメージは pnpm 11 なので、pnpm 10 のプロジェクトは先に読むこと
-* **パッケージだけ使う** — 各パッケージの README に単体での導入手順があります。
-  ベースイメージを使わなくても入れられます
+- **新しいプロジェクトに入れる** — [`images/devcontainer-base/examples/`](./images/devcontainer-base/examples)  
+の 4 ファイルを `.devcontainer/` にコピーし、`firewall.json` を書く
+- **既存の devcontainer を載せ替える** — [`images/devcontainer-base/migration.md`](./images/devcontainer-base/migration.md)。
+ベースイメージは pnpm 11 なので、pnpm 10 のプロジェクトは先に読むこと
+- **パッケージだけ使う** — 各パッケージの README に単体での導入手順があります。
+ベースイメージを使わなくても入れられます
 
 ---
 
