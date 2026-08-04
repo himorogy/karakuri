@@ -9,5 +9,5 @@
 		"github"
 	],
 	"mode": "enforce",
-	"allowDomains": ["nodejs.org", "docs.npmjs.com", "docs.github.com"]
+	"allowDomains": ["nodejs.org"]
 }
