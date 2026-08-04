@@ -1,0 +1,23 @@
+# egress-guard L7 proxy PoC — 許可ドメイン一覧
+#
+# poc-plan.md の V3〜V5 を回すための最小セット。本実装での
+# firewall.json → この形式への変換処理は対象外（poc-plan.md「未決事項」）。
+# ここは手書き。
+#
+# 変換時の注意（proxy-selection-research.md §4）:
+#   1 つの ACL の中に、あるエントリの部分ドメインになる別エントリを入れてはいけない
+#   （Squid の Splay tree ベースの比較関数が全順序にならないため）。
+#   例: github.com と .github.com を同時に書かない。
+#   このファイルには該当する重複が無いことを目視で確認済み。
+#
+# 先頭の "." はサフィックスマッチ（サブドメイン全体）を意味する。付けなければ
+# その名前自体にしかマッチしない。
+
+# V3: apt-get update / install が proxy 経由で成立するか
+deb.debian.org
+
+# V4: ワイルドカード ACL で VS Code 拡張の配信 CDN (Akamai) が入るか。
+# publisher 別の具体名を列挙するのではなく、サフィックスマッチ 1 行だけを書く。
+# known-issues.md #7 の実測では同じ CDN プロパティが 2026-08-03 の観測で
+# 2 コンテナ・6 IP に散っている。IP が散っても名前は 1 つなので、この 1 行で足りる。
+.gallerycdn.vsassets.io
