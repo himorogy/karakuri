@@ -90,13 +90,16 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-# Copy and set up firewall script.
+# Install the firewall script from the published package.
 #
-# This is a copy of packages/egress-guard/scripts/init-project-firewall.sh, kept
-# in sync by hand. sudoers has to name a fixed path outside the workspace, so it
-# cannot point into node_modules and the package cannot be consumed as a
-# dependency until it is published.
-COPY init-project-firewall.sh /usr/local/bin/
+# The version is pinned deliberately. The script below is placed in root-owned
+# /usr/local/bin and becomes the target of a passwordless sudo rule, so following
+# a dist-tag would turn any package update into code execution as root inside the
+# container.
+#
+# npm's global prefix (/usr/local/share/npm-global) is owned by node, so the
+# install runs as node. Only the placement and the permissions need root.
+RUN npm install -g @himorogy/egress-guard@0.1.0
 
 # The policy that is actually enforced. It has to live outside the workspace and
 # be owned by root: `node` can re-apply the firewall through sudo at any time, so
@@ -112,7 +115,13 @@ COPY init-project-firewall.sh /usr/local/bin/
 COPY firewall.json /etc/egress-guard/firewall.json
 
 USER root
-RUN chown root:root /usr/local/bin/init-project-firewall.sh && \
+# sudoers has to name a fixed path outside the workspace, so the script is copied
+# out of the global node_modules rather than referenced there: a path under
+# /usr/local/share/npm-global stays writable by node, and node must not be able to
+# replace the file it is allowed to run through sudo.
+RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
+    /usr/local/bin/init-project-firewall.sh && \
+  chown root:root /usr/local/bin/init-project-firewall.sh && \
   chmod 755 /usr/local/bin/init-project-firewall.sh && \
   chown -R root:root /etc/egress-guard && \
   chmod 755 /etc/egress-guard && \
