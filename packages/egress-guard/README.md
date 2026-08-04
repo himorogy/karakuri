@@ -291,6 +291,8 @@ init-project-firewall.sh --check-config
 | `templates/firewall.audit.json` | 新規プロジェクトの立ち上げ用（`audit`） |
 | `templates/firewall.example.json` | 全フィールドを埋めた記入例 |
 
+**雛形の `profile` は Claude Code + npm + git を想定した最小構成です**（`anthropic`、`anthropic-updates`、`npm`、`github`）。**codex を使うなら `openai` を、VS Code の拡張を入れるなら `vscode` を足してください。** 使わないものは足さないでください（[基底プロファイル](#基底プロファイルprofile)）。
+
 ```sh
 cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/firewall.json
 ```
@@ -302,7 +304,7 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 ```json
 {
   "version": 1,
-  "profile": ["anthropic", "npm", "github"],
+  "profile": ["anthropic", "anthropic-updates", "openai", "npm", "github"],
   "mode": "enforce",
   "allowDomains": ["registry.example.com"],
   "allowCidrs": ["203.0.113.0/24"],
@@ -349,7 +351,9 @@ cp node_modules/@himorogy/egress-guard/templates/firewall.json .devcontainer/fir
 
 ### 何をバンドルに入れ、何を入れないか
 
-**テレメトリ・ログ送信・feature flag はバンドルに入れていません。** `sentry.io` と `statsig.com`（元になった Claude Code の devcontainer が無条件に許可していたもの）も外してあります。失敗しても道具は動き続ける一方、allowlist に載せた宛先はそのまま漏洩先になるためです。必要なら `allowDomains` に書いてください。
+**テレメトリ・ログ送信・feature flag はバンドルに入れていません。** 失敗しても道具は動き続ける一方、allowlist に載せた宛先はそのまま漏洩先になるためです。必要なら `allowDomains` に書いてください。
+
+**元になった Claude Code の devcontainer が無条件に許可していた 13 ドメインのうち、3 つは入れていません** — `sentry.io`、`statsig.com`、`console.anthropic.com`。**いずれも実測で観測されず、`claude` の実行ファイル（v2.1.221）にも文字列として存在しませんでした。**
 
 **判断の基準と、実際に測った結果は [`docs/measuring-egress.md`](./docs/measuring-egress.md) にあります。** バンドルの中身は他社製品のエンドポイントなので、**測り直しが要る対象**です。同じ文書に手順も書いてあります。
 

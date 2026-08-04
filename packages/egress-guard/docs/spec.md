@@ -188,7 +188,7 @@ live set（`egress-allow-v4`）に禁止レンジ（§3.2 の表）のアドレ�
 
 パスは環境変数からも導出しません（sudo 下の環境変数は信用できないため）。
 
-全フィールドを埋めた記入例は [`../README.md`](../README.md) の「記入例」（同じ内容が `templates/firewall.example.json` にあります）。
+全フィールドを埋めた記入例は [`../README.md`](../README.md) の「記入例」。`allowDomains` により多くの値を入れたものが `templates/firewall.example.json` にあります。
 
 | フィールド | 型 | 必須 | 説明 |
 |---|---|---|---|
@@ -267,6 +267,7 @@ root スクリプト側で実施し、違反は **panic テーブルを適用し
 * 空文字列のバンドル名はスキーマ段階で拒否する（受理して適用しない状態を作らないため）
 * 重複は解決後に除去する
 * **テレメトリ・ログ送信・feature flag の宛先はどのバンドルにも含めない**（`sentry.io`、`statsig.com` を含む）。失敗しても道具の動作は続く一方、allowlist に載せた宛先は漏洩先になる。必要な利用者は `allowDomains` に書く（[`design.md`](./design.md) §2.17、判断基準と実測結果は [`measuring-egress.md`](./measuring-egress.md)）
+* **対象の実行ファイルが参照していないドメインは含めない。** `console.anthropic.com` は元の 13 ドメインから引き継いだだけで、実測でも実行ファイルの走査でも現れなかったため外した
 * **`anthropic-updates` を `anthropic` から分けているのは、バージョン固定を選べるようにするため。** 遮断しても動作は継続し、更新だけが失敗する
 * **GitHub meta API の CIDR 取得（§4.5）は `github` バンドル選択時のみ**行う。未選択のときは取得を試みず、警告も出さない（意図的なスキップと取得失敗を区別するため）
 

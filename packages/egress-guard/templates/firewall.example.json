@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"profile": ["anthropic", "anthropic-updates", "npm", "github"],
+	"profile": ["anthropic", "anthropic-updates", "openai", "npm", "github"],
 	"mode": "enforce",
 	"allowDomains": [
 		"registry.example.com",

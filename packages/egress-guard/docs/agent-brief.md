@@ -156,7 +156,7 @@ Claude Code の 2 つの Web ツールは、egress から見て性質が違い�
 ```json
 {
 	"version": 1,
-	"profile": ["anthropic", "npm", "github"],
+	"profile": ["anthropic", "anthropic-updates", "openai", "npm", "github"],
 	"mode": "enforce",
 	"allowDomains": ["registry.example.com"],
 	"allowCidrs": ["203.0.113.0/24"],

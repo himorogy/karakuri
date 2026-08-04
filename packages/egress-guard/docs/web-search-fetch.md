@@ -247,7 +247,7 @@ let a = t.length > ymr ? t.slice(0, ymr) + `\n\n[Content truncated due to length
 ```json
 {
 	"version": 1,
-	"profile": ["anthropic", "npm", "github"],
+	"profile": ["anthropic", "anthropic-updates", "npm", "github"],
 	"mode": "enforce",
 	"allowDomains": ["docs.example.com"]
 }
