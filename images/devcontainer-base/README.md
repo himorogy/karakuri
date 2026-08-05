@@ -169,13 +169,21 @@ firewall を張る設計が必要になる。現状はそこまで踏み込ん�
 
 ```sh
 # images/devcontainer-base/ の変更を main にマージしたあと
-git tag devcontainer-base-v1.0.0
+git tag -a devcontainer-base-v1.0.0 -m "devcontainer-base 1.0.0"
 git push origin devcontainer-base-v1.0.0
 ```
 
-タグ名は `devcontainer-base-v<MAJOR>.<MINOR>.<PATCH>`。プレフィックスを付けるのは
-npm パッケージ側のリリースタグ（`v0.2.1`）と名前空間が衝突しないようにするため。
-形式が違うとワークフローが検証で落ちる。
+タグ名は `devcontainer-base-v<MAJOR>.<MINOR>.<PATCH>`。形式が違うとワークフローが
+検証で落ちる。プレリリース（`-rc.1` など）も弾かれる。試作は `workflow_dispatch` の
+`:edge` を使う。
+
+npm パッケージのリリースタグ（`@himorogy/egress-guard@0.1.0`、
+[secure-publish.md](../../docs/secure-publish.md) §4.4）と形式を分けているのは、
+**公開先のレジストリが違う**ため。npm への公開は実質取り消せないが、GHCR は版の削除も
+タグの付け替えもできる。取り消し可能性が違うものを、タグ名の時点で区別している。
+
+`@himorogy/devcontainer-base@1.0.0` のように npm 側の形式へ寄せないのは、npm に存在
+しないパッケージ名を騙ることになるため。タグ名を見て npm を探す人が出る。
 
 push すると `:1` / `:1.0` / `:1.0.0` / `sha-xxxxxxx` が同時に更新される。
 
@@ -287,18 +295,41 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
 
 ## 残タスク
 
-- **初回ビルド**。[devcontainer-base.yml](../../.github/workflows/devcontainer-base.yml) は
-  まだ一度も実行されていない。GHCR にイメージが無い限り、どのプロジェクトも `FROM` を
-  切り替えられない。ここが最初の一手
-- **既存プロジェクトの移行**。このリポジトリ自身の `.devcontainer/` と
-  `packages/enclave-env/templates/devcontainer/` はまだ旧構成のまま。
+- **雛形の実地検証**。`examples/` の Compose 構成はまだ一度も起動していない。
+  このリポジトリでは検証しない方針のため（「判断済み」）、base を利用する
+  別のリポジトリで「検証チェックリスト」を通す
+- **`packages/enclave-env/templates/devcontainer/` の移行**。まだ旧構成のまま。
+  ワークスペースが `/workspace`（単数形）で、pnpm の版も固定されていない。
   手順と注意点は [migration.md](./migration.md)
+- **crit のバージョン検証**。`crit --version` は `dev` を返すため、
+  `ARG CRIT_VERSION` で指定した版が実際に入ったかをイメージ側から確認できない。
+  ビルダー段で `go version -m /out/crit` を `${CRIT_VERSION}` と突き合わせれば
+  ビルド時に落とせる。あわせて
+  [monitor.yml](../../.github/workflows/monitor.yml) に crit の追従チェックがない
+- **`examples/post-create.sh` が `pnpm lint:sh` の対象外**。`lint:sh` は
+  `pnpm -r` でワークスペースのパッケージだけを回るため、`images/` 以下は
+  shellcheck にかからない
 - **`ARG EGRESS_GUARD_VERSION` の更新運用**。egress-guard を上げるには base の再ビルドが
   要る。Renovate は入れていないので、上げる操作自体は手動のまま。上げ忘れは
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 npm と照合して Slack に出す
 
 ### 判断済み（再検討するときに読む）
 
+- **このリポジトリ自身の `.devcontainer/` は base image に載せ替えない。** karakuri は
+  egress-guard を開発している場所であり、その egress-guard は base image に焼き込まれて
+  いる。開発環境が base に依存すると、**base が壊れたとき、それを直すための環境が
+  起動しなくなる**。自分を直す手段が自分の成果物に依存する循環になる。コンパイラや
+  パッケージマネージャが bootstrap 経路を分けて保つのと同じ理由。
+
+  加えて、開発のループに「公開」が挟まる。`.devcontainer/Dockerfile` は現在 npm の
+  公開版（`@himorogy/egress-guard@0.1.0`）を入れており、作業ツリーのスクリプトが
+  動いているわけではない。**この点は base に載せ替えても変わらない。** 変わるのは
+  更新の経路で、今は Dockerfile の 1 行を書き換えてリビルドすれば新しい版を試せるが、
+  base 経由では新しい版を試すために先にイメージを公開する必要がある。
+
+  引き換えに失うのは、`examples/` の雛形がこのリポジトリでは実地検証されないこと。
+  Compose での起動・`cap_add` の実効・埋め込みリゾルバ・`workspaceFolder` と
+  マウント先の一致は、base を利用する別のリポジトリで確認する（「検証チェックリスト」）
 - **`NET_RAW` は雛形に残す。** 実測すると Docker 既定の bounding set
   （`0xa80425fb`）に `NET_RAW` が含まれており、`--cap-add=NET_RAW` は既定構成では
   no-op だった（`--cap-add` で増えるのは `NET_ADMIN` のビットだけ）。落として得られる
