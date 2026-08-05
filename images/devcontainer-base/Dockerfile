@@ -27,62 +27,55 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # =============================================================================
 # devcontainer base
 #
-# 収録方針:
+# images/runtime-base を土台とし、そこに「能力」だけを積み増す。runtime-base
+# には node / pnpm / dotenvx / wrangler / git / gh、secret shim、
+# prod-entrypoint.sh、egress-guard 本体、git hook (core.hooksPath) が
+# 既に入っている。ここでの収録方針:
 #   入れる  … npm で入らないもの、または エージェントが直接使うもの
 #   入れない… 人間の対話体験にしか効かないもの   -> 後付けスクリプト
 #             npm で入るもの (Biome, dprint 等) -> プロジェクトの devDependency
 #             プロジェクト固有のもの (psql 等)  -> プロジェクトの Dockerfile
+#             prod container でも使うもの       -> images/runtime-base 側
+#               (設計書 .local/prod-secret-isolation-design.md §4.5)
 # =============================================================================
-FROM node:24
+ARG RUNTIME_BASE_VERSION=1
+FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}
 
 ARG USERNAME=node
-ARG TZ=Asia/Tokyo
-ARG PNPM_VERSION=11.20.0
-ARG EGRESS_GUARD_VERSION=0.1.1
 
-# --- ロケール / タイムゾーン --------------------------------------------------
-# LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定になる。
-# エージェント運用ではソート順の決定性を優先して C.UTF-8 を採用する。
-# ja_JP.UTF-8 が必要になったら locales パッケージ + locale-gen を追加すること。
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    TZ="${TZ}" \
-    DEVCONTAINER=true
+# TZ / LANG / LC_ALL は images/runtime-base の ENV としてこの層にも
+# 引き継がれているため、ここで ARG TZ を再宣言する必要はない。
 
-RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
-    && echo "${TZ}" > /etc/timezone
+# runtime-base は USER=node で終わっているため、apt-get や /etc 配下への
+# 書き込みなど root 権限が要る作業のために切り替える。
+USER root
 
-# --- OS パッケージ ------------------------------------------------------------
+ENV DEVCONTAINER=true
+
+# --- OS パッケージ (devcontainer 固有) -----------------------------------------
 # vim-tiny は git commit / rebase -i がエディタ不在で失敗しないための最小保険。
 # 実際に使うエディタ (micro 等) は後付けスクリプトが入れて EDITOR を上書きする。
 #
-# egress-guard が要求するもののうち curl (GitHub meta API の取得と自己検証) は
-# node:24 に同梱されているため、ここには並べていない。上流が外したら追加すること。
+# git / gh / sudo / jq / iptables / ipset / iproute2 / dnsutils / aggregate は
+# prod container でも使うため images/runtime-base 側で既に入っている。ここで
+# 追加するのは対話体験・エージェント運用にしか効かないものだけ。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git \
-      gh \
-      sudo \
       zsh \
       less \
       procps \
       man-db \
       unzip \
       gnupg2 \
-      jq \
       ripgrep \
       fd-find \
       vim-tiny \
-      iptables \
-      ipset \
-      iproute2 \
-      dnsutils \
-      aggregate \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- crit ---------------------------------------------------------------------
 # Claude Code 連携がコンテナ内の crit CLI とローカル daemon を前提とするため、
-# ホストではなくコンテナ側に置く。
+# ホストではなくコンテナ側に置く。prod container はエージェントを含まないため
+# (設計書 §2.1)、crit は devcontainer-base 側だけの「能力」である。
 COPY --from=crit-builder /out/crit /usr/local/bin/crit
 
 # 0.0.0.0 で待ち受けないと devcontainer.json の runArgs (-p) による転送が届かない。
@@ -123,67 +116,9 @@ RUN mkdir -p /workspaces /home/${USERNAME}/.claude /home/${USERNAME}/.codex \
 
 WORKDIR /workspaces
 
-# --- pnpm ----------------------------------------------------------------------
-ENV PNPM_HOME=/usr/local/share/pnpm \
-    NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-# PATH に載せるのは ${PNPM_HOME}/bin であって ${PNPM_HOME} ではない。
-# pnpm 10 は PNPM_HOME 直下に global bin を置いていたが、11 は bin/ の下に置く。
-# 古いレイアウトのままだと pnpm add -g したものが PATH に載らず、
-# pnpm bin -g が "global bin directory is not in PATH" で失敗する。
-ENV PATH="${PNPM_HOME}/bin:${NPM_CONFIG_PREFIX}/bin:${PATH}"
-
-RUN mkdir -p "${PNPM_HOME}/bin" "${NPM_CONFIG_PREFIX}" \
-    && chown -R ${USERNAME}:${USERNAME} /usr/local/share
-
-USER ${USERNAME}
-
-# バージョンを固定しないとビルド日時で pnpm が変わり、
-# 各プロジェクトの packageManager フィールドと乖離する。
-RUN npm install -g pnpm@${PNPM_VERSION} \
-    && pnpm --version
-
-# --- egress-guard --------------------------------------------------------------
-# スクリプト本体と sudoers は base に入れる。どちらも全プロジェクトで同一で、
-# root 所有の場所に置く必要があり、npm では入らない領域を触るため。
-#
-# base に入らないのは実効設定 (firewall.json) だけ。プロジェクトごとに内容が
-# 異なるうえ、COPY 元がプロジェクトのビルドコンテキストにあり base のビルド時
-# には存在しない。プロジェクト側の Dockerfile で入れる (examples/Dockerfile)。
-#
-# バージョンは ARG で固定する。このスクリプトは下で root 所有の /usr/local/bin に
-# 置かれ、パスワードなし sudo の対象になる。dist-tag のまま追従させると、
-# パッケージ側の更新がそのままコンテナ内 root でのコード実行になる。
-#
-# npm のグローバル領域 (NPM_CONFIG_PREFIX) は node 所有のため、install は node の
-# まま実行する。root で入れると root 所有のファイルが混ざり、以後 node での
-# -g install が権限で失敗しうる。root が担当するのは配置と権限付与だけ。
-RUN npm install -g @himorogy/egress-guard@${EGRESS_GUARD_VERSION}
-
-USER root
-
-# sudoers は固定パスを名指しする必要があるため、グローバル node_modules を参照
-# させずにコピーする。NPM_CONFIG_PREFIX 配下は node が書き換えられるので、sudo で
-# 実行を許したファイルそのものを node が差し替えられる状態にはできない。
-#
-# sudoers 末尾の "" は「引数を取らない実行のみ許可」の意。実効設定を
-# /etc/egress-guard に固定し探索を廃止した設計意図を、引数経由での設定差し替えを
-# 塞ぐことで sudoers 側でも担保する。この "" を落とすと防御が無効になる。
-#
-# visudo -c は構文検証。sudoers.d 配下に構文エラーがあると、その後の sudo 呼び出し
-# 全体がパースエラーで失敗する。この行を編集して引用符や改行を壊すとビルドは通り、
-# 派生プロジェクトの起動時に初めて表面化するため、base のビルド時に落とす。
-RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-         /usr/local/bin/init-project-firewall.sh \
-    && chown root:root /usr/local/bin/init-project-firewall.sh \
-    && chmod 755 /usr/local/bin/init-project-firewall.sh \
-    && printf '%s ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
-         "${USERNAME}" > /etc/sudoers.d/node-firewall \
-    && chmod 0440 /etc/sudoers.d/node-firewall \
-    && visudo -cf /etc/sudoers.d/node-firewall
-
-USER ${USERNAME}
-
 ENV SHELL=/bin/zsh
+
+USER ${USERNAME}
 
 # このイメージは USER=node で終わる。派生 Dockerfile で root 作業が要る場合は
 # 明示的に USER root へ切り替え、最後に USER node へ戻すこと。

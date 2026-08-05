@@ -17,6 +17,19 @@ name: devcontainer-base
 # packages: write を持つため、第三者 action を動かすこと自体が
 # docs/secure-publish.md §4.3 の原則から外れる。判断の根拠と、将来これを外す道筋は
 # 同 §4.6 を参照。
+#
+# devcontainer-base は images/runtime-base の上に載る (FROM ghcr.io/himorogy/
+# runtime-base:${RUNTIME_BASE_VERSION})。そのためリリース順は runtime-base →
+# devcontainer-base の順を守ること。runtime-base をまだ GHCR に push していない
+# 段階 (例: 初回リリース前) では、devcontainer-base のビルドは FROM の解決に
+# 失敗する。
+#
+# なお PR の paths に images/runtime-base/** は足していない。runtime-base の
+# 変更は runtime-base 側の workflow (.github/workflows/runtime-base.yml) が
+# 検証する。ここに足すと、まだ GHCR に push されていない runtime-base の変更に
+# 対して devcontainer-base 側の検証ビルドが走り、既定の RUNTIME_BASE_VERSION
+# (:1 などの既存タグ) を pull するだけで変更内容を反映できないまま無意味に
+# 走る (最悪、後述の理由で FROM 解決に失敗して落ちる)。
 
 on:
   push:
