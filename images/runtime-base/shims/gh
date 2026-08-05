@@ -1,0 +1,27 @@
+#!/bin/sh
+# /usr/local/bin/gh  （実体は /opt/tools/bin/gh に退避してある）
+#
+# GH_TOKEN を常時環境変数として保持せず、実行のたびに /run/secrets/GH_TOKEN
+# の有無を見て注入するかどうかを決める薄いラッパー。wrangler の shim と同型
+# (設計書 .local/prod-secret-isolation-design.md §4.3 / D15)。
+#
+# env -u NODE_OPTIONS は両分岐に付ける。理由は shims/wrangler と同じ:
+# Node の diagnostic report 遮断 (§4.4) は secret 注入の有無と無関係に
+# 効くべきもののため。
+set -eu
+f=/run/secrets/GH_TOKEN
+if [ -e "$f" ]; then
+  [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
+  # 読み取りは exec の引数内ではなく独立した文で行う。
+  # `exec env VAR="$(cat "$f")" ...` の形だと、cat が失敗しても終了コード
+  # は外側の env のものになるため set -e が発火しない。「ファイルは存在し
+  # 非空だが読めない (例: mode 000)」が空値の注入として素通りしてしまう
+  # — I6 が排除したい「沈黙した成功」そのもの。v=$(cat "$f") || exit 1 と
+  # 独立した文で読み、非空を再検査してから exec する
+  # (設計書 §4.3 rev.4)。
+  v=$(cat "$f") || exit 1
+  [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
+  exec env -u NODE_OPTIONS \
+    GH_TOKEN="$v" /opt/tools/bin/gh "$@"
+fi
+exec env -u NODE_OPTIONS /opt/tools/bin/gh "$@"

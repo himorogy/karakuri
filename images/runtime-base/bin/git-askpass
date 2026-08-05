@@ -1,0 +1,22 @@
+#!/bin/sh
+# /usr/local/bin/git-askpass
+#
+# prod-entrypoint.sh が GIT_ASKPASS に指定する。clone/fetch のためだけに
+# 使われ、checkout 完了後は entrypoint 側で GH_TOKEN を破棄し
+# GIT_ASKPASS も unset するため、以降のコード (信頼しない checkout 済み
+# コード) からは呼ばれない。
+#
+# GH_TOKEN が /run/secrets に無いことをここでは許容する。public リポジトリ
+# の fetch はトークンなしでも動くべきで、entrypoint 側で GH_TOKEN の存在を
+# 必須にはしていない。認証が実際に必要な private リポジトリでトークンが
+# 無ければ、ここで非ゼロ終了して認証失敗を顕在化させる
+# (設計書 .local/prod-secret-isolation-design.md §4.6)。
+set -eu
+f=/run/secrets/GH_TOKEN
+case "$1" in
+Username*) echo "x-access-token" ;;
+Password*)
+  [ -s "$f" ] || { echo "GH_TOKEN not provided" >&2; exit 1; }
+  cat "$f"
+  ;;
+esac

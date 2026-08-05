@@ -1,0 +1,115 @@
+#!/bin/sh
+# /usr/local/bin/prod-entrypoint.sh
+#
+# broker (ホスト側で秘密鍵を保管・認可する任意のコマンド) の dotenv 形式
+# 出力を stdin から受け取り、コンテナ内 tmpfs (/run/secrets) へ書き出す。
+# その後、明示された git ref から /src (named volume) を復元し、"$@" を
+# exec する。環境変数を一切経由しないため、ホストシェルの environ にも
+# compose プロセスの environ にも docker inspect の Config.Env にも
+# secret は現れない
+# (設計書 .local/prod-secret-isolation-design.md §4.1 / §4.6)。
+set -eu
+: "${GIT_REPO:?}" "${GIT_REF:?}"
+
+# broker がどの OS で走るか (ひいては改行コードが LF か CRLF か) は
+# 読めないため、行末の CR は毎行剥がす。剥がし忘れると鍵名や値の末尾に
+# 不可視の \r が残り、shim 側のファイル比較や dotenvx の鍵選択が
+# 不可解に失敗する。
+cr=$(printf '\r')
+
+# --- secrets: stdin (dotenv 形式) -> /run/secrets (tmpfs) ---
+umask 077
+mkdir -p /run/secrets
+# entrypoint は入力を反射しない: パース失敗時のメッセージに $line や $k を
+# 埋めない。broker の出力が壊れて "KEY=" の形になっていない場合、その行は
+# secret 本体そのものでありうる。`logging: none` はホストのログファイルを
+# 止めるだけで、アタッチ先の端末表示 (とそのスクロールバック) は止められ
+# ないため、位置は行番号だけで示す (設計書 §4.6)。
+#
+# lineno は「読んだ行」の通し番号 (空行・コメント行も数える)。n は「取り
+# 込んだ secret の件数」で意味が異なる — n を流用すると後段の
+# `[ "$n" -gt 0 ]` の検証 (「1 件も secret が来なかった」の検出) が壊れる
+# ため、別カウンタにする。
+n=0
+lineno=0
+while IFS= read -r line || [ -n "$line" ]; do
+  lineno=$((lineno+1))
+  line=${line%"$cr"}
+  case "$line" in ''|\#*) continue ;; esac
+
+  # '=' を含まない行を許すと k=${line%%=*} が行全体を鍵名にしてしまい、
+  # 意図しないファイル名で secret が書かれる事故につながるため、ここで
+  # 弾く。
+  case "$line" in
+    *=*) ;;
+    *) echo "invalid secret input at stdin line $lineno: missing '='" >&2; exit 1 ;;
+  esac
+
+  k=${line%%=*}
+  v=${line#*=}
+
+  # 鍵名を [A-Za-z_][A-Za-z0-9_]* に制限する。broker が壊れた行を
+  # 出力した場合でも、"/" や ".." を含む鍵名で /run/secrets/$k が
+  # パストラバーサルに使われないようにするための最終防波堤。
+  case "$k" in
+    [A-Za-z_]*) ;;
+    *) echo "invalid secret input at stdin line $lineno: invalid key" >&2; exit 1 ;;
+  esac
+  case "$k" in
+    *[!A-Za-z0-9_]*) echo "invalid secret input at stdin line $lineno: invalid key" >&2; exit 1 ;;
+  esac
+
+  # ダブルクォート / シングルクォートいずれの引用も剥がす。v の途中に
+  # "=" が含まれるケース (DATABASE_URL=postgres://u:p@h/db?a=b 等) は、
+  # v=${line#*=} が最初の "=" だけを削るので既に正しく残っている。
+  case "$v" in
+    \"*\") v=${v#\"}; v=${v%\"} ;;
+    \'*\') v=${v#\'}; v=${v%\'} ;;
+  esac
+
+  [ -n "$v" ] || { echo "invalid secret input at stdin line $lineno: empty secret" >&2; exit 1; }
+  printf '%s' "$v" > "/run/secrets/$k"
+  n=$((n+1))
+done
+[ "$n" -gt 0 ] || { echo "no secrets received on stdin" >&2; exit 1; }
+export GIT_ASKPASS=/usr/local/bin/git-askpass
+
+# --- workspace: clone/fetch + 明示 ref へ復元 ---
+# git clone は非空ディレクトリで失敗するため init + fetch にする。前回
+# 実行が失敗した残骸で /src が非空になっていても壊れない。
+if [ ! -d /src/.git ]; then
+  git init -q /src
+fi
+# remote が既にある場合 (volume 再利用) は set-url で冪等にする。
+# add は二回目の呼び出しで "remote origin already exists" になるため。
+if git -C /src remote get-url origin >/dev/null 2>&1; then
+  git -C /src remote set-url origin "$GIT_REPO"
+else
+  git -C /src remote add origin "$GIT_REPO"
+fi
+# named volume 再利用時に tracked file の改変を確実に戻すため、三段構え
+# にする。三つの役割は重複ではない: checkout --detach --force が HEAD を
+# 動かし (HEAD が既に $GIT_REF を指していると checkout 単体では working
+# tree を復元しない。--force を付けても「切り替えが起きない」ので同じ)、
+# reset --hard が tracked file の改変を $GIT_REF の内容へ戻し (clean が
+# 消すのは untracked / ignored のみで、これは担わない)、clean -xdff が
+# untracked / ignored を消す。reset --hard を欠くと、prod で走ったコード
+# が自分のソースを書き換えた場合、次回同じ GIT_REF で起動しても改変済み
+# コードが実行されてしまい I7 (「明示された ref から復元される」) が
+# 破れる (設計書 §4.6)。
+git -C /src fetch --tags --prune origin
+git -C /src checkout --detach --force "$GIT_REF"
+git -C /src reset --hard "$GIT_REF"
+git -C /src clean -xdff
+
+# clone 用トークンは checkout 後に破棄する。以降 exec で走るのは
+# checkout 済みの信頼しないコードであり、そこから /run/secrets/GH_TOKEN
+# を読ませない。取得用と実行用の資格情報を同一セッションに同居させない
+# (設計書 §4.6)。
+rm -f /run/secrets/GH_TOKEN
+unset GIT_ASKPASS
+
+# exec は引数なしだと何もせず exit 0 を返す。無引数呼び出しを「成功」
+# として見逃さないよう、ここで明示的に落とす (I6)。
+[ "$#" -gt 0 ] || { echo "no command given" >&2; exit 1; }
+exec "$@"

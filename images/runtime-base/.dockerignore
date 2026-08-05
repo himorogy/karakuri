@@ -1,0 +1,7 @@
+# ビルドコンテキストに転送する必要がないもの。
+# tests/ は docker なしで走るテストで、イメージには含めない。
+# templates/ はホスト側 (prod container を起動する側) にコピーするための雛形で、
+# Dockerfile は COPY していない。
+tests/
+*.md
+templates/

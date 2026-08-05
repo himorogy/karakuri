@@ -1,0 +1,23 @@
+#!/bin/sh
+# /usr/local/share/git-hooks/pre-commit
+#
+# core.hooksPath でイメージから全リポジトリ・全 clone・worktree に効かせる
+# (設計書 .local/prod-secret-isolation-design.md §4.7 / D12)。
+# core.hooksPath は全 hook を上書きするため、husky / lefthook 等の
+# per-repo hook を黙って壊さないよう明示的にチェーンする。
+set -e
+root=$(git rev-parse --show-toplevel)
+
+# dotenvx は私鍵 env が無いと .env.keys へ自動フォールバックする。
+# workspace 内に置かれていると暗号化の意味が失われるため、コミット前に
+# 存在自体を弾く (§4.3 末尾 / §6.3)。
+if [ -e "$root/.env.keys" ]; then
+  echo "❌ .env.keys found in workspace: $root/.env.keys" >&2
+  exit 1
+fi
+
+dotenvx precommit
+
+for h in "$root/.husky/pre-commit" "$root/.githooks/pre-commit"; do
+  if [ -x "$h" ]; then "$h"; fi
+done
