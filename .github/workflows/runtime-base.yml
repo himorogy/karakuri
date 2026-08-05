@@ -1,0 +1,204 @@
+name: runtime-base
+
+# images/runtime-base のマルチアーキビルドと GHCR への push。
+#
+# トリガーの使い分け:
+#   tag push (runtime-base-v*) … リリース。:1 / :1.4 / :1.4.2 / sha-xxxxxxx を push
+#   pull_request                    … 検証ビルドのみ。push しない
+#   workflow_dispatch               … 任意ビルド。push するかは入力で選択（:edge が付く）
+#
+# main への push はトリガーにしていない。浮動タグ :1 を参照する運用では
+# 利用側が引くのはリリースタグだけで、main の各コミットを GHCR に積む必要がないため。
+#
+# action は全て commit SHA で固定する。タグは移動しうるため、上流が侵害されたときに
+# そのまま実行されることを防ぐ。併記しているタグは、更新時に何を見ればよいかの手がかり。
+#
+# docker/* の 5 つはリポジトリの action 許可リストに明示的に載せてある。このジョブは
+# packages: write を持つため、第三者 action を動かすこと自体が
+# docs/secure-publish.md §4.3 の原則から外れる。判断の根拠と、将来これを外す道筋は
+# 同 §4.6 を参照。
+
+on:
+  push:
+    tags:
+      - "runtime-base-v*"
+  pull_request:
+    # 除外している 2 つは .dockerignore がビルドコンテキストから外しているもの。
+    # イメージの内容に影響しないため、検証ビルドを走らせる意味がない。
+    # 除外の行は positive の後に置く（後のパターンが勝つ）。
+    #
+    # .dockerignore にはもう 1 つ tests/ があるが、ここでは除外していない。
+    # 集合として .dockerignore の方が広い側であり、余分な検証ビルドが 1 回走る
+    # だけで済む。逆（paths の方が広い）にすると、ビルドコンテキストに入る
+    # 変更に対して検証が黙って飛ぶので、ずらす向きはこちらに固定する。
+    paths:
+      - "images/runtime-base/**"
+      - "!images/runtime-base/**/*.md"
+      - "!images/runtime-base/templates/**"
+      - ".github/workflows/runtime-base.yml"
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "GHCR に push する（:edge タグが付く）"
+        type: boolean
+        default: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/runtime-base
+  CONTEXT: images/runtime-base
+
+# PR に続けて push したときの古い検証ビルドは捨てる。QEMU 経由のマルチアーキ
+# ビルドは重く、途中の版の結果に用がない。
+# リリース（タグ push）は途中で止めない。GHCR への push が中断されると、
+# どのタグまで載ったのかが分からない状態になる。
+concurrency:
+  group: runtime-base-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # タグ名 runtime-base-v1.4.2 から 1.4.2 を取り出す。
+      # metadata-action の type=semver は value を明示すれば ref に依存しない。
+      - name: Resolve version from tag
+        id: ver
+        if: startsWith(github.ref, 'refs/tags/runtime-base-v')
+        run: |
+          version="${GITHUB_REF_NAME#runtime-base-v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: タグ形式が不正です: ${GITHUB_REF_NAME}" >&2
+            echo "  期待する形式: runtime-base-vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # push するのはリリースタグのとき、または dispatch で明示指定したとき。
+      - name: Decide whether to push
+        id: cond
+        run: |
+          if [ "${{ startsWith(github.ref, 'refs/tags/runtime-base-v') }}" = "true" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.push }}" = "true" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: steps.cond.outputs.push == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          # annotation を index にも付ける。既定は manifest のみだが、マルチアーキの
+          # イメージで GHCR のパッケージ画面が読むのは OCI index 側の annotation。
+          # manifest だけだとプラットフォーム別の manifest に付いて表示に反映されない。
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # metadata-action のデフォルト (latest=auto) は type=semver が有効なとき
+          # :latest も生成する。タグ体系に含めていないので明示的に止める。
+          flavor: |
+            latest=false
+          # semver の 3 行が :1.4.2 / :1.4 / :1 を生む。
+          # value を渡しているのでタグ以外のイベントでは enable が false になり無視される。
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
+            type=semver,pattern={{major}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
+          labels: |
+            org.opencontainers.image.title=runtime-base
+            org.opencontainers.image.description=Shared runtime base image for @himorogy projects (prod container and devcontainer-base)
+          # labels 入力は annotations に反映されない。同じ内容をここにも書かないと、
+          # annotation にはリポジトリ由来の title=karakuri と空の description が載る。
+          annotations: |
+            org.opencontainers.image.title=runtime-base
+            org.opencontainers.image.description=Shared runtime base image for @himorogy projects (prod container and devcontainer-base)
+
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.CONTEXT }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.cond.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          # ベースの node:24 を毎回引き直す。ランナー上の古いレイヤに引きずられないため。
+          pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # provenance はデフォルト (mode=min) のまま有効にしている。
+          # GHCR のパッケージ画面に unknown/unknown が並ぶのは attestation が
+          # OCI index 内の別 manifest として表現されるためで、アーキ対応が
+          # 壊れているわけではない。公開ベースイメージでは供給元追跡の価値を優先する。
+
+      # push した内容が実際に両アーキで起動するかを確認する。
+      # QEMU 経由でも pnpm は動くので、最低限の実行可能性は検出できる。
+      #
+      # pnpm bin -g は PATH の検査を兼ねる。pnpm 11 は global bin を
+      # ${PNPM_HOME}/bin に置くため、PATH に ${PNPM_HOME} しか載っていない
+      # 古いレイアウトへ戻ると "global bin directory is not in PATH" で落ちる。
+      # ビルドログには現れない種類の壊れ方なので、ここで検出する。
+      #
+      # dotenvx / wrangler / gh の command -v が /usr/local/bin/... を返すことも
+      # 確認する。Dockerfile 内の RUN (images/runtime-base/Dockerfile の shim
+      # セクション) でも同じ検証を焼いてあるが、それはビルド時点のレイヤに対する
+      # 検証でしかない。ビルドキャッシュや将来の変更で焼き込み検証が飛ぶ余地が
+      # あるため、push されたイメージ側でも PATH 解決が shim に当たることを
+      # 確認する。
+      #
+      # shim の意味論は三値 (存在→注入 / 空→エラー / 不在→素通し)。この
+      # docker run には /run/secrets を一切マウントしていないため「不在」の
+      # ケースにあたる。素通しで dotenvx --version が動くことを確認する。
+      #
+      # core.hooksPath と prod-entrypoint.sh / pre-commit の実行権限は、
+      # イメージに焼き込んだ「制約」がそのまま残っていることの確認。
+      - name: Smoke test pushed image
+        if: steps.cond.outputs.push == 'true'
+        run: |
+          # outputs.tags の先頭を取ると metadata-action の priority 順に依存する。
+          # outputs.version は主要タグのバージョン部分なので、こちらから組み立てる。
+          tag="${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+          echo "Testing ${tag}"
+          for platform in linux/amd64 linux/arm64; do
+            echo "--- ${platform} ---"
+            docker run --rm --platform "${platform}" "${tag}" pnpm --version
+            docker run --rm --platform "${platform}" "${tag}" pnpm bin -g
+            docker run --rm --platform "${platform}" "${tag}" dotenvx --version
+            docker run --rm --platform "${platform}" "${tag}" wrangler --version
+            docker run --rm --platform "${platform}" "${tag}" gh --version
+            docker run --rm --platform "${platform}" "${tag}" sh -c \
+              '[ "$(command -v dotenvx)" = /usr/local/bin/dotenvx ] &&
+               [ "$(command -v wrangler)" = /usr/local/bin/wrangler ] &&
+               [ "$(command -v gh)" = /usr/local/bin/gh ]'
+            docker run --rm --platform "${platform}" "${tag}" sh -c \
+              '[ ! -e /run/secrets ] && dotenvx --version'
+            docker run --rm --platform "${platform}" "${tag}" sh -c \
+              '[ "$(git config --system --get core.hooksPath)" = /usr/local/share/git-hooks ]'
+            docker run --rm --platform "${platform}" "${tag}" \
+              test -x /usr/local/bin/prod-entrypoint.sh
+            docker run --rm --platform "${platform}" "${tag}" \
+              test -x /usr/local/share/git-hooks/pre-commit
+            docker run --rm --platform "${platform}" "${tag}" sh -c 'echo "$LANG"'
+          done
