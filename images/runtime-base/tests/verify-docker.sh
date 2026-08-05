@@ -116,6 +116,53 @@ assert() {
 	printf '%s\n' "$line"
 }
 
+# --- ハーネス前提の健全性ゲート ---------------------------------------------------
+#
+# 「全体に対する要求」: 個々のケースの失敗が「ハーネスの都合」(bare repo
+# のマウント不備など、セットアップ段階の問題) なのか「測定対象の性質」
+# (docker/dotenvx/git 自体の挙動) なのかを出力から区別できるようにする。
+# バグ1 が典型例で、$SCRATCH がコンテナへ bind mount されていないと
+# bare repo への fetch が全滅し、同じ git エラーが 10 箇所以上に並んで
+# 読み取りに手間取った。
+#
+# HARNESS_GIT_OK は「bare repo がコンテナ内から実際に fetch/checkout
+# できるか」の前提が生きているかを表すグローバルフラグ。preflight (M1
+# セクション開始前) で一度だけ実測して確定させ、0 なら以降の bare repo
+# fetch 依存ケース (M1 の compose 経由分 / M2 / M6 / A5 / A6 / A10 /
+# A16) を実行せず SKIPPED として記録する。A11 (GIT_REF 未指定) は compose
+# のパース時点で失敗が確定するため fetch の成否と無関係、A17 (broker
+# 失敗の伝播) も broker 自体が secrets を一切渡さず失敗する経路なので
+# fetch の成否と無関係 — この 2 つはゲートの対象に含めない。
+HARNESS_GIT_OK=1
+
+# measure_git <id> <label> <fn> [args...]
+# 前提が壊れていれば実行せず SKIPPED を記録する measure() のラッパー。
+measure_git() {
+	if [ "$HARNESS_GIT_OK" -eq 0 ]; then
+		local id="$1" label="$2" line
+		line="$(printf '%-3s %-70s : %s' "$id" "$label" "SKIPPED (harness setup failed: bare repo unreachable from container)")"
+		MEAS_LOG+=("$line")
+		printf '%s\n' "$line"
+		return 0
+	fi
+	measure "$@"
+}
+
+# assert_git <id> <desc> <fn> [args...]
+# 前提が壊れていれば実行せず SKIP を記録する assert() のラッパー。SKIP は
+# ASSERT_PASS にも ASSERT_FAIL にもカウントしない (ハーネス側の不備を
+# 測定対象の合否として扱わないため)。
+assert_git() {
+	if [ "$HARNESS_GIT_OK" -eq 0 ]; then
+		local id="$1" desc="$2" line
+		line="$(printf 'SKIP %s %s (harness setup failed: bare repo unreachable from container)' "$id" "$desc")"
+		ASSERT_LOG+=("$line")
+		printf '%s\n' "$line"
+		return 0
+	fi
+	assert "$@"
+}
+
 # --- 後片付け -------------------------------------------------------------------
 # 個々のテストが作る named volume / container は各テスト関数の中で
 # --rm や明示的な docker volume rm を使って自己完結的に片付ける (measure /
@@ -127,6 +174,15 @@ cleanup() {
 	rm -rf "$SCRATCH" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# コンテナへ bind mount する compose ファイル側の ${SCRATCH_DIR} 補間用。
+# docker compose はファイルをパースする時点で「docker compose を起動した
+# シェルの環境」を見て ${...} を展開するため (compose_run() のコメント
+# 参照)、ここで export しておけば以降の全 docker compose 呼び出しで
+# 単一の SCRATCH パスがそのままコンテナ内パスとしても使える
+# (ホスト側とコンテナ側でパスを分けない = GIT_REPO の file:// URL を
+# そのまま使い回せる、というバグ1の直し方に合わせている)。
+export SCRATCH_DIR="$SCRATCH"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 SCRIPTS_DIR="$SCRATCH/scripts"
@@ -171,6 +227,25 @@ SELF_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 echo "test bare repo: $TEST_BARE_DIR (commit1=$TEST_COMMIT commit2=$TEST_COMMIT2)"
 echo "self bare repo: $SELF_BARE_DIR (commit=$SELF_COMMIT)"
 
+# --- コンテナ (uid 1000) から $SCRATCH 配下を読めるようにする -------------------
+# バグ1: $SCRATCH はランナーのユーザー (ubuntu-latest では通常 uid 1001 の
+# "runner"。dev container の node と同じ uid 1000 とは限らない) の所有で
+# 作られる一方、コンテナは uid 1000 で走る。素の bind mount (:ro) だけでは
+# 「コンテナから見えるが、そのユーザーには読めない」状態になりうるため、
+# world 読み取り + 実行 (traverse) 権限を明示的に付与する。
+#
+# 加えて、file:// fetch は git-upload-pack をコンテナ内で起動するが、
+# git 2.35+ の safe.directory (CVE-2022-24765 対策) は「実行ユーザーと
+# リポジトリ所有者の uid が一致しない」bare repo を "detected dubious
+# ownership" として拒否することがある。これはこの dev container に docker
+# が無く実機で踏んだことがないため未確認 — 対処として
+# GIT_CONFIG_COUNT=1 / GIT_CONFIG_KEY_0=safe.directory /
+# GIT_CONFIG_VALUE_0=* をコンテナの環境変数へ入れる (docker_prod_run() /
+# 各 compose ファイルの environment: を参照)。chmod と safe.directory の
+# どちらが効いているか (あるいは両方要るか) はこの CI 実行で判明するはず
+# なので、切り分けやすいよう両方とも入れておく。
+chmod -R a+rX "$SCRATCH"
+
 # --- compose ファイル生成 --------------------------------------------------------
 # templates/compose.prod.yaml は変更しない (rev.5 確定後にオーケストレーターが
 # 直す)。ここでは検証用の一時コピーを mktemp 配下に生成する。プレースホルダ
@@ -188,6 +263,12 @@ echo "self bare repo: $SELF_BARE_DIR (commit=$SELF_COMMIT)"
 # (uid=1000,gid=1000,mode=...) + /src は named volume。M1 (compose 経由の
 # uid= 形式受け入れ確認) / M6 (named volume 再利用時の N-1 / N-2) / A11 /
 # A17 で使う。
+# バグ1: bare repo (file:// URL) をコンテナ内の git から見えるように
+# $SCRATCH をそのまま (ホスト側パス=コンテナ内パス) 読み取り専用で
+# bind mount する。read_only: true は追加の bind mount を妨げない。
+# GIT_CONFIG_COUNT/KEY_0/VALUE_0 は git の safe.directory を全許可にする
+# (dubious ownership 対策、未確認・推測。詳細は $SCRATCH の chmod 直前の
+# コメント参照)。
 cat >"$SCRATCH/compose-current.yaml" <<'EOS'
 volumes:
   prod-src:
@@ -200,8 +281,12 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF:  ${GIT_REF:?GIT_REF is required}
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "*"
     volumes:
       - prod-src:/src
+      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
     read_only: true
     user: "1000:1000"
     tmpfs:
@@ -217,7 +302,10 @@ EOS
 sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-current.yaml"
 
 # compose-flat.yaml: 設計書 §4.2 が書いている「素の短縮形」
-# (`tmpfs: ["/run", "/tmp", "/out", "/home/node"]`)。M1 の本題。
+# (`tmpfs: ["/run", "/tmp", "/out", "/home/node"]`)。M1 の本題。tmpfs の
+# 記法そのものは素の形のまま残す (M1 が測りたいのはこの形の挙動) が、
+# bare repo を見るための bind mount と safe.directory はバグ1の対象な
+# ので他の compose ファイルと同様に入れる。
 cat >"$SCRATCH/compose-flat.yaml" <<'EOS'
 volumes:
   prod-src:
@@ -230,8 +318,12 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF:  ${GIT_REF:?GIT_REF is required}
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "*"
     volumes:
       - prod-src:/src
+      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
     read_only: true
     user: "1000:1000"
     tmpfs:
@@ -258,6 +350,11 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF:  ${GIT_REF:?GIT_REF is required}
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: "safe.directory"
+      GIT_CONFIG_VALUE_0: "*"
+    volumes:
+      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
     read_only: true
     user: "1000:1000"
     tmpfs:
@@ -296,6 +393,13 @@ sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
 # そのままにしておく。
 #
 # docker_prod_run <GIT_REPO> <GIT_REF> <stdin-payload> <cmd...>
+#
+# -v "$SCRATCH:$SCRATCH:ro" (バグ1): bare repo を作った先そのままの
+# パスでコンテナへ bind mount する。ホスト側とコンテナ側でパスを分けない
+# ことで、生成済みの GIT_REPO=file://$SCRATCH/... URL をそのまま使い回せる。
+# GIT_CONFIG_* (バグ1): git の safe.directory を全許可にする。$SCRATCH の
+# chmod と合わせて両方入れてある (詳細は $SCRATCH の chmod 直前のコメント
+# 参照、未確認・推測)。
 docker_prod_run() {
 	local repo="$1" ref="$2" stdin_payload="$3"
 	shift 3
@@ -310,6 +414,9 @@ docker_prod_run() {
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="$repo" -e GIT_REF="$ref" \
+		-e GIT_CONFIG_COUNT=1 \
+		-e GIT_CONFIG_KEY_0=safe.directory \
+		-e GIT_CONFIG_VALUE_0='*' \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" "$@"
 }
@@ -334,6 +441,30 @@ compose_run() {
 compose_down() {
 	docker compose -f "$1" -p "$2" down -v >/dev/null 2>&1 || true
 }
+
+# =============================================================================
+# harness preflight: bare repo がコンテナから見えるか
+#
+# 「全体に対する要求」: 前提のセットアップ (bare repo が作れた・
+# コンテナからマウント経由で見える) は測定に入る前に検査し、失敗して
+# いたらそこで HARNESS ERROR を出して以降の依存ケースを SKIPPED として
+# 記録する (同じ git エラーを何度も並べない)。docker_prod_run() は
+# uid=1000,gid=1000,mode=0755 形の tmpfs を使うため、この preflight が
+# 通れば M1 の flat 形 (raw tmpfs) 以外の全 fetch 依存ケースの前提は
+# 生きている。flat 形自身の mkdir 可否は M1 が測る対象そのものなので
+# ここでは判定しない。
+# =============================================================================
+echo
+echo "=== harness preflight ==="
+preflight_out=""
+if preflight_out="$(docker_prod_run "file://$TEST_BARE_DIR" "$TEST_COMMIT" "FOO=bar" true 2>&1)"; then
+	echo "ok: bare repo ($TEST_BARE_DIR) をコンテナ内 (docker_prod_run) から fetch/checkout できた"
+else
+	HARNESS_GIT_OK=0
+	echo "HARNESS ERROR: bare repo ($TEST_BARE_DIR) がコンテナから読めない (docker_prod_run 経由)。以降の bare repo fetch 依存ケース (M1 の compose 経由分 / M2 / M6 と ASSERT A5, A6, A10, A16) は SKIPPED (harness setup failed) として記録し、個別には実行しない。"
+	echo "--- preflight の生出力 ---"
+	echo "$preflight_out"
+fi
 
 # =============================================================================
 # M1: tmpfs の所有権 (最優先)
@@ -392,7 +523,7 @@ m1_compose_flat_stat() {
 		-T --rm prod sh -c 'stat -c "%a %U:%G" /run' <<<"FOO=bar"
 	compose_down "$SCRATCH/compose-flat.yaml" "$proj"
 }
-measure M1 "docker compose run (素の短縮形 tmpfs: [/run]) の /run stat" m1_compose_flat_stat
+measure_git M1 "docker compose run (素の短縮形 tmpfs: [/run]) の /run stat" m1_compose_flat_stat
 
 m1_compose_flat_mkdir() {
 	local proj="verify-m1-flat-mkdir-$$" rc=0
@@ -401,7 +532,7 @@ m1_compose_flat_mkdir() {
 	compose_down "$SCRATCH/compose-flat.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then echo YES; else echo "NO (rc=$rc)"; fi
 }
-measure M1 "docker compose run (素の短縮形) で node が mkdir /run/secrets できたか" m1_compose_flat_mkdir
+measure_git M1 "docker compose run (素の短縮形) で node が mkdir /run/secrets できたか" m1_compose_flat_mkdir
 
 m1_compose_uid_stat() {
 	local proj="verify-m1-uid-$$"
@@ -409,7 +540,7 @@ m1_compose_uid_stat() {
 		-T --rm prod sh -c 'stat -c "%a %U:%G" /run' <<<"FOO=bar"
 	compose_down "$SCRATCH/compose-current.yaml" "$proj"
 }
-measure M1 "docker compose run (uid=1000,gid=1000,mode=0755 形) が受理されるか + /run stat" m1_compose_uid_stat
+measure_git M1 "docker compose run (uid=1000,gid=1000,mode=0755 形) が受理されるか + /run stat" m1_compose_uid_stat
 
 # --- /home/node を素の tmpfs (mode 1777) にした場合の影響 -----------------------
 # $HOME が world-writable だと ssh / gh / npm が警告や拒否を出す実装がある。
@@ -450,7 +581,7 @@ m2_git_ops() {
 		echo "FAILED (rc=$rc): $out"
 	fi
 }
-measure M2 "read_only + tmpfs /src で git init/fetch/checkout/clean が完走するか" m2_git_ops
+measure_git M2 "read_only + tmpfs /src で git init/fetch/checkout/clean が完走するか" m2_git_ops
 
 # pnpm install --frozen-lockfile。PNPM_HOME=/usr/local/share/pnpm は
 # read_only なので store がどこへ落ちるかが焦点。
@@ -475,7 +606,7 @@ m2_pnpm_install() {
 		echo "FAILED (rc=$rc): $out"
 	fi
 }
-measure M2 "read_only + tmpfs /src で pnpm install --frozen-lockfile が完走するか、store の逃げ先" m2_pnpm_install
+measure_git M2 "read_only + tmpfs /src で pnpm install --frozen-lockfile が完走するか、store の逃げ先" m2_pnpm_install
 
 # tmpfs 既定サイズ。df -h /src は mount 直後の値 (install の有無に関わらず
 # カーネルが割り当てる上限であって使用量ではない)。node_modules を含む
@@ -488,7 +619,7 @@ m2_df_default_size() {
 	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then echo "$out"; else echo "FAILED (rc=$rc): $out"; fi
 }
-measure M2 "tmpfs /src の既定サイズ (df -h /src、size= 未指定)" m2_df_default_size
+measure_git M2 "tmpfs /src の既定サイズ (df -h /src、size= 未指定)" m2_df_default_size
 
 # ビルド成果物を /out に出す構成での /src + /out 合計 RAM 使用量。install
 # 後の使用量を du -sh で見る。tmpfs 上の使用量はほぼそのまま RAM 使用量に
@@ -507,7 +638,7 @@ m2_ram_usage() {
 	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then echo "$out"; else echo "FAILED (rc=$rc): $out"; fi
 }
-measure M2 "/src + /out 合計 RAM 使用量 (du -sh、pnpm install 後)" m2_ram_usage
+measure_git M2 "/src + /out 合計 RAM 使用量 (du -sh、pnpm install 後)" m2_ram_usage
 
 
 # =============================================================================
@@ -553,7 +684,14 @@ measure M3 "DOTENV_PRIVATE_KEY_TEST env var で get/run が復号できるか (s
 #    設定しない)。同時に、get 実行前後で ls -la が変わらない (ファイルを
 #    作らない) ことも確認する。
 m3_shimfile() {
-	docker run --rm --user 1000:1000 -e HOME=/tmp "$IMG" sh -c '
+	# バグ2: --tmpfs /run が無いと /run はイメージのルート fs 上の
+	# root:root 755 ディレクトリのままで、uid 1000 は mkdir /run/secrets
+	# できない (M1 が確定させた事実、素の tmpfs 既定 mode と同じ結果に
+	# なる)。uid=1000,gid=1000,mode=0755 の tmpfs を明示して初めて
+	# entrypoint 実運用時と同じ書き込み可能な /run/secrets になる。
+	docker run --rm --user 1000:1000 -e HOME=/tmp \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
+		"$IMG" sh -c '
 		set -e
 		cd /tmp
 		printf "FOO=bar\n" > .env.test
@@ -581,7 +719,10 @@ measure M3 "shim 経由 (/run/secrets ファイル) で get が復号できる�
 #    で正しい鍵が選ばれるか (dev container で _LOCAL + _DEVELOPMENT が同居
 #    する想定と同型)。
 m3_multikey() {
-	docker run --rm --user 1000:1000 -e HOME=/tmp "$IMG" sh -c '
+	# バグ2: m3_shimfile と同じ理由で --tmpfs /run:uid=... を明示する。
+	docker run --rm --user 1000:1000 -e HOME=/tmp \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
+		"$IMG" sh -c '
 		set -e
 		cd /tmp
 		printf "FOO=from-local\n" > .env.local
@@ -673,7 +814,11 @@ echo
 echo "=== M5: pnpm run 内側のローカル dotenvx への鍵到達 ==="
 
 m5_pnpm_local_dotenvx() {
-	docker run --rm --user 1000:1000 "$IMG" sh -c '
+	# バグ2: ケース B が /run/secrets へ書き込む (shim 経由の鍵注入) ため、
+	# m3_shimfile と同じ理由で --tmpfs /run:uid=... を明示する。
+	docker run --rm --user 1000:1000 \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
+		"$IMG" sh -c '
 		set -e
 		mkdir -p /tmp/proj/node_modules/.bin
 		ln -s /opt/tools/bin/dotenvx /tmp/proj/node_modules/.bin/dotenvx
@@ -732,7 +877,7 @@ m6_n1_named_volume() {
 	echo "1st run (commit1 を checkout 後、ローカルタグ v9.9.9 を commit2 に打つ): rc=$rc1"
 	echo "2nd run (同じ volume、GIT_REF=v9.9.9): rc=$rc2 file.txt=$out2 (commit1=hello / commit2=world)"
 }
-measure M6 "named volume 再利用: ref 汚染 (N-1) が再現するか" m6_n1_named_volume
+measure_git M6 "named volume 再利用: ref 汚染 (N-1) が再現するか" m6_n1_named_volume
 
 m6_n1_tmpfs() {
 	local proj="verify-m6-n1-tmpfs-$$" rc1=0 rc2=0 out2
@@ -744,7 +889,7 @@ m6_n1_tmpfs() {
 	echo "1st run: rc=$rc1"
 	echo "2nd run (GIT_REF=v9.9.9。tmpfs なので /src は毎回まっさらのはず、v9.9.9 は存在せず失敗するのが期待): rc=$rc2 out=$out2"
 }
-measure M6 "tmpfs /src: ref 汚染 (N-1) が消えるか" m6_n1_tmpfs
+measure_git M6 "tmpfs /src: ref 汚染 (N-1) が消えるか" m6_n1_tmpfs
 
 # --- N-2: .git/config 持続 (core.fsmonitor) --------------------------------------
 m6_n2_named_volume() {
@@ -758,7 +903,7 @@ m6_n2_named_volume() {
 	echo "1st run (core.fsmonitor をローカルに仕込む): rc=$rc1"
 	echo "2nd run (同じ GIT_REF で再実行。entrypoint 自身の fetch/checkout/reset/clean が fsmonitor を起動させたか): rc=$rc2 marker=$out2"
 }
-measure M6 "named volume 再利用: core.fsmonitor 持続 (N-2) が再現するか" m6_n2_named_volume
+measure_git M6 "named volume 再利用: core.fsmonitor 持続 (N-2) が再現するか" m6_n2_named_volume
 
 m6_n2_tmpfs() {
 	local proj="verify-m6-n2-tmpfs-$$" rc1=0 rc2=0 out2
@@ -772,7 +917,7 @@ m6_n2_tmpfs() {
 	echo "1st run: rc=$rc1"
 	echo "2nd run (tmpfs なので /src は毎回まっさらのはず): rc=$rc2 fsmonitor 設定の有無=$out2"
 }
-measure M6 "tmpfs /src: core.fsmonitor 持続 (N-2) が消えるか" m6_n2_tmpfs
+measure_git M6 "tmpfs /src: core.fsmonitor 持続 (N-2) が消えるか" m6_n2_tmpfs
 
 # credential.helper 経由の GH_TOKEN 窃取の試み。難しければ core.fsmonitor
 # だけでよいとタスク側の指示にあるとおり、ここでは試みた内容と結果を
@@ -791,7 +936,7 @@ m6_n2_credential_helper() {
 	echo "2nd run (GH_TOKEN 付きで再実行): rc=$rc2 result=$out2"
 	echo "注記: file:// はホスト上のパスへの直接アクセスであり認証を要求しないため、git が credential.helper 自体を呼ばない可能性が高い。上記はその前提込みの生の観測結果。"
 }
-measure M6 "named volume 再利用: credential.helper 経由の GH_TOKEN 窃取の試み" m6_n2_credential_helper
+measure_git M6 "named volume 再利用: credential.helper 経由の GH_TOKEN 窃取の試み" m6_n2_credential_helper
 
 # --- git 設定優先順位 ------------------------------------------------------------
 m6_hookspath_precedence() {
@@ -802,7 +947,7 @@ m6_hookspath_precedence() {
 	docker_prod_run "file://$TEST_BARE_DIR" "$TEST_COMMIT" "FOO=bar" \
 		sh -c 'git config core.hooksPath /tmp/local-hooks && echo "local: $(git config --get core.hooksPath)" && echo "system: $(git config --system --get core.hooksPath)"'
 }
-measure M6 "/src/.git/config の core.hooksPath がシステム設定 (/etc/gitconfig) を上書きするか" m6_hookspath_precedence
+measure_git M6 "/src/.git/config の core.hooksPath がシステム設定 (/etc/gitconfig) を上書きするか" m6_hookspath_precedence
 
 # =============================================================================
 # M7: 匿名 volume の削除 (参考測定)
@@ -814,22 +959,143 @@ measure M6 "/src/.git/config の core.hooksPath がシステム設定 (/etc/gitc
 echo
 echo "=== M7: 匿名 volume の削除 ==="
 
+# バグ4: 元の実装は「run 前後の volume 数」しか見ておらず、compose run
+# 自体が (mount 不備等で) 起動に失敗していた場合、「そもそも作られな
+# かった」のか「作られて --rm で消えた」のか出力から区別できなかった。
+# ここでは (1) compose-anon.yaml の entrypoint を sleep に差し替えて
+# run 中に観測できる時間を作り、(2) run 前後で volume 名の集合を diff
+# して「増えた名前」を特定し、(3) その名前が sleep 終了後に消えている
+# かを見る、という手順に直す。compose run 自体の rc も必ず記録する。
 m7_anon_volume_cleanup() {
-	local proj="verify-m7-$$" before after
-	before="$(docker volume ls -q | wc -l | tr -d ' ')"
+	local proj="verify-m7-$$" run_rc=0 cid stderr_file before_vols during_vols final_vols created tries
+	before_vols="$(docker volume ls -q | sort)"
+	stderr_file="$SCRATCH/m7-run-stderr-$$.log"
+	# compose-anon.yaml の既定 entrypoint (["true"]) は起動直後に終了する
+	# ため、-d の戻りを待つ頃には --rm で既に消えている可能性があり
+	# 「作られた」ことを観測できない。--entrypoint sleep で上書きして
+	# 観測用の時間を作る。docker compose run が -d + --rm の組み合わせを
+	# 受け付けること自体は未確認 (docker run 単体では受け付けられるはず、
+	# の推測)。標準出力 (コンテナ ID のみのはず) と標準エラー (警告等) を
+	# 混ぜない — 混ぜると $cid にコンテナ ID 以外の行が混入し、後段の
+	# `docker wait "$cid"` が壊れる。
+	#
 	# compose-anon.yaml は GIT_REPO / GIT_REF を参照しないので compose_run
 	# には空文字列を渡す (未使用の env var が渡るだけで無害)。
-	compose_run "$SCRATCH/compose-anon.yaml" "$proj" "" "" --rm prod true >/dev/null 2>&1
-	after="$(docker volume ls -q | wc -l | tr -d ' ')"
+	cid="$(compose_run "$SCRATCH/compose-anon.yaml" "$proj" "" "" \
+		-d --rm --entrypoint sleep prod 5 2>"$stderr_file")" || run_rc=$?
+	if [ "$run_rc" -ne 0 ]; then
+		compose_down "$SCRATCH/compose-anon.yaml" "$proj"
+		echo "HARNESS ERROR: docker compose -f $SCRATCH/compose-anon.yaml run -d --rm --entrypoint sleep prod 5 の起動に失敗 (rc=$run_rc): $(cat "$stderr_file" 2>/dev/null) $cid"
+		return 0
+	fi
+	during_vols="$(docker volume ls -q | sort)"
+	created="$(comm -13 <(printf '%s\n' "$before_vols") <(printf '%s\n' "$during_vols") | head -1)"
+	# sleep 5 の終了 (= --rm がコンテナと専有 volume を片付けるはずの
+	# タイミング) を待つ。docker wait はプロセスの終了は待つが --rm の
+	# 後片付け完了までは保証しない可能性があるため (未確認・推測)、
+	# volume 消滅を数回ポーリングして確認する。
+	docker wait "$cid" >/dev/null 2>&1 || true
+	tries=0
+	while :; do
+		final_vols="$(docker volume ls -q | sort)"
+		if [ -z "$created" ] || ! printf '%s\n' "$final_vols" | grep -qxF "$created"; then
+			break
+		fi
+		tries=$((tries + 1))
+		[ "$tries" -ge 20 ] && break
+		sleep 0.5
+	done
 	compose_down "$SCRATCH/compose-anon.yaml" "$proj"
-	echo "run 前の volume 数=$before / run 直後の volume 数=$after (削除されていれば同数)"
+	echo "compose run (-d --rm --entrypoint sleep prod 5) rc=$run_rc"
+	if [ -z "$created" ]; then
+		echo "run 中に新しい volume が確認できなかった (作成そのものを観測できなかった)"
+	elif printf '%s\n' "$final_vols" | grep -qxF "$created"; then
+		echo "run 中に作られた匿名 volume ($created) が run 後も残っている (削除されていない)"
+	else
+		echo "run 中に作られた匿名 volume ($created) は run 後に削除された"
+	fi
 }
 measure M7 "docker compose run --rm が匿名 volume を削除するか" m7_anon_volume_cleanup
 
 
 # =============================================================================
+# M8: 復号失敗を非ゼロ終了にする手段があるか (バグ3 対応、MEASURE)
+#
+# M5 ケース A の実測で判明した事実: 鍵がどこにも無い状態で
+# `dotenvx run -f .env.test -- printenv FOO` を実行すると、rc=0 のまま
+# "encrypted:..." という暗号文リテラルを値として注入する。これは設計の
+# 不変条件 I6 (secret の欠落が沈黙した成功にならない) に真っ向から反する。
+# ここでは対処 (どう直すか) を決める前に、dotenvx 側に何が用意されて
+# いるかを MEASURE する (pass/fail 判定はしない。対処の設計は測定結果を
+# 見てから決める、とのタスク指示のとおり)。
+# =============================================================================
+echo
+echo "=== M8: 復号失敗を非ゼロ終了にする手段があるか (MEASURE) ==="
+
+m8_run_help() {
+	docker run --rm --user 1000:1000 "$IMG" dotenvx run --help
+}
+measure M8 "dotenvx run --help の全文 (--strict 等のフラグの有無を確認する)" m8_run_help
+
+# M5 ケース A ("鍵はどこにも無い") と同じ条件を、pnpm の足場なしで
+# 再現する (M8 が見たいのは --strict の有無で rc が変わるかだけであり、
+# pnpm run 経由の PATH 解決は本題ではないため)。
+m8_strict_case_a() {
+	docker run --rm --user 1000:1000 -e HOME=/tmp "$IMG" sh -c '
+		set -e
+		cd /tmp
+		printf "FOO=bar\n" > .env.test
+		/opt/tools/bin/dotenvx encrypt -f .env.test >/dev/null
+		rm -f .env.keys
+		set +e
+		out="$(dotenvx run --strict -f .env.test -- printenv FOO 2>&1)"
+		rc=$?
+		set -e
+		echo "rc=$rc"
+		echo "$out"
+	' 2>&1
+}
+measure M8 "鍵なしで dotenvx run --strict -f .env.test -- printenv FOO を実行したときの rc" m8_strict_case_a
+
+m8_get_no_key() {
+	docker run --rm --user 1000:1000 -e HOME=/tmp "$IMG" sh -c '
+		set -e
+		cd /tmp
+		printf "FOO=bar\n" > .env.test
+		/opt/tools/bin/dotenvx encrypt -f .env.test >/dev/null
+		rm -f .env.keys
+		set +e
+		out="$(dotenvx get -f .env.test FOO 2>&1)"
+		rc=$?
+		set -e
+		echo "rc=$rc"
+		echo "$out"
+	' 2>&1
+}
+measure M8 "鍵なしで dotenvx get -f .env.test FOO を実行したときの rc と出力" m8_get_no_key
+
+# 呼び出し側が rc に頼らず、注入された値そのもの ("encrypted:" 接頭辞)
+# を見て復号失敗を検出できるかの確認。
+m8_caller_detects_prefix() {
+	docker run --rm --user 1000:1000 -e HOME=/tmp "$IMG" sh -c '
+		set -e
+		cd /tmp
+		printf "FOO=bar\n" > .env.test
+		/opt/tools/bin/dotenvx encrypt -f .env.test >/dev/null
+		rm -f .env.keys
+		set +e
+		dotenvx run -f .env.test -- sh -c "case \"\$FOO\" in encrypted:*) exit 1 ;; esac"
+		rc=$?
+		set -e
+		echo "rc=$rc (1 なら呼び出し側で encrypted: 接頭辞を検出して失敗にできたことを意味する)"
+	' 2>&1
+}
+measure M8 "呼び出し側が注入値の encrypted: 接頭辞で復号失敗を検出できるか" m8_caller_detects_prefix
+
+
+# =============================================================================
 # ASSERT: 設計上確定している性質。落ちたらスクリプトは最後に非ゼロ終了する。
-# 測定結果 (M1〜M7) に依存しないものだけをここに置く。
+# 測定結果 (M1〜M8) に依存しないものだけをここに置く。
 # =============================================================================
 echo
 echo "=== ASSERT ==="
@@ -864,7 +1130,7 @@ a5_secrets_mode_tmpfs() {
 	docker_prod_run "file://$TEST_BARE_DIR" "$TEST_COMMIT" "FOO=bar" \
 		sh -c '[ "$(stat -c %a /run/secrets/FOO)" = "600" ] && mount | grep -Eq "(^| )/run type tmpfs| on /run type tmpfs"'
 }
-assert A5 "entrypoint 実行後、/run/secrets/<VAR> が mode 600 で tmpfs 上にある" a5_secrets_mode_tmpfs
+assert_git A5 "entrypoint 実行後、/run/secrets/<VAR> が mode 600 で tmpfs 上にある [docker_prod_run: --read-only --tmpfs uid= 形]" a5_secrets_mode_tmpfs
 
 # docker inspect の出力全文 (Config.Env / Mounts を含む JSON 全体) に secret
 # の値そのものが一切現れないことを、marker 文字列の grep で確認する。jq を
@@ -884,6 +1150,9 @@ a6_no_secret_in_inspect() {
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
+		-e GIT_CONFIG_COUNT=1 \
+		-e GIT_CONFIG_KEY_0=safe.directory \
+		-e GIT_CONFIG_VALUE_0='*' \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" true)"
 	printf 'FOO=bar\nDOTENV_PRIVATE_KEY_TEST=%s\n' "$marker" | docker start -ai "$cid" >/dev/null 2>&1 || rc=$?
@@ -892,45 +1161,55 @@ a6_no_secret_in_inspect() {
 	[ "$rc" -eq 0 ] || return 1
 	! printf '%s' "$inspect_out" | grep -qF "$marker"
 }
-assert A6 "docker inspect の Config.Env / Mounts に secret 値が一切現れない" a6_no_secret_in_inspect
+assert_git A6 "docker inspect の Config.Env / Mounts に secret 値が一切現れない [docker create: --read-only --tmpfs uid= 形、手動 start/inspect/rm]" a6_no_secret_in_inspect
 
+# a7〜a9: entrypoint は stdin のパースに入る前に無条件で
+# `mkdir -p /run/secrets` する。--tmpfs /run:uid=... を与えないと (M1 が
+# 確定させたとおり) 素の /run は root:root 755 相当で、既定 USER (node,
+# uid 1000) の mkdir が Permission denied で落ちる。これだと rc は
+# 非ゼロになるので assert 自体はどのみち "ok" になってしまうが、
+# 検証したいのはパース失敗の経路であって mkdir の権限エラーではないため、
+# 書き込み可能な /run を明示して意図した経路を通す (バグ2)。
 a7_empty_stdin_fails() {
 	local rc=0
 	printf '' | docker run --rm -i \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
 		-e GIT_REPO=unused -e GIT_REF=unused \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" true >/dev/null 2>&1 || rc=$?
 	[ "$rc" -ne 0 ]
 }
-assert A7 "stdin が空のとき entrypoint が非ゼロ終了する" a7_empty_stdin_fails
+assert A7 "stdin が空のとき entrypoint が非ゼロ終了する [docker run: --tmpfs /run:uid= 形、既定 USER (node)]" a7_empty_stdin_fails
 
 a8_empty_value_fails() {
 	local rc=0
 	printf 'KEY=""\n' | docker run --rm -i \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
 		-e GIT_REPO=unused -e GIT_REF=unused \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" true >/dev/null 2>&1 || rc=$?
 	[ "$rc" -ne 0 ]
 }
-assert A8 'KEY="" を与えたとき entrypoint が非ゼロ終了する' a8_empty_value_fails
+assert A8 'KEY="" を与えたとき entrypoint が非ゼロ終了する [docker run: --tmpfs /run:uid= 形、既定 USER (node)]' a8_empty_value_fails
 
 a9_no_reflect_marker() {
 	local marker out rc=0
 	marker="A9MARKER_$$"
 	out="$(printf '%s\n' "$marker" | docker run --rm -i \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
 		-e GIT_REPO=unused -e GIT_REF=unused \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" true 2>&1)" || rc=$?
 	[ "$rc" -ne 0 ] || return 1
 	! printf '%s' "$out" | grep -qF "$marker"
 }
-assert A9 "パース失敗時の stderr に、与えた目印文字列 (secret 相当) が現れない" a9_no_reflect_marker
+assert A9 "パース失敗時の stderr に、与えた目印文字列 (secret 相当) が現れない [docker run: --tmpfs /run:uid= 形、既定 USER (node)]" a9_no_reflect_marker
 
 a10_gh_token_removed() {
 	docker_prod_run "file://$TEST_BARE_DIR" "$TEST_COMMIT" "$(printf 'GH_TOKEN=dummy\nFOO=bar\n')" \
 		sh -c '[ ! -e /run/secrets/GH_TOKEN ]'
 }
-assert A10 "checkout 後に /run/secrets/GH_TOKEN が存在しない" a10_gh_token_removed
+assert_git A10 "checkout 後に /run/secrets/GH_TOKEN が存在しない [docker_prod_run: --read-only --tmpfs uid= 形]" a10_gh_token_removed
 
 a11_missing_git_ref_fails() {
 	local rc=0
@@ -939,7 +1218,7 @@ a11_missing_git_ref_fails() {
 		run -T --rm prod true <<<"FOO=bar" >/dev/null 2>&1 || rc=$?
 	[ "$rc" -ne 0 ]
 }
-assert A11 "GIT_REF 未指定で docker compose run が失敗する" a11_missing_git_ref_fails
+assert A11 "GIT_REF 未指定で docker compose run が失敗する [compose-current.yaml。compose のパース時点 (\${GIT_REF:?}) で落ちるため harness preflight とは無関係]" a11_missing_git_ref_fails
 
 a12_logging_none_stdout() {
 	local out marker
@@ -1002,6 +1281,9 @@ a16_recovers_from_leftover() {
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
+		-e GIT_CONFIG_COUNT=1 \
+		-e GIT_CONFIG_KEY_0=safe.directory \
+		-e GIT_CONFIG_VALUE_0='*' \
 		--entrypoint sh \
 		"$IMG" -c '
 			mkdir -p /src/leftover-dir &&
@@ -1009,7 +1291,7 @@ a16_recovers_from_leftover() {
 			exec /usr/local/bin/prod-entrypoint.sh test -f /src/file.txt
 		' <<<"FOO=bar"
 }
-assert A16 "entrypoint が /src 非空・.git 無しの状態から復帰できる" a16_recovers_from_leftover
+assert_git A16 "entrypoint が /src 非空・.git 無しの状態から復帰できる [docker run: --read-only --tmpfs uid= 形一式]" a16_recovers_from_leftover
 
 a17_prod_run_pipefail() {
 	local fake_broker rc=0
@@ -1027,7 +1309,7 @@ EOS
 		bash "$REPO_ROOT/images/runtime-base/templates/prod-run.sh" true >/dev/null 2>&1 || rc=$?
 	[ "$rc" -ne 0 ]
 }
-assert A17 "broker (フェイク) が非ゼロ終了したとき、prod-run.sh 経由でパイプ全体が非ゼロ終了する" a17_prod_run_pipefail
+assert A17 "broker (フェイク) が非ゼロ終了したとき、prod-run.sh 経由でパイプ全体が非ゼロ終了する [compose-current.yaml 経由 prod-run.sh。broker が secrets を一切渡さず失敗する経路のため harness preflight とは無関係]" a17_prod_run_pipefail
 
 a18_home_empty_no_fallback() {
 	docker run --rm --tmpfs /home/node:uid=1000,gid=1000,mode=0755 --user 1000:1000 -e HOME=/home/node "$IMG" \
@@ -1051,6 +1333,9 @@ for line in "${ASSERT_LOG[@]}"; do
 done
 printf '\n%s measurements recorded, %s assertions passed, %s failed\n' \
 	"${#MEAS_LOG[@]}" "$ASSERT_PASS" "$ASSERT_FAIL"
+if [ "$HARNESS_GIT_OK" -eq 0 ]; then
+	echo "HARNESS ERROR: bare repo がコンテナから読めなかったため、SKIP と記録したケース (M1 の compose 経由分 / M2 / M6 / A5 / A6 / A10 / A16) は測定・検証できていない。上の preflight のログを見ること。"
+fi
 
 # 明示的な `exit N` ではなく、この判定式自身の終了コードをスクリプトの
 # 終了コードにする。理由: `trap cleanup EXIT` を登録した後段で文字どおりの
@@ -1059,5 +1344,7 @@ printf '\n%s measurements recorded, %s assertions passed, %s failed\n' \
 # 「到達不能」と誤検出する (SC2317 が数百件連鎖する既知の癖。手元で
 # `trap … EXIT` の後に裸の `exit` を置く再現コードを作って確認済み)。
 # ASSERT_FAIL が 0 なら真 (exit 0)、1 以上なら偽 (exit 1) になるため、
-# 意味は元の if/exit と同じ。
-[ "$ASSERT_FAIL" -eq 0 ]
+# 意味は元の if/exit と同じ。HARNESS_GIT_OK=0 (preflight 失敗) の場合も
+# 非ゼロ終了にする — SKIP は「合否未検証」であって「合格」ではないため、
+# ハーネス自体が壊れているのに CI が黙って緑になるのを避ける。
+[ "$ASSERT_FAIL" -eq 0 ] && [ "$HARNESS_GIT_OK" -eq 1 ]

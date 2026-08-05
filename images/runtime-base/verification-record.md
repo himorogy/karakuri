@@ -7,9 +7,85 @@
 
 - 2026-08-05 / karakuri monorepo（`feat-new-prodshell`）/ dev container 内（Node 24、linux-arm64）
 - **この環境には docker が無い**（dev container は Docker socket を持たない。これは設計の前提条件
-  そのものであり、崩してはならない）。したがって docker を要する項目は**全て未実施**である。
+  そのものであり、崩してはならない）。docker を要する項目は CI（ubuntu-latest）で実行する。
+- 2026-08-05 / CI 1 回目 — Docker Engine 28.0.4 / Docker Compose v2.38.2 / linux/amd64。
+  ハーネスのバグ（bare repo をコンテナに bind mount していなかった）により大半が未取得。
+  取れた 3 件はいずれも決着がついた（下記「CI 実測で決着した項目」）。
 
 凡例: ✅ 実施・合格 / ⬜ 未実施 / ⛔ この環境では実施不能
+
+---
+
+## 0. CI 実測で決着した項目（2026-08-05、1 回目）
+
+### tmpfs の所有権 — 素の短縮形では起動しない（項目 32 に決着）
+
+```
+docker run --tmpfs /run （素の形）                     → 755 root:root
+  uid 1000 の mkdir /run/secrets                       → Permission denied
+docker run --tmpfs /run:uid=1000,gid=1000,mode=0755    → 755 node:node
+docker compose （素の短縮形 tmpfs: ["/run"]）           → Permission denied
+docker compose （uid=1000,gid=1000,mode=0755 形）       → 受理される
+```
+
+tmpfs の既定 mode は 1777 ではなく **755 root:root** だった（`/home/node` でも同じ）。
+設計書 §4.2 の素の短縮形では `USER node` の entrypoint が `/run/secrets` を作れず起動に失敗する。
+`uid=`/`gid=` 形が必要で、Docker 28.0.4 / compose v2.38.2 のいずれも受理する。
+**実装（`uid=1000,gid=1000` 形）が正しい。設計書 §4.2 を rev.5 で差し替える。**
+
+### dotenvx 2.x の環境変数注入 — 効く（項目 40 に決着）
+
+```
+dotenvx get -f .env.test FOO              → bar
+dotenvx run -f .env.test -- printenv FOO  → bar
+```
+
+2.0.0 の resolver 刷新は `DOTENV_PRIVATE_KEY_*` 経路を壊していない。shim 機構は成立する。
+1.75.1 へ戻す必要はない。
+
+### dotenvx 1.x で暗号化したファイルの 2.x による復号 — できる（項目 41 に決着）
+
+1.75.1 で暗号化した `.env.legacy` を 2.19.2 が復号できた。既存 4 repo の移行に障害はない。
+
+---
+
+## 0.1 CI 実測で見つかった新しい穴 — dotenvx の復号失敗が rc=0（I6 違反）
+
+鍵が無い状態で `dotenvx run -f .env.test -- ...` を実行した実測:
+
+```
+rc=0
+☠ [DECRYPTION_FAILED] could not decrypt FOO
+⟐ injected env (2) from .env.test
+encrypted:BCPs3nYvfTmgwPuAtSPwucWaifAAJet7fw4j3ZN5qI2CVRSxyevY4dyvnMNh3/oET...
+```
+
+**dotenvx は復号に失敗しても非ゼロ終了せず、暗号文をそのまま値として注入する。**
+アプリは `FOO=encrypted:BCPs3n...` で起動し、deploy は成功したと報告される。
+
+これは I6（secret の欠落が沈黙した成功にならない）に真っ向から反する。「dotenvx を最上位に
+置く」という運用規約では塞げない — 規約を守り損ねたときの失敗が**静か**なままだからである。
+
+対処の候補は測定項目 M8 で測る（`dotenvx run --strict` の有無、鍵なし `get` の rc、注入値の
+`encrypted:` 接頭辞による呼び出し側での検出）。設計は測定結果を見てから決め、rev.5 に入れる。
+
+---
+
+## 0.2 CI 1 回目で判明したハーネスの欠陥（修正済み・再測定待ち）
+
+- **bare repo をコンテナに bind mount していなかった。** `GIT_REPO=file://$SCRATCH/...` を
+  渡していたが `$SCRATCH` はランナー上にしか無く、コンテナ内の git から見えない。
+  M2 の全項目、M6 の全項目、ASSERT の A5 / A6 / A10 / A16 がこれで落ちた。**実装の欠陥ではない。**
+- **A7 / A8 / A9 が誤った理由で通っていた。** これらのコンテナには `/run` の tmpfs が無く、
+  entrypoint が stdin をパースする前の `mkdir -p /run/secrets` で権限エラーになっていた。
+  非ゼロ終了を assert していたため、意図した経路（空 stdin / 空値 / 入力の非反射）を一度も
+  通らずに緑になっていた。**偽の合格**であり、今回の実測が無ければ気付けなかった。
+- M3 の shim 経由ケースと M5 のケース B も、素の tmpfs 形を使っていたため同じ理由で死んだ。
+- M7 は compose run 自体が失敗していたため、匿名 volume が「作られなかった」のか
+  「作られて消えた」のか判別できない出力になっていた。
+
+いずれも修正済み。ハーネスは前提のセットアップを測定前に検査し、失敗時は `HARNESS ERROR` を
+1 度だけ出して依存ケースを `SKIPPED (harness setup failed)` にするようにした。
 
 ---
 
