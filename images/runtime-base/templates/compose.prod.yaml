@@ -1,0 +1,116 @@
+# compose.prod.yaml — prod container 起動用テンプレート
+#
+# 設計: .local/prod-secret-isolation-design.md §4.1, §4.2, §4.6
+#
+# dev 側の compose 定義（devcontainer.json 経由）とは意図的に完全分離する
+# （D6）。dev 用の設定ファイルのどこにも prod 鍵への参照が一行も現れない
+# 状態を作ることで、prod 鍵を持つシェルから誤って dev を起動する経路を
+# 構造的に塞ぐ。
+#
+# secret はここには一切書かない。broker（.local/.../§4.1 の契約を満たす
+# 任意のコマンド）の dotenv 出力を `docker compose run -T` の stdin へ
+# パイプし、prod-entrypoint.sh がコンテナ内 tmpfs (/run/secrets) へ書く。
+# 呼び出し側は prod-run.sh を使うこと。
+#
+# プロジェクト固有の値（プロジェクト名・リポジトリ URL）はここに焼き込まない
+# （設計書 §8）。プロジェクト名は `docker compose -p <name>` /
+# `COMPOSE_PROJECT_NAME` に委ね、リポジトリ URL / ref は環境変数
+# GIT_REPO / GIT_REF で渡す。この一枚を複数プロジェクトにコピーしても
+# 中身を書き換える必要がないのが狙い。
+
+volumes:
+  # 意図的に `name:` を付けない。実際のボリューム名は compose が
+  # `<project>_prod-src` のように COMPOSE_PROJECT_NAME で prefix する。
+  # 固定名を書くとこのテンプレートがプロジェクトをまたいで使い回せなくなる
+  # （複数プロジェクトを同一ホストで扱うと衝突する）。
+  prod-src:
+
+services:
+  prod:
+    # プレースホルダ。このままでは digest が実在しないため pull に失敗し、
+    # 使う前に必ず実際の digest へ置き換える必要がある（差し替え忘れが
+    # 「起動失敗」という分かりやすい形で顕在化する）。
+    # タグではなく digest pin にする理由: タグは後から指すコミットを
+    # 変えられる。prod が実行するイメージの中身は I7（明示された ref）が
+    # 守ろうとしている対象そのものであり、可変な参照であってはならない。
+    image: ghcr.io/himorogy/runtime-base@sha256:REPLACE_WITH_ACTUAL_DIGEST
+
+    entrypoint: ["/usr/local/bin/prod-entrypoint.sh"]
+    working_dir: /src
+
+    # GIT_REPO / GIT_REF は秘匿情報ではないため通常の環境変数で渡してよい
+    # （§4.1）。secret はここに置かない・置けない設計にする。
+    # `${VAR:?msg}` により、未指定なら `docker compose run` 自体がここで
+    # 失敗する（I7 / I6）。entrypoint 側にも同じ変数の `: "${...:?}"` が
+    # あるが、compose 側でも早期に落とすことで失敗箇所を分かりやすくする。
+    environment:
+      GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
+      GIT_REF: ${GIT_REF:?GIT_REF is required}
+
+    volumes:
+      - prod-src:/src
+
+    read_only: true
+
+    # イメージは `USER node` で終わる想定なので明示は本来冗長だが、直下の
+    # tmpfs オプション (uid=1000,gid=1000) と実行 UID を一致させる意図を
+    # このファイル単体で読めるようにするため、あえて明示する。イメージ側の
+    # 既定 UID が将来変わった場合、ここが揃っていないと tmpfs の所有者と
+    # 実行ユーザーが再びずれて entrypoint が /run/secrets を作れず落ちる
+    # ので、変更する際は下の tmpfs 行と同時に直すこと。
+    user: "1000:1000"
+
+    # 設計書 §4.2 の素の短縮形 `tmpfs: ["/run", "/tmp", "/out", "/home/node"]`
+    # は root:root 所有の tmpfs を作る。`read_only: true` の下では
+    # コンテナ起動後に chown する手段がなく（root への昇格経路を prod には
+    # 意図的に持たせていない。cap_add を置かない理由は下記参照）、
+    # `USER node` で走る entrypoint が /run/secrets を作れずに起動直後に
+    # 失敗する。
+    #
+    # `docker run --tmpfs` と同じ `<path>:<options>` 記法（uid= / gid= /
+    # mode= はいずれも tmpfs マウント自体のオプションで、カーネルへそのまま
+    # 渡る）で node（uid=gid=1000。上の user: と一致させる）所有にする。
+    # long syntax（`type: tmpfs` の volumes エントリ、`tmpfs: {size, mode}`
+    # サブキー）ではなくこちらを選んだのは、compose spec が long syntax の
+    # tmpfs サブキーとして size / mode しか規定しておらず、uid/gid が
+    # 実装間で可搬かどうか確証が持てないため。`<path>:<options>` は
+    # dockerd の Mount API にオプション文字列としてそのまま渡るので、
+    # uid/gid が効くことがより確実に言える。
+    #
+    # /tmp だけ mode=1777（sticky bit 付き world-writable）にするのは、
+    # 複数のツールが /tmp を共有前提で使う一般的な作法に合わせるため。
+    # 他は node 単独所有で足りるので 0755 とする。
+    tmpfs:
+      - /run:uid=1000,gid=1000,mode=0755
+      - /tmp:uid=1000,gid=1000,mode=1777
+      - /out:uid=1000,gid=1000,mode=0755
+      - /home/node:uid=1000,gid=1000,mode=0755
+
+    # コアダンプがホスト側 (/var/lib/docker 配下や systemd-coredump 経由)
+    # に書かれるのを防ぐ (T5)。コンテナ作成時の rlimit として効くので、
+    # シェルを経由しない起動パスでも有効。
+    ulimits:
+      core: 0
+
+    # 既定の json-file ログドライバは stdout/stderr をホストの不揮発ディスク
+    # (/var/lib/docker/containers/<id>/*-json.log) に書く。アタッチ時の
+    # 表示は attach ストリーム経由で手元に出るので、失うのは `docker logs`
+    # だけ (T5)。
+    logging:
+      driver: "none"
+
+    # secrets: ブロックは意図的に置かない。compose secrets の environment /
+    # content ソースは、コンテナ作成後・起動前に Docker API 経由で
+    # コンテナの writable layer（= ホスト側の不揮発ディスク）へ書き込まれる
+    # ため I1 を満たさない。さらに `read_only: true` と併用すると書き込み
+    # 先が read-only になり起動そのものが失敗する（設計書 §4.1 D1 で
+    # 却下済み、docker/compose#9648 #12031 #12303 参照）。secret は
+    # prod-run.sh が broker の stdout を `docker compose run -T` の stdin
+    # へパイプし、prod-entrypoint.sh がコンテナ内 tmpfs
+    # (/run/secrets/<VAR名>) へ書く方式に一本化する。
+
+    # cap_add は意図的に置かない。prod への egress-guard 適用
+    # (NET_ADMIN / NET_RAW の付与と root での firewall 初期化) は
+    # 未決事項（設計書 §11）。ここで先取りすると「能力は最小に」という
+    # 配置規約 (§4.5) と衝突するため、適用するかどうかは実装時に個別に
+    # 判断する。
