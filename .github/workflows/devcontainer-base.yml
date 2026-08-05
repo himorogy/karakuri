@@ -23,8 +23,13 @@ on:
     tags:
       - "devcontainer-base-v*"
   pull_request:
+    # 除外している 2 つは .dockerignore がビルドコンテキストから外しているものと
+    # 同じ集合。イメージの内容に影響しないため、検証ビルドを走らせる意味がない。
+    # 除外の行は positive の後に置く（後のパターンが勝つ）。
     paths:
       - "images/devcontainer-base/**"
+      - "!images/devcontainer-base/**/*.md"
+      - "!images/devcontainer-base/examples/**"
       - ".github/workflows/devcontainer-base.yml"
   workflow_dispatch:
     inputs:
@@ -36,6 +41,14 @@ on:
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devcontainer-base
   CONTEXT: images/devcontainer-base
+
+# PR に続けて push したときの古い検証ビルドは捨てる。QEMU 経由のマルチアーキ
+# ビルドは重く、途中の版の結果に用がない。
+# リリース（タグ push）は途中で止めない。GHCR への push が中断されると、
+# どのタグまで載ったのかが分からない状態になる。
+concurrency:
+  group: devcontainer-base-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
