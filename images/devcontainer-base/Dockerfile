@@ -38,7 +38,7 @@ FROM node:24
 ARG USERNAME=node
 ARG TZ=Asia/Tokyo
 ARG PNPM_VERSION=11.20.0
-ARG EGRESS_GUARD_VERSION=0.1.0
+ARG EGRESS_GUARD_VERSION=0.1.1
 
 # --- ロケール / タイムゾーン --------------------------------------------------
 # LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定になる。
