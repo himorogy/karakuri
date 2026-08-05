@@ -8,7 +8,8 @@
 		"lint": "biome ci .",
 		"lint:sh": "pnpm -r lint:sh && pnpm lint:sh:images",
 		"lint:sh:images": "shellcheck -x --shell=sh --severity=style images/runtime-base/bin/* images/runtime-base/shims/* images/runtime-base/hooks/* && shellcheck -x --shell=bash --severity=style images/runtime-base/tests/*.sh images/runtime-base/templates/*.sh images/runtime-base/templates/tests/*.sh",
-		"test": "pnpm -r test && bash images/runtime-base/tests/run.sh && bash images/runtime-base/templates/tests/prod-run.test.sh"
+		"test": "pnpm -r test && bash images/runtime-base/tests/run.sh && bash images/runtime-base/templates/tests/prod-run.test.sh",
+		"verify:docker": "bash images/runtime-base/tests/verify-docker.sh"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.13",
