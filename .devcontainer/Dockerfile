@@ -104,7 +104,7 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 #
 # npm's global prefix (/usr/local/share/npm-global) is owned by node, so the
 # install runs as node. Only the placement and the permissions need root.
-RUN npm install -g @himorogy/egress-guard@0.1.0
+RUN npm install -g @himorogy/egress-guard@0.1.1
 
 # The policy that is actually enforced. It has to live outside the workspace and
 # be owned by root: `node` can re-apply the firewall through sudo at any time, so

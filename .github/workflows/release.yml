@@ -217,9 +217,27 @@ jobs:
           # provenance は信頼された公開元からの publish で自動生成される。
           pnpm publish --access public --ignore-scripts --no-git-checks
 
+      # このステップは公開の成否を左右しない。publish が成功した時点で公開は
+      # 済んでおり、取り消せない。ここで見ているのは「レジストリから引ける状態に
+      # なったか」であり、失敗しても公開されていないことを意味しない。
+      #
+      # レジストリへの反映には遅延がある。@himorogy/enclave-env@0.3.0 は即座に
+      # 見えたが、@himorogy/egress-guard@0.1.1 は publish 直後の照会が 404 で
+      # 返った（どちらも公開自体は成功していた）。見えるまで待つ。
       - name: 公開されたことを確認する
         run: |
           set -eu
           NAME="${{ needs.prepare.outputs.name }}"
           VERSION="${{ needs.prepare.outputs.version }}"
-          npm view "${NAME}@${VERSION}" version
+
+          for attempt in $(seq 1 10); do
+            if npm view "${NAME}@${VERSION}" version 2>/dev/null; then
+              echo "レジストリから引けることを確認しました。"
+              exit 0
+            fi
+            echo "まだ反映されていません (${attempt}/10)。15 秒待ちます。"
+            sleep 15
+          done
+
+          echo "::error::公開後 150 秒待っても ${NAME}@${VERSION} をレジストリから引けません。publish は成功しているため、版が公開されている可能性があります。npm view で確認してから、再実行するかどうかを判断してください。"
+          exit 1
