@@ -3,9 +3,14 @@ name: devcontainer-base
 # images/devcontainer-base のマルチアーキビルドと GHCR への push。
 #
 # トリガーの使い分け:
-#   tag push (devcontainer-base-v*) … リリース。:1 / :1.4 / :1.4.2 / sha-xxxxxxx を push
+#   tag push (devcontainer-base-v*) … リリース。承認を経て :1 / :1.4 / :1.4.2 /
+#                                     sha-xxxxxxx を push
 #   pull_request                    … 検証ビルドのみ。push しない
-#   workflow_dispatch               … 任意ビルド。push するかは入力で選択（:edge が付く）
+#   workflow_dispatch               … 検証ビルドのみ。push しない
+#
+# GHCR へ push する経路はタグ 1 本だけにしている。承認を通さない push 経路を
+# 残すと、承認ゲートを置いた意味がなくなるため。試作はローカルの
+# `docker buildx build --platform linux/amd64,linux/arm64` で確認する。
 #
 # main への push はトリガーにしていない。浮動タグ :1 を参照する運用では
 # 利用側が引くのはリリースタグだけで、main の各コミットを GHCR に積む必要がないため。
@@ -13,7 +18,7 @@ name: devcontainer-base
 # action は全て commit SHA で固定する。タグは移動しうるため、上流が侵害されたときに
 # そのまま実行されることを防ぐ。併記しているタグは、更新時に何を見ればよいかの手がかり。
 #
-# docker/* の 5 つはリポジトリの action 許可リストに明示的に載せてある。このジョブは
+# docker/* の 5 つはリポジトリの action 許可リストに明示的に載せてある。release ジョブは
 # packages: write を持つため、第三者 action を動かすこと自体が
 # docs/secure-publish.md §4.3 の原則から外れる。判断の根拠と、将来これを外す道筋は
 # 同 §4.6 を参照。
@@ -32,11 +37,9 @@ on:
       - "!images/devcontainer-base/examples/**"
       - ".github/workflows/devcontainer-base.yml"
   workflow_dispatch:
-    inputs:
-      push:
-        description: "GHCR に push する（:edge タグが付く）"
-        type: boolean
-        default: false
+
+# 既定では何も与えない。必要なジョブで最小限だけ宣言する。
+permissions: {}
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devcontainer-base
@@ -51,48 +54,125 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
+  # ------------------------------------------------------------------
+  # タグの内容を検証し、後段に渡す値を確定させる。
+  # ここで弾けるものは、承認者の目に触れる前に弾く。
+  # ------------------------------------------------------------------
+  prepare:
+    if: startsWith(github.ref, 'refs/tags/devcontainer-base-v')
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
-      packages: write
-
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       # タグ名 devcontainer-base-v1.4.2 から 1.4.2 を取り出す。
       # metadata-action の type=semver は value を明示すれば ref に依存しない。
-      - name: Resolve version from tag
+      - name: タグを分解する
         id: ver
-        if: startsWith(github.ref, 'refs/tags/devcontainer-base-v')
         run: |
+          set -eu
           version="${GITHUB_REF_NAME#devcontainer-base-v}"
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "ERROR: タグ形式が不正です: ${GITHUB_REF_NAME}" >&2
-            echo "  期待する形式: devcontainer-base-vMAJOR.MINOR.PATCH" >&2
+            echo "::error::タグ形式が不正です: ${GITHUB_REF_NAME} (期待: devcontainer-base-vMAJOR.MINOR.PATCH)"
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      # push するのはリリースタグのとき、または dispatch で明示指定したとき。
-      - name: Decide whether to push
-        id: cond
+      - name: タグが main の履歴に含まれることを確認する
         run: |
-          if [ "${{ startsWith(github.ref, 'refs/tags/devcontainer-base-v') }}" = "true" ]; then
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.push }}" = "true" ]; then
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "push=false" >> "$GITHUB_OUTPUT"
+          set -eu
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::このタグは main の履歴にありません。レビューを経ていないコミットは公開できません。"
+            exit 1
           fi
+
+      # GHCR はタグの付け替えを許すため、同じ版を二度 push すると中身だけが
+      # 入れ替わる。既に載っている版かどうかを、承認者を呼ぶ前に見る。
+      - name: 未公開のバージョンであることを確認する
+        run: |
+          set -eu
+          VERSION="${{ steps.ver.outputs.version }}"
+          REPO_PATH="${{ github.repository_owner }}/devcontainer-base"
+
+          TOKEN=$(curl -fsS "https://ghcr.io/token?scope=repository:${REPO_PATH}:pull" \
+            | jq -r '.token // empty') || TOKEN=""
+
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::GHCR のトークンを取得できませんでした。既存版の確認を飛ばします。"
+            exit 0
+          fi
+
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/${REPO_PATH}/manifests/${VERSION}")
+
+          case "$CODE" in
+            404) echo "${VERSION} は未公開です。" ;;
+            200)
+              echo "::error::${IMAGE_NAME}:${VERSION} は既に存在します。同じ版を push すると中身が入れ替わります。"
+              exit 1
+              ;;
+            *)
+              echo "::warning::GHCR の応答が ${CODE} でした。既存版の確認を飛ばします。"
+              ;;
+          esac
+
+  # ------------------------------------------------------------------
+  # PR と手動実行の検証ビルド。GHCR には触れないので packages 権限を持たない。
+  # ------------------------------------------------------------------
+  verify:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: ビルドできることを確認する
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.CONTEXT }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          # ベースの node:24 を毎回引き直す。ランナー上の古いレイヤに引きずられないため。
+          pull: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ------------------------------------------------------------------
+  # GHCR への push。
+  #
+  # environment の承認設定が、実質的な公開権限になる。タグを打てる人間の
+  # 単独判断で利用側の base image を差し替えられないようにするため、npm の
+  # 公開ジョブと同じゲートを置いている（docs/secure-publish.md §4.8）。
+  # ------------------------------------------------------------------
+  release:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: ghcr-publish
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GHCR
-        if: steps.cond.outputs.push == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -114,13 +194,12 @@ jobs:
           flavor: |
             latest=false
           # semver の 3 行が :1.4.2 / :1.4 / :1 を生む。
-          # value を渡しているのでタグ以外のイベントでは enable が false になり無視される。
+          # value は prepare が検証済みのものを渡す。
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
-            type=semver,pattern={{major}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.prepare.outputs.version }}
             type=sha,prefix=sha-,format=short
-            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
           labels: |
             org.opencontainers.image.title=devcontainer-base
             org.opencontainers.image.description=Shared devcontainer base image for @himorogy projects
@@ -135,7 +214,7 @@ jobs:
         with:
           context: ${{ env.CONTEXT }}
           platforms: linux/amd64,linux/arm64
-          push: ${{ steps.cond.outputs.push == 'true' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
@@ -156,11 +235,9 @@ jobs:
       # 古いレイアウトへ戻ると "global bin directory is not in PATH" で落ちる。
       # ビルドログには現れない種類の壊れ方なので、ここで検出する。
       - name: Smoke test pushed image
-        if: steps.cond.outputs.push == 'true'
         run: |
-          # outputs.tags の先頭を取ると metadata-action の priority 順に依存する。
-          # outputs.version は主要タグのバージョン部分なので、こちらから組み立てる。
-          tag="${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}"
+          set -eu
+          tag="${IMAGE_NAME}:${{ needs.prepare.outputs.version }}"
           echo "Testing ${tag}"
           for platform in linux/amd64 linux/arm64; do
             echo "--- ${platform} ---"

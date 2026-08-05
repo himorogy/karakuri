@@ -160,7 +160,6 @@ firewall を張る設計が必要になる。現状はそこまで踏み込ん�
 | `:1.4` | マイナー内の最新 |
 | `:1.4.2` | 特定バージョン |
 | `sha-<commit>` | ビルド元コミット |
-| `:edge` | `workflow_dispatch` からの任意ビルド |
 
 `:latest` は生成しない（ワークフローで `flavor: latest=false` を指定）。
 参照先を `:1` に一本化し、メジャーを跨いだ破壊的変更が黙って降ってこないようにするため。
@@ -174,8 +173,8 @@ git push origin devcontainer-base-v1.0.0
 ```
 
 タグ名は `devcontainer-base-v<MAJOR>.<MINOR>.<PATCH>`。形式が違うとワークフローが
-検証で落ちる。プレリリース（`-rc.1` など）も弾かれる。試作は `workflow_dispatch` の
-`:edge` を使う。
+検証で落ちる。プレリリース（`-rc.1` など）も弾かれる。手元での試作は
+`docker buildx build --platform linux/amd64,linux/arm64 images/devcontainer-base` で行う。
 
 npm パッケージのリリースタグ（`@himorogy/egress-guard@0.1.0`、
 [secure-publish.md](../../docs/secure-publish.md) §4.4）と形式を分けているのは、
@@ -185,13 +184,19 @@ npm パッケージのリリースタグ（`@himorogy/egress-guard@0.1.0`、
 `@himorogy/devcontainer-base@1.0.0` のように npm 側の形式へ寄せないのは、npm に存在
 しないパッケージ名を騙ることになるため。タグ名を見て npm を探す人が出る。
 
-push すると `:1` / `:1.0` / `:1.0.0` / `sha-xxxxxxx` が同時に更新される。
+push すると `prepare` がタグを検証し、`release` が **environment `ghcr-publish` の承認待ちで停止する**。
+承認者はタグを打った本人以外（`prevent_self_review`）。承認後に `:1` / `:1.0` / `:1.0.0` /
+`sha-xxxxxxx` が同時に更新される。ゲートを揃えた理由は
+[secure-publish.md](../../docs/secure-publish.md) §4.8。
 
 ### トリガーの使い分け
 
-- **タグ push** … リリース。GHCR へ push
+- **タグ push** … リリース。承認を経て GHCR へ push
 - **Pull Request**（`images/devcontainer-base/**` 変更時）… 両アーキの検証ビルドのみ。push しない
-- **workflow_dispatch** … 任意ビルド。`push` 入力を true にすると `:edge` と `sha-<commit>` で push
+- **workflow_dispatch** … 検証ビルドのみ。push しない
+
+**GHCR へ push する経路はタグ 1 本だけ。** 以前は `workflow_dispatch` から `:edge` で
+push できたが、承認ゲートを置きながら迂回路を残す意味がないため廃止した。
 
 `workflow_dispatch` はワークフローファイルがデフォルトブランチに存在しないと発火しない。
 feature ブランチでの先行検証は Pull Request 経由で行う。
