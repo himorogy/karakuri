@@ -31,6 +31,22 @@
 
 使用する機能：`scripts/check.sh`（内部で `enclave-env check` を呼び出し）
 
+## 暗号化した env を使う
+
+**既定は `dotenvx run --` です。** 復号した値をプロセスの環境変数として直接注入し、平文ファイルをディスクに作りません。
+
+```sh
+dotenvx run -f .env.production -- pnpm deploy
+dotenvx run -f .env -- pnpm dev
+```
+
+値の一覧・単体の確認も、ファイルを作らずに行えます。
+
+```sh
+dotenvx get -f .env.production                 # 全変数を表示
+dotenvx get DATABASE_URL -f .env.production    # 単体を表示
+```
+
 ## env ファイルを暗号化・復号する
 
 ```sh
@@ -39,6 +55,10 @@ enclave-env decrypt --env local   # .env を in-place 復号
 ```
 
 `--env` に指定する名前は `enclave-env` 設定ファイルの `ENV_<NAME>_FILE` に対応します。
+
+> **`decrypt` は既定の手段ではありません。** in-place 復号は平文をディスク上のファイルとして残すため、プロセスの異常終了・電源断・`trap` の取りこぼしで平文が残置します。上の `dotenvx run --` / `dotenvx get` で用の足りる場面ではそちらを使ってください。
+>
+> `decrypt` を禁止はしていません。ファイルとしての平文を要求する外部ツールに食わせる、といった用途は残ります。ただしその場合も、平文の残置を防いでいるのはコマンドの選択ではなく実行環境側の構成（コンテナの `read_only` + tmpfs）である、という前提で扱ってください。
 
 ## prod secrets を LLM から守る
 
@@ -69,12 +89,15 @@ prod の private key を dev コンテナ外に置くと、コンテナ内から
 
 ### 選択肢 1：ホスト直実行
 
-最もシンプル。dev コンテナを停止した状態でホストから実行します。ホストに Node.js と `enclave-env` のインストールが必要です。
+最もシンプル。dev コンテナを停止した状態でホストから実行します。ホストに Node.js と `dotenvx` のインストールが必要です。
 
 ```sh
 # DOTENV_PRIVATE_KEY_PRODUCTION が使える状態で
-pnpm decrypt-env:prod
+dotenvx run -f .env.production -- pnpm deploy    # 実行
+dotenvx get -f .env.production                   # 値の確認
 ```
+
+いずれも平文ファイルを作りません。in-place 復号（`enclave-env decrypt --env prod`）は、ファイルとしての平文を要求するツールに食わせる場合に限って使ってください。
 
 ### 選択肢 2：prod-shell スクリプト（推奨）
 
@@ -154,9 +177,9 @@ PROD_CONTAINER_NAME=your-project-prod-devcontainer   # optional: prod-shell や 
 ```json
 {
   "scripts": {
-    "decrypt-env":      "enclave-env decrypt --env local",
+    "dev":              "dotenvx run -f .env -- <実際の dev コマンド>",
+    "deploy":           "dotenvx run -f .env.production -- <実際の deploy コマンド>",
     "encrypt-env":      "enclave-env encrypt --env local",
-    "decrypt-env:prod": "enclave-env decrypt --env prod",
     "encrypt-env:prod": "enclave-env encrypt --env prod",
     "prepare":          "simple-git-hooks"
   },
@@ -167,6 +190,8 @@ PROD_CONTAINER_NAME=your-project-prod-devcontainer   # optional: prod-shell や 
 ```
 
 `pnpm install` 実行時に `prepare` が走り、フックが自動登録されます。
+
+アプリの実行系は `dotenvx run --` でくるみ、`decrypt-env` 系のスクリプトは**置きません**。package.json に置くと in-place 復号が一手で呼べる既定の操作になり、平文ファイルが日常的に生まれます。復号が必要になった場合は `enclave-env decrypt --env <name>` をその場で打ってください。
 
 ## 3. `.env` を dotenvx で暗号化する
 
