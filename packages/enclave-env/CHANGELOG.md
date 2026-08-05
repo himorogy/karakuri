@@ -6,6 +6,12 @@
 
 - f417843: Windows で使用できるように調整
 
+### Patch Changes
+
+- c6cd660: devcontainer の雛形で、グローバルにインストールしたコマンドが PATH に載らなくなる問題を直した。
+
+  pnpm 10 はグローバルの実行ファイルを `PNPM_HOME` の直下に置いていたが、pnpm 11 は `PNPM_HOME/bin` に置く。雛形は旧レイアウトを前提に `PATH` を組んでいたため、pnpm 11 の環境では `pnpm add -g` の結果が PATH の通っていないディレクトリに入っていた。
+
 ## 0.2.1
 
 ### Patch Changes

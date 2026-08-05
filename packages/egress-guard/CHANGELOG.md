@@ -1,5 +1,14 @@
 # @himorogy/egress-guard
 
+## 0.1.1
+
+### Patch Changes
+
+- README の導入手順で、パッケージのバージョンを固定するよう改めた。
+
+  - `npm install -g @himorogy/egress-guard@<version>` と版を明示する。このスクリプトは root 所有の `/usr/local/bin` に置かれ、パスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の更新がそのままコンテナ内 root でのコード実行になる
+  - `NPM_CONFIG_PREFIX` を `node` 所有のディレクトリへ移しているイメージでは、`npm install` だけを `node` として実行する必要があることを注記した。root で入れると root 所有のファイルがグローバル領域に混ざり、以後 `node` での `-g install` が権限で失敗する
+
 ## 0.1.0
 
 ### Minor Changes

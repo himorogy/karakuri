@@ -104,7 +104,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    バージョンは必ず固定する。このスクリプトは root 所有の /usr/local/bin に置かれ、
 #    4 のパスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の
 #    更新がそのままコンテナ内 root でのコード実行になる。
-RUN npm install -g @himorogy/egress-guard@0.1.0 \
+RUN npm install -g @himorogy/egress-guard@0.1.1 \
   && cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
         /usr/local/bin/init-project-firewall.sh \
   && chown root:root /usr/local/bin/init-project-firewall.sh \
