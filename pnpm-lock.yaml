@@ -27,6 +27,8 @@ importers:
         specifier: ^2.31.0
         version: 2.31.0(@types/node@25.6.0)
 
+  packages/egress-guard: {}
+
   packages/enclave-env:
     dependencies:
       '@dotenvx/dotenvx':
