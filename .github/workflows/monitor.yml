@@ -3,9 +3,9 @@ name: Registry Monitor
 # レジストリ上の版とリポジトリの状態を毎日照合し、経路を通らずに
 # 公開された版を検出する。判定の意味は docs/secure-publish.md §6 を参照。
 #
-# あわせて devcontainer base image が pin している egress-guard の版が
-# レジストリの最新から遅れていないかも見る。base の再ビルドは手動のため、
-# 上げ忘れをここで拾う。
+# あわせて devcontainer base image について 2 つ見る。pin している egress-guard の
+# 版がレジストリの最新から遅れていないか（base の再ビルドは手動のため、上げ忘れを
+# ここで拾う）と、GHCR 上の版が git タグと対応しているか。
 on:
   schedule:
     - cron: "0 0 * * *" # 毎日 09:00 JST
@@ -146,6 +146,54 @@ jobs:
             fi
           fi
 
+          # --- 4. GHCR 上の版とタグの照合 ---
+          # npm と同じ考え方で、タグが公開の原因、レジストリ上の版はその結果。
+          # 対応する git タグを持たない版は、経路を通らずに push されたもの。
+          #
+          # 浮動タグ (1, 1.0) と sha- 付きは判定対象から外す。前者はリリース版を
+          # 指す別名で、後者はコミットを指すものなので、いずれも「版」ではない。
+          GHCR_PATH="${GITHUB_REPOSITORY_OWNER}/devcontainer-base"
+
+          TEXT="${TEXT}*devcontainer-base (GHCR)*\n"
+
+          GHCR_TOKEN=$(curl -fsS "https://ghcr.io/token?scope=repository:${GHCR_PATH}:pull" \
+            | jq -r '.token // empty') || GHCR_TOKEN=""
+
+          if [ -z "$GHCR_TOKEN" ]; then
+            TEXT="${TEXT}⚠️ GHCR のトークンを取得できない\n\n"
+            escalate warn
+          else
+            GHCR_TAGS=$(curl -fsS -H "Authorization: Bearer ${GHCR_TOKEN}" \
+              "https://ghcr.io/v2/${GHCR_PATH}/tags/list" \
+              | jq -r '.tags[]? // empty') || GHCR_TAGS=""
+
+            if [ -z "$GHCR_TAGS" ]; then
+              TEXT="${TEXT}⚠️ GHCR のタグ一覧を取得できない\n\n"
+              escalate warn
+            else
+              GHCR_UNTAGGED=""
+              while IFS= read -r t; do
+                [ -n "$t" ] || continue
+
+                # X.Y.Z 形式だけが版。それ以外は別名かコミット参照。
+                printf '%s' "$t" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || continue
+
+                if git rev-parse -q --verify "refs/tags/devcontainer-base-v${t}" >/dev/null; then
+                  continue
+                fi
+
+                GHCR_UNTAGGED="${GHCR_UNTAGGED}${t} "
+              done <<< "$GHCR_TAGS"
+
+              if [ -n "$GHCR_UNTAGGED" ]; then
+                TEXT="${TEXT}🚨 git tag のない版: ${GHCR_UNTAGGED}\n\n"
+                escalate alert
+              else
+                TEXT="${TEXT}✅ タグ整合 OK\n\n"
+              fi
+            fi
+          fi
+
           # --- Slack 通知 ---
           case "$STATUS" in
             ok)    COLOR="#36a64f"; LABEL="正常 :white_check_mark:" ;;
@@ -155,7 +203,7 @@ jobs:
 
           jq -n \
             --arg color  "$COLOR" \
-            --arg title  "npm 監視: ${LABEL}" \
+            --arg title  "公開経路の監視: ${LABEL}" \
             --arg text   "$(printf '%b' "$TEXT")" \
             --arg footer "$(date -u '+%Y-%m-%d %H:%M UTC')" \
             '{attachments:[{
