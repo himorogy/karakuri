@@ -96,6 +96,7 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 |---|---|---|---|
 | 40 | dotenvx 2.x で `DOTENV_PRIVATE_KEY_*` の環境変数注入が従来通り効く | ⛔ | **本設計の shim はこの経路に全面的に依存する。落ちると shim 機構そのものが機能しない** |
 | 41 | dotenvx 1.x で暗号化した `.env.*` を 2.x が復号できる | ⛔ | 既存 4 repo の移行可否に直結 |
+| 41b | `pnpm run` の内側でローカル依存の dotenvx が呼ばれた場合に鍵が届く | ⛔ | `pnpm run` は `node_modules/.bin` を PATH 先頭に積むため shim が素通りされる。最上位に `dotenvx run -f ... -- pnpm ...` を置く運用で回避する（README / migration に反映済み）。**設計書 §4.3 / D5 の「全経路で効く」は誤りで rev.5 で訂正する** |
 
 2.0.0 の BREAKING は全て `lib/main` のライブラリ API（`set` / `get` の async 化、
 `doctor` / `keypair` / `genexample` の export 削除、`rotate` コマンドの削除）であり、

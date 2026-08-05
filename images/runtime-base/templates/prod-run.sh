@@ -45,7 +45,9 @@ Usage: prod-run.sh <command> [args...]
 
 Required environment:
   PROD_COMPOSE_FILE  compose.prod.yaml へのパス
-  PROD_BROKER        dotenv 形式を stdout に出す broker コマンド
+  PROD_BROKER        dotenv 形式を stdout に出す broker コマンド。
+                     引数は取れない（単一の実行ファイルとして呼ばれる）。
+                     引数が要る broker はラッパースクリプトに包むこと。
   GIT_REPO           clone 元 URL
   GIT_REF            実行対象の ref（完全な commit sha を推奨）
 
@@ -54,7 +56,11 @@ Example:
   PROD_BROKER="$HOME/.local/bin/acme-broker" \
   GIT_REPO=https://github.com/acme/app.git \
   GIT_REF=1234567890abcdef1234567890abcdef12345678 \
-  prod-run.sh pnpm deploy
+  prod-run.sh dotenvx run -f .env.prod -- pnpm deploy
+
+dotenvx は pnpm の外側に置くこと。`pnpm run` は node_modules/.bin を
+PATH の先頭に積むため、プロジェクトがローカルに dotenvx を持っていると
+script 内の dotenvx がイメージの shim に勝ち、鍵が注入されない。
 EOF
 }
 

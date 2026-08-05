@@ -164,11 +164,28 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
 責務になる。
 
 ```sh
-... prod-run.sh sh -c 'pnpm install --frozen-lockfile && pnpm deploy'
+... prod-run.sh sh -c 'pnpm install --frozen-lockfile && dotenvx run -f .env.production -- pnpm deploy'
 ```
 
 ### つまずきやすいところ
 
+- **`dotenvx` は `pnpm` の外側に置く。** `pnpm run <script>` は `node_modules/.bin` を PATH の
+  **先頭**に積むため、プロジェクトがローカルに `@dotenvx/dotenvx` を持っていると script 内の
+  `dotenvx` はそちらへ解決され、**shim が素通りされて鍵が注入されない**。4 リポジトリはいずれも
+  ローカルに dotenvx を持つので、必ず踏む。
+
+  ```sh
+  # 効く — 最上位の dotenvx が shim に解決され、export した鍵を子プロセスが継承する
+  ... prod-run.sh dotenvx run -f .env.production -- pnpm deploy
+
+  # 効かない — ローカルの dotenvx が呼ばれ、鍵が無いまま復号を試みて失敗する
+  ... prod-run.sh pnpm deploy
+  ```
+
+  手順 1 で `package.json` の script を `dotenvx run --` でくるんだのは**ホスト / dev での実行**の
+  ためで、そこでは鍵が `.env.keys` か環境変数から来る。prod では鍵が `/run/secrets` から shim
+  経由で来るので、最上位の呼び出しが必要になる。二重に `dotenvx run` が走ることになるが、
+  内側は継承した鍵で動くので害はない。
 - **`GIT_REF` は完全な commit sha を渡す。** ブランチ名や軽量タグは後から指す先を変えられる。
   40 桁 sha でない場合ラッパーは警告を出すが実行は続行する。
 - **対話 TTY は使えない。** stdin が secret の搬送路なので `-T` が必須で、`run` の pseudo-TTY と

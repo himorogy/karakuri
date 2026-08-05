@@ -91,7 +91,29 @@ prod では entrypoint が prod secret を書き、dev では dev 向けのト�
 
 **シェル関数ではなく PATH 上の実行ファイルにしてある。** `pnpm run` / Makefile / `xargs` は
 `sh -c` を起動して rc を読まないため、関数はスコープ外になって素のバイナリが呼ばれる。
-PATH 解決を経由する shim であれば全経路で効く。
+PATH 上の実行ファイルであればこれらの経路でも効く。
+
+### ただし `pnpm run` の内側では効かない
+
+`pnpm run <script>` は `node_modules/.bin` を PATH の**先頭**に積む。プロジェクトが
+`@dotenvx/dotenvx` をローカル依存に持っていると、script 内の `dotenvx` はそちらへ解決され、
+**shim は素通りされる**。既存の 4 リポジトリはいずれもローカルに dotenvx を持つ。
+
+したがって **prod では dotenvx を最上位に置く**。
+
+```sh
+# 効く — 最上位の dotenvx が shim に解決され、export した鍵を子プロセスが継承する
+prod-run.sh dotenvx run -f .env.prod -- pnpm deploy
+
+# 効かない — pnpm が node_modules/.bin を先頭に積み、ローカルの dotenvx が呼ばれる
+prod-run.sh pnpm deploy
+```
+
+後者は鍵が無い状態で復号を試みて失敗するため、**沈黙はしない**。ただし失敗の原因が
+「shim が素通りされた」であることは読み取りにくいので、規約として最上位に置く。
+
+この制約は shim 一般の性質であって dotenvx 固有ではない。`wrangler` / `gh` をローカル依存に
+持つプロジェクトでも同じことが起きる。
 
 ### 実体は `/opt/tools/bin` にある
 
@@ -203,8 +225,12 @@ PROD_BROKER="$HOME/.local/bin/acme-broker" \
 PROD_KEYCHAIN_SERVICE=acme-prod-env \
 GIT_REPO=https://github.com/acme/app.git \
 GIT_REF=<40 桁の commit sha> \
-~/.local/bin/prod-run.sh pnpm deploy
+~/.local/bin/prod-run.sh dotenvx run -f .env.prod -- pnpm deploy
 ```
+
+**`dotenvx` を最上位に置くこと。** `prod-run.sh pnpm deploy` の形にすると、`pnpm run` が
+`node_modules/.bin` を PATH 先頭に積んでローカルの dotenvx が shim に勝ち、鍵が注入されない
+（上の「`pnpm run` の内側では効かない」を参照）。
 
 `GIT_REF` には**完全な commit sha** を渡す。ブランチ名や軽量タグは後から指す先を変えられる。
 40 桁 sha でない場合、ラッパーは警告を出すが実行は続行する（署名タグの運用余地を残すため）。
@@ -212,8 +238,10 @@ GIT_REF=<40 桁の commit sha> \
 依存インストールはコマンド側の責務になる。`clean -xdff` が `node_modules` も消すため。
 
 ```sh
-... prod-run.sh sh -c 'pnpm install --frozen-lockfile && pnpm deploy'
+... prod-run.sh sh -c 'pnpm install --frozen-lockfile && dotenvx run -f .env.prod -- pnpm deploy'
 ```
+
+`sh -c` で複数コマンドを繋ぐ場合も、`dotenvx` は `pnpm` の外側に置く。
 
 ### 環境変数を確認する
 
