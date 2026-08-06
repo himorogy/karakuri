@@ -362,6 +362,44 @@ runtime-base に焼くと devcontainer-base 側が `/src/.pnpm-store` を作ろ�
 忘れると ENOENT で**明示的に落ちる**ので、M5 の dotenvx（rc=0 で沈黙）とは違い fail-loud であり、
 I6 には抵触しない。
 
+## 0.69 CI 7 回目（2026-08-06）と、その後の追加確認 — rev.5 の材料が揃った
+
+### store-dir の固定手段（M10）
+
+```
+a  $HOME/.npmrc に store-dir=            → NO（効かない）
+b  $HOME/.config/pnpm/rc に store-dir=   → NO（効かない）
+c  pnpm config set store-dir（--global なし） → YES。store path が /src/.pnpm-store/v11 を指す
+d  方法 c で --store-dir フラグなしの install → rc=0、Packages are hard linked、3491/3547
+```
+
+CI では c の**書き込み先が特定できなかった**（`$HOME/.npmrc` / `$HOME/.config/pnpm/rc` /
+`/src/.npmrc` のいずれにも無い）が、その後この dev container 上で再現して確定した。
+
+```
+$ HOME=<tmp> pnpm config set store-dir /src/.pnpm-store
+$ cat <tmp>/.config/pnpm/config.yaml
+storeDir: /src/.pnpm-store
+```
+
+**`$HOME/.config/pnpm/config.yaml` に YAML で書く。** a / b が効かなかったのも、CI の探索が
+外したのも、**ファイル名と形式の両方が違った**ためである（`store-dir=` ではなく `storeDir:`）。
+prod では `/home/node` が tmpfs なので毎回新規に書かれ、entrypoint が毎回設定する形と整合する。
+
+イメージに焼かない判断は変わらない — dev container の store は `/workspaces/.pnpm-store` に
+あり `/src` は存在しないため、runtime-base に焼くと devcontainer-base 側が壊れる。
+
+### 設計書 rev.5 と実装への反映（2026-08-06）
+
+ここまでの実測を設計書 rev.5 として確定させ、実装を追従させた。
+
+- `/src` を named volume → tmpfs（`exec,uid=1000,gid=1000,mode=0755`）。`volumes:` ブロック削除
+- entrypoint に `pnpm config set store-dir /src/.pnpm-store` を追加
+- prod のコマンド例を `dotenvx run --strict --no-armor -f ... -- ...` に統一
+- 新しい設計判断 D18（`/src` tmpfs）/ D19（store を同一マウント）/ D20（`--strict` 必須）
+- D5 の「全経路で効く」を訂正、§4.2 の tmpfs 記法・§4.6 の askpass・§4.7 の `core.hooksPath` を
+  実測に合わせて修正、broker 契約に dotenv 方言を明文化、`sudo` の受容を明記
+
 ## 0.7 原理上この方法では測れないもの
 
 - **`credential.helper` 経由の `GH_TOKEN` 窃取。** `file://` はホスト上のパスへの直接アクセスで

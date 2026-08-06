@@ -56,11 +56,20 @@ Example:
   PROD_BROKER="$HOME/.local/bin/acme-broker" \
   GIT_REPO=https://github.com/acme/app.git \
   GIT_REF=1234567890abcdef1234567890abcdef12345678 \
-  prod-run.sh dotenvx run -f .env.prod -- pnpm deploy
+  prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy
 
 dotenvx は pnpm の外側に置くこと。`pnpm run` は node_modules/.bin を
 PATH の先頭に積むため、プロジェクトがローカルに dotenvx を持っていると
 script 内の dotenvx がイメージの shim に勝ち、鍵が注入されない。
+
+--strict と --no-armor は必須（rev.5 / D20）:
+  --strict    dotenvx は復号に失敗しても非ゼロ終了せず、暗号文をその
+              まま値として注入して rc=0 を返す（実測: FOO=encrypted:...
+              のままアプリが起動し、deploy は成功と報告される）。
+              --strict を付けると鍵が無い状態で確実に rc=1 になる。
+  --no-armor  dotenvx 2.x は既定で Dotenvx Armor（ホスト型サービス）を
+              有効にしており、ネットワークへ出る経路になりうる。prod は
+              決定性に価値がある層なので切る。
 EOF
 }
 

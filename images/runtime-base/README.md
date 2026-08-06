@@ -103,14 +103,16 @@ PATH 上の実行ファイルであればこれらの経路でも効く。
 
 ```sh
 # 効く — 最上位の dotenvx が shim に解決され、export した鍵を子プロセスが継承する
-prod-run.sh dotenvx run -f .env.prod -- pnpm deploy
+prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy
 
 # 効かない — pnpm が node_modules/.bin を先頭に積み、ローカルの dotenvx が呼ばれる
 prod-run.sh pnpm deploy
 ```
 
-後者は鍵が無い状態で復号を試みて失敗するため、**沈黙はしない**。ただし失敗の原因が
-「shim が素通りされた」であることは読み取りにくいので、規約として最上位に置く。
+後者は鍵が無い状態で復号を試みるが、**`--strict` が無いと沈黙する** — dotenvx は復号に失敗
+しても非ゼロ終了せず、暗号文をそのまま値として注入して rc=0 を返す（実測: `FOO=encrypted:...`
+のままアプリが起動し、deploy は成功と報告される）。`--strict` を付ければ確実に rc=1 になる。
+規約として最上位に置き、かつ `--strict` を必須とする理由がこれである。
 
 この制約は shim 一般の性質であって dotenvx 固有ではない。`wrangler` / `gh` をローカル依存に
 持つプロジェクトでも同じことが起きる。
@@ -143,10 +145,12 @@ fallback 資格情報が存在しえない。したがって必要な secret を
 
 1. stdin（dotenv 形式）を EOF まで読み、`/run/secrets/<変数名>` へ書く（umask 077）
 2. 空値・`=` を含まない行・不正な鍵名は**即座に非ゼロ終了**する。取込件数が 0 でも落とす
-3. `GIT_ASKPASS` を設定し、`/src`（named volume）を `git init` + `fetch` で用意する
-4. `checkout --detach --force` → `reset --hard` → `clean -xdff` の順で `GIT_REF` の状態へ復元する
-5. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する
-6. `exec "$@"`（引数が無ければ非ゼロ終了）
+3. `GIT_ASKPASS` を設定し、`/src`（tmpfs）を `git init` + `fetch` で用意する
+4. `GIT_REF` が commit として解決できることを `rev-parse --verify` で確認する
+5. `checkout --detach --force` → `reset --hard` → `clean -xdff` の順で `GIT_REF` の状態へ復元する
+6. `pnpm config set store-dir /src/.pnpm-store` で store を node_modules と同一 tmpfs へ向ける
+7. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する
+8. `exec "$@"`（引数が無ければ非ゼロ終了）
 
 ### 復元の三段階は重複ではない
 
@@ -155,9 +159,71 @@ fallback 資格情報が存在しえない。したがって必要な secret を
 - `clean -xdff` … untracked / ignored を消す
 
 `checkout` は HEAD が既に同じ commit にあると working tree を復元せず、`clean` は untracked
-しか消さない。この二つだけだと、**named volume を再利用したときに前回実行が書き換えた
-tracked file が残る**。同じ `GIT_REF` で起動しても改変済みのコードが実行され、「明示された ref
-から復元される」が成立しない。`reset --hard` が必須なのはこのため。
+しか消さない。この二つだけだと、`/src` を再利用したときに前回実行が書き換えた tracked file が
+残る。`/src` は tmpfs で毎回捨てられるので現構成では起きないが、その前提が崩れても壊れない
+ように三段構えを維持している（多重防御）。
+
+### 存在しない ref は明示的に落とす
+
+`git checkout --detach <ref>` は ref として解決できないと引数を**パス名**と解釈し、
+`fatal: git checkout: --detach does not take a path argument 'v9.9.9'` という原因の読み取れない
+エラーになる。fail-closed ではあるが、これを踏んだ人間は原因に辿り着けない。`fetch` の後に
+`rev-parse --verify --quiet "${GIT_REF}^{commit}"` で検証し、`GIT_REF does not resolve to a
+commit in the fetched repository: <ref>` として落とす。`GIT_REF` は秘匿情報ではない（通常の
+環境変数で渡す設計）のでメッセージに含めてよい。
+
+### pnpm の store
+
+`read_only: true` の下では既定の `$PNPM_HOME/store`（`/usr/local/share/pnpm/store`）を作れず、
+`pnpm install` が `ENOENT` で落ちる。store は **node_modules と同一の tmpfs マウント**に
+置く必要がある。別マウント（`$HOME` 配下）に置くとハードリンクがマウントを跨げず copy に
+フォールバックし、**RAM が倍**になる。
+
+```
+store を $HOME 配下（別 tmpfs）  合計 260M  リンク数 2 以上のファイル    0/3546
+store を /src 配下（同一 tmpfs） 合計 131M  リンク数 2 以上のファイル 3491/3546
+```
+
+pnpm 自身が出力で機構を明言する — 前者は `Packages are copied ...`、後者は
+`Packages are hard linked ...`。
+
+設定は entrypoint が `pnpm config set store-dir /src/.pnpm-store` で行う。環境変数
+`npm_config_store_dir` は効かない。書き込み先は `$HOME/.config/pnpm/config.yaml`（YAML の
+`storeDir:`。`.npmrc` の `store-dir=` ではない）で、`$HOME` は tmpfs なので毎回新規に書かれる。
+
+**イメージには焼かない。** dev container の store は `/workspaces/.pnpm-store` にあり `/src` は
+存在しないので、runtime-base に焼くと devcontainer-base 側が壊れる。
+
+store は `/src` の中にあるため `clean -xdff` の対象になる。entrypoint は checkout → clean →
+`exec "$@"` の順で `pnpm install` はその後に走るため、同一 run 内で消えることはない。
+**この順序を入れ替えてはならない。**
+
+### なぜ `/src` を使い捨てるのか
+
+`/src` は named volume ではなく **tmpfs** である。再利用する構成には、`checkout` +
+`reset --hard` + `clean` の三段構えでも塞がらない穴が二つあり、いずれも実測で再現した。
+
+**ref の汚染。** `git fetch --tags` は既存のローカルタグを clobber せず（`--force` が無い）、
+ローカル branch は fetch の対象外である。前回実行の（信頼しない）コードが
+`git tag v1.2.3 <別コミット>` を打てば、次回 `GIT_REF=v1.2.3` で `checkout` も `reset --hard` も
+**攻撃者の ref を解決する**。三段構えは「汚染された ref へ正しく復元する」だけで、指定した
+commit を実行する保証にはならない。実測では 2 回目の実行が別の commit の内容を checkout した。
+安全なのは完全な commit sha だけで、これは content-addressed なので偽装できない。
+
+**`.git/config` の持続。** 上記のとおり local が system に勝つため、`core.fsmonitor` のような
+コマンドを実行する設定を仕込まれると、次回の entrypoint 自身の git 操作で発火する。実測では
+8 回実行され、しかも `GH_TOKEN` を破棄する**前**だった。`credential.helper` を仕込めばトークン
+そのものを受け取れる。`filter.*.smudge` + `.gitattributes` も同型で、**設定経由の実行経路を
+列挙して潰すのは筋が悪い。**
+
+tmpfs にすれば毎回まっさらな repo から始まるため、どちらも構造的に成立しない。同時に、prod で
+走るコードが復号値・CLI キャッシュ・トークンを `/src` へ書いてもコンテナ削除後に Docker VM の
+ディスクへ残らなくなる。**現在コンテナが書ける場所は全て tmpfs であり、悪意ある明示書き込みで
+あっても不揮発媒体には届かない。**
+
+代償は毎回の full clone と全依存の再ダウンロード、そして RAM 消費である。実測では karakuri 自身
+（依存 174）で `/src` 合計 131M、tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G）
+だった。依存の重いプロジェクトを載せるなら、実行ホストのメモリ量が直接の制約になる。
 
 ### 入力を反射しない
 
@@ -209,11 +275,7 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 実測では、named volume を再利用する構成で entrypoint 自身の fetch / checkout / reset / clean が
 仕込まれたコマンドを 8 回実行した。しかも `/run/secrets/GH_TOKEN` を破棄する**前**である。
 
-> **`/src` は named volume をやめて tmpfs へ移す。** この攻撃と、ローカル ref の汚染
-> （前回実行のコードが打ったタグが次回の `GIT_REF` として解決される）を構造的に消すため。
-> 実装は設計書 rev.5 で確定させる。現在の `templates/compose.prod.yaml` はまだ named volume の
-> ままなので、**この節と実装が食い違っている**。検証状況は
-> [verification-record.md](./verification-record.md) を参照。
+**だから `/src` は tmpfs で毎回捨てる。** 下記「なぜ `/src` を使い捨てるのか」を参照。
 
 ### ホスト側の git はこれを読まない
 
@@ -251,7 +313,7 @@ PROD_BROKER="$HOME/.local/bin/acme-broker" \
 PROD_KEYCHAIN_SERVICE=acme-prod-env \
 GIT_REPO=https://github.com/acme/app.git \
 GIT_REF=<40 桁の commit sha> \
-~/.local/bin/prod-run.sh dotenvx run -f .env.prod -- pnpm deploy
+~/.local/bin/prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy
 ```
 
 **`dotenvx` を最上位に置くこと。** `prod-run.sh pnpm deploy` の形にすると、`pnpm run` が
@@ -264,7 +326,8 @@ GIT_REF=<40 桁の commit sha> \
 依存インストールはコマンド側の責務になる。`clean -xdff` が `node_modules` も消すため。
 
 ```sh
-... prod-run.sh sh -c 'pnpm install --frozen-lockfile && dotenvx run -f .env.prod -- pnpm deploy'
+... prod-run.sh sh -c 'pnpm install --frozen-lockfile \
+      && dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy'
 ```
 
 `sh -c` で複数コマンドを繋ぐ場合も、`dotenvx` は `pnpm` の外側に置く。
@@ -273,7 +336,7 @@ GIT_REF=<40 桁の commit sha> \
 
 ```sh
 ... prod-run.sh dotenvx get -f .env.prod
-... prod-run.sh sh -c 'dotenvx run -f .env.prod -- printenv | sort'
+... prod-run.sh sh -c 'dotenvx run --strict --no-armor -f .env.prod -- printenv | sort'
 ```
 
 いずれもファイルを作らない。dev container からは書けるが読めない（値の追加は

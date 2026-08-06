@@ -15,9 +15,11 @@
 1. **runtime-base が GHCR に存在すること。** 未リリースなら先に
    `git tag runtime-base-v1.0.0 && git push origin runtime-base-v1.0.0` を実行する。
    リリース順は runtime-base → devcontainer-base。
-2. **ホストの docker に空き容量があること。** マルチアーキイメージの pull と named volume の
-   確保が要る。
-3. **ディスク暗号化（FileVault / BitLocker）が有効であること。** 本設計の最後の砦であり、
+2. **ホストの docker に空き容量があること。** マルチアーキイメージの pull に要る。
+3. **実行ホストにメモリの余裕があること。** `/src` は tmpfs で、repo と `node_modules` と
+   pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（karakuri 自身での
+   実測使用量は 131M）。
+4. **ディスク暗号化（FileVault / BitLocker）が有効であること。** 本設計の最後の砦であり、
    前提条件として扱う。
 
 ---
@@ -164,7 +166,8 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
 責務になる。
 
 ```sh
-... prod-run.sh sh -c 'pnpm install --frozen-lockfile && dotenvx run -f .env.production -- pnpm deploy'
+... prod-run.sh sh -c 'pnpm install --frozen-lockfile \
+      && dotenvx run --strict --no-armor -f .env.production -- pnpm deploy'
 ```
 
 ### つまずきやすいところ
@@ -176,7 +179,7 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
 
   ```sh
   # 効く — 最上位の dotenvx が shim に解決され、export した鍵を子プロセスが継承する
-  ... prod-run.sh dotenvx run -f .env.production -- pnpm deploy
+  ... prod-run.sh dotenvx run --strict --no-armor -f .env.production -- pnpm deploy
 
   # 効かない — ローカルの dotenvx が呼ばれ、鍵が無いまま復号を試みて失敗する
   ... prod-run.sh pnpm deploy
@@ -195,7 +198,12 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
   破棄される。deploy が別途 GitHub 資格情報を要するなら、clone 用とは別スコープ
   （read-only・単一 repo・短寿命）を用意する。
 - **ビルド成果物は `/out`（tmpfs）に出す。** prod 値を埋め込んだ `dist/` は secret そのものを
-  保持する。`/src`（named volume）に書くとコンテナ削除後も Docker VM のディスクに残る。
+  保持する。`/src` も tmpfs なのでディスクには残らないが、`/out` に出す方が意図が明確になる。
+- **`--strict` と `--no-armor` を付ける。** `--strict` が無いと dotenvx は復号失敗で rc=0 を返し、
+  暗号文をそのまま値として注入する（`FOO=encrypted:...` でアプリが起動し deploy は成功と報告
+  される）。`--no-armor` は dotenvx 2.x が既定で有効にしているホスト型サービスへの経路を切る。
+- **`node_modules` は毎回作り直しになる。** `/src` が tmpfs なので run をまたいだ保持は成立
+  しない。pnpm の store も同様に毎回空から始まる。
 
 ---
 
@@ -236,10 +244,11 @@ chmod 600 ~/.config/<project>/.env.container
 |---|---|---|
 | prod 秘密鍵の保管 | ホスト上の恒久平文ファイル | OS キーチェーン（暗号化ストア） |
 | 鍵の受け渡し | `--env-file`（`docker inspect` で読める） | stdin パイプ → コンテナ内 tmpfs |
-| workspace | bind mount（dirty tree を持ち込む） | container 内 clone（明示 ref から復元） |
+| workspace | bind mount（dirty tree を持ち込む） | container 内の tmpfs へ clone（明示 ref から復元し、毎回捨てる） |
 | 平文の残留 | `trap` によるクリーンアップ（SIGKILL / OOM / 再起動で飛ぶ） | tmpfs（電源断で消える） |
 | 同時起動の防止 | 運用上の相互排他チェック | 不要になる（workspace を共有しない） |
 | ログ / コアダンプ | 対処なし | `logging: none` / `ulimits core: 0` |
+| 前回実行の残留 | workspace に残る | tmpfs なので毎回消える（ref の汚染と `.git/config` への仕込みが構造的に成立しない） |
 | コミット前検査 | 各 clone へ手動導入（伝播しない） | `core.hooksPath` をイメージに焼き込み |
 
 守れていないもの（受容済みの残余リスク）:

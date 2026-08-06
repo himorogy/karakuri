@@ -18,13 +18,6 @@
 # GIT_REPO / GIT_REF で渡す。この一枚を複数プロジェクトにコピーしても
 # 中身を書き換える必要がないのが狙い。
 
-volumes:
-  # 意図的に `name:` を付けない。実際のボリューム名は compose が
-  # `<project>_prod-src` のように COMPOSE_PROJECT_NAME で prefix する。
-  # 固定名を書くとこのテンプレートがプロジェクトをまたいで使い回せなくなる
-  # （複数プロジェクトを同一ホストで扱うと衝突する）。
-  prod-src:
-
 services:
   prod:
     # プレースホルダ。このままでは digest が実在しないため pull に失敗し、
@@ -47,9 +40,6 @@ services:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF: ${GIT_REF:?GIT_REF is required}
 
-    volumes:
-      - prod-src:/src
-
     read_only: true
 
     # イメージは `USER node` で終わる想定なので明示は本来冗長だが、直下の
@@ -61,11 +51,14 @@ services:
     user: "1000:1000"
 
     # 設計書 §4.2 の素の短縮形 `tmpfs: ["/run", "/tmp", "/out", "/home/node"]`
-    # は root:root 所有の tmpfs を作る。`read_only: true` の下では
-    # コンテナ起動後に chown する手段がなく（root への昇格経路を prod には
-    # 意図的に持たせていない。cap_add を置かない理由は下記参照）、
-    # `USER node` で走る entrypoint が /run/secrets を作れずに起動直後に
-    # 失敗する。
+    # は root:root 所有・noexec の tmpfs を作る（rev.5 で実測。Docker
+    # Engine 28.0.4 / Compose v2.38.2）:
+    #   tmpfs on /src type tmpfs (rw,nosuid,nodev,noexec,relatime,mode=755,inode64)
+    # 既定 mode が 1777 だという rev.4 までの記述は推測であり、実測では
+    # 755 だった。`read_only: true` の下ではコンテナ起動後に chown する
+    # 手段がなく（root への昇格経路を prod には意図的に持たせていない。
+    # cap_add を置かない理由は下記参照）、`USER node` で走る entrypoint が
+    # /run/secrets を作れずに起動直後に失敗する。
     #
     # `docker run --tmpfs` と同じ `<path>:<options>` 記法（uid= / gid= /
     # mode= はいずれも tmpfs マウント自体のオプションで、カーネルへそのまま
@@ -77,10 +70,35 @@ services:
     # dockerd の Mount API にオプション文字列としてそのまま渡るので、
     # uid/gid が効くことがより確実に言える。
     #
+    # `noexec` は uid=/gid=/mode= を渡しても消えない（実測で確認済み）。
+    # 消すには `exec` の明示が要る。`/src` は信頼しないコードを clone して
+    # ビルド・実行する場所であり、`exec` が無いと node_modules/.bin 配下の
+    # 実行ファイルが一切動かない（実測: `sh: 1: tsup: Permission denied`、
+    # rc=126）。ビルドも deploy も成立しないため、`/src` にだけ `exec` を
+    # 明示する。`/run`（secrets）・`/out`（成果物）・`/tmp` はそこで何かを
+    # 実行する用途が無いので noexec のままにする（`/tmp` は node-gyp 等が
+    # 一時ファイルを実行する可能性はあるが、実際に踏むまでは絞っておく）。
+    #
+    # `/src` を named volume ではなく tmpfs にした理由（rev.5 / D18。詳細は
+    # 設計書 §4.6「なぜ /src を使い捨てるのか」）: named volume を使い回す
+    # と、前回実行の（信頼しない）コードが打ったローカル ref が次回の
+    # GIT_REF として解決されてしまう問題（N-1）と、持ち越された
+    # .git/config の core.fsmonitor 等が次回 entrypoint 自身の git 操作で
+    # 発火し、しかも GH_TOKEN 破棄の前に走ってしまう問題（N-2）が
+    # reset --hard でも塞がらず実測で再現した。tmpfs 化で毎回まっさらな
+    # repo から始まるため両方とも構造的に成立しなくなり、prod での
+    # 書き込みが Docker VM のディスクに残る問題（R6）も同時に解消する。
+    #
     # /tmp だけ mode=1777（sticky bit 付き world-writable）にするのは、
     # 複数のツールが /tmp を共有前提で使う一般的な作法に合わせるため。
     # 他は node 単独所有で足りるので 0755 とする。
+    #
+    # size= は指定しない。既定はホスト RAM の 50%（CI ランナーでの実測は
+    # 7.9G）。karakuri 自身（依存 174）の /src 使用量の実測は 131M で、
+    # 既定サイズには十分な余裕がある。実行ホストのメモリ量に比例するため、
+    # 余裕が足りるかどうかは実行ホスト側の問題として残る（設計書 §11）。
     tmpfs:
+      - /src:exec,uid=1000,gid=1000,mode=0755
       - /run:uid=1000,gid=1000,mode=0755
       - /tmp:uid=1000,gid=1000,mode=1777
       - /out:uid=1000,gid=1000,mode=0755

@@ -76,6 +76,27 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 	fi
 fi
 
+# --- フェイク pnpm ---------------------------------------------------------------
+#
+# entrypoint は checkout 後に `pnpm config set store-dir /src/.pnpm-store`
+# を呼ぶ (rev.5 / D19)。この環境には実 pnpm が存在するため、フェイクを
+# 挟まなければテスト実行のたびに実ユーザーの pnpm グローバル設定
+# (~/.config/pnpm/config.yaml) が書き換わってしまう — 実際にこの変更を
+# 加えた直後の初回実行で踏んだ (store-dir が消えた tmpdir を指したまま
+# 残留した)。PATH の先頭にフェイク pnpm を置いて実 pnpm を素通りさせず、
+# 呼び出された引数だけを FAKE_PNPM_ARGV_FILE に記録する。この環境の実際の
+# pnpm 設定には一切触れない。
+FAKE_PNPM_DIR="$(mktemp -d)"
+FAKE_PNPM_ARGV_FILE="$FAKE_PNPM_DIR/pnpm-argv.log"
+cat >"$FAKE_PNPM_DIR/pnpm" <<'FAKE_PNPM'
+#!/bin/sh
+printf '%s\n' "$@" >>"${FAKE_PNPM_ARGV_FILE:?}"
+exit 0
+FAKE_PNPM
+chmod +x "$FAKE_PNPM_DIR/pnpm"
+export FAKE_PNPM_ARGV_FILE
+export PATH="$FAKE_PNPM_DIR:$PATH"
+
 # --- 1. stdin 空 -> 非ゼロ終了 --------------------------------------------------
 t="$(mktemp -d)"
 make_entrypoint "$t"
@@ -346,6 +367,26 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 		ng "存在しない ref -> 'does not resolve' で非ゼロ終了 (--detach のパス引数エラーではない) (rc=$rc out=$out)"
 	fi
 	rm -rf "$t"
+
+	# 14. entrypoint が pnpm の store を /src (node_modules と同一の
+	#     tmpfs) へ向けている (regression: rev.5 / D19)。フェイク pnpm が
+	#     受け取った引数を検証する。store がこの sed 置換後の /src の下に
+	#     あることまで確認することで、「同一 tmpfs に置く」という要件
+	#     (別マウントだとハードリンクが張れず RAM が倍になる) を、パス
+	#     文字列のレベルで裏付ける。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	: >"$FAKE_PNPM_ARGV_FILE"
+	printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true >/dev/null 2>&1
+	expected_pnpm_argv="$(printf 'config\nset\nstore-dir\n%s\n' "$t/src/.pnpm-store")"
+	actual_pnpm_argv="$(cat "$FAKE_PNPM_ARGV_FILE" 2>/dev/null)"
+	if [ "$actual_pnpm_argv" = "$expected_pnpm_argv" ]; then
+		ok "entrypoint が pnpm config set store-dir <tmpfs 上の /src> を呼ぶ"
+	else
+		ng "entrypoint が pnpm config set store-dir <tmpfs 上の /src> を呼ぶ (got: $actual_pnpm_argv)"
+	fi
+	rm -rf "$t"
 else
 	skip "正常系 (secret 保存 / mode 600 / GH_TOKEN 削除 / checkout 復元): git 不在のため未検証"
 	skip "値に '=' を含む行が壊れない: git 不在のため未検証 (checkout まで到達できない)"
@@ -355,12 +396,14 @@ else
 	skip "remote 冪等性: git 不在のため未検証"
 	skip "named volume 再利用時に tracked file の改変が復元される: git 不在のため未検証"
 	skip "存在しない ref -> 明示的なエラーメッセージ: git 不在のため未検証"
+	skip "entrypoint が pnpm config set store-dir を呼ぶ: git 不在のため未検証"
 fi
 
 # --- 後始末 ----------------------------------------------------------------------
 if [ "$HAVE_GIT" -eq 1 ]; then
 	rm -rf "$BARE_ROOT" "$WORK_ROOT"
 fi
+rm -rf "$FAKE_PNPM_DIR"
 
 # --- result ------------------------------------------------------------------
 

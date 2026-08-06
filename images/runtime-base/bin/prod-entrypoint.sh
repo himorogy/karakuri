@@ -3,7 +3,7 @@
 #
 # broker (ホスト側で秘密鍵を保管・認可する任意のコマンド) の dotenv 形式
 # 出力を stdin から受け取り、コンテナ内 tmpfs (/run/secrets) へ書き出す。
-# その後、明示された git ref から /src (named volume) を復元し、"$@" を
+# その後、明示された git ref から /src (tmpfs。rev.5 / D18) を復元し、"$@" を
 # exec する。環境変数を一切経由しないため、ホストシェルの environ にも
 # compose プロセスの environ にも docker inspect の Config.Env にも
 # secret は現れない
@@ -123,6 +123,33 @@ git -C /src rev-parse --verify --quiet "${GIT_REF}^{commit}" >/dev/null || {
 git -C /src checkout --detach --force "$GIT_REF"
 git -C /src reset --hard "$GIT_REF"
 git -C /src clean -xdff
+
+# pnpm の store を node_modules と同一の tmpfs (/src) に置く (rev.5 / D19)。
+# `read_only: true` の下では既定の $PNPM_HOME/store
+# (/usr/local/share/pnpm/store) を作れず、pnpm install が ENOENT で落ちる。
+# store は node_modules と別のマウント (例えば $HOME 配下) に置いてもよい
+# わけではない: pnpm はパッケージをハードリンクで store から
+# node_modules へ配るが、ハードリンクはマウントを跨げないため別マウント
+# だと copy にフォールバックし、RAM 使用量が実測で倍になる (260M vs
+# 131M。リンク数 2 以上のファイルが 0/3546 vs 3491/3546。pnpm 自身が
+# `copied` / `hard linked` と出力で明言する)。
+#
+# 環境変数 npm_config_store_dir は効かない (実測)。$HOME/.npmrc や
+# $HOME/.config/pnpm/rc に手で書いても効かない。`pnpm config set` だけが
+# 効くことを実測で確認した。ただしこの設定が実際どのファイルへの
+# 書き込みに依存して効いているのかは特定できていない (設計書 §11 の
+# 未決事項)。この行が壊れたときにどこを見ればよいかは今のところ不明。
+#
+# store (/src/.pnpm-store) は /src の中にあるため、上の `clean -xdff` の
+# 対象になる。entrypoint は checkout -> clean -> exec "$@" の順であり、
+# pnpm install はその後 (exec された側) で走るため同一 run 内で消える
+# ことはない。この順序 (store の設定を clean より後に置くこと) を
+# 入れ替えてはならない。
+#
+# set -eu 下なのでこのコマンドが失敗すれば entrypoint 全体がここで落ちる。
+# それでよい: store を設定できないまま進めても、後続の pnpm install が
+# ENOENT で落ちるだけなので、ここで早く落ちた方が原因を追いやすい。
+pnpm config set store-dir /src/.pnpm-store
 
 # clone 用トークンは checkout 後に破棄する。以降 exec で走るのは
 # checkout 済みの信頼しないコードであり、そこから /run/secrets/GH_TOKEN
