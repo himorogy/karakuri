@@ -10,7 +10,7 @@
 # の fetch はトークンなしでも動くべきで、entrypoint 側で GH_TOKEN の存在を
 # 必須にはしていない。認証が実際に必要な private リポジトリでトークンが
 # 無ければ、ここで非ゼロ終了して認証失敗を顕在化させる
-# (設計書 .local/prod-secret-isolation-design.md §4.6)。
+# (.local/prod-secret-isolation-design.md §4.6)。
 set -eu
 f=/run/secrets/GH_TOKEN
 case "$1" in

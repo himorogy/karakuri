@@ -6,7 +6,7 @@
 # _PROD だけが、dev container には dev 向けの鍵だけが /run/secrets に
 # 置かれる想定。複数の鍵が同時に注入されても、dotenvx は -f のファイル名
 # 規約 (.env.prod → _PROD) で対応する鍵を選ぶため、ここでは全て export
-# すればよい (設計書 §4.3)。
+# すればよい (.local/prod-secret-isolation-design.md §4.3)。
 #
 # dotenvx には raw な鍵ファイルを直接読む仕組みがないため (-fk は dotenv
 # 形式のファイルを要求する)、shim による env 注入が正当な経路になる。
@@ -18,9 +18,9 @@ for f in /run/secrets/DOTENV_PRIVATE_KEY_*; do
   # `export "NAME=$(cat "$f")"` の形だと、cat が失敗しても終了コードは
   # export のものになるため set -e が発火しない。「ファイルは存在し非空
   # だが読めない (例: mode 000)」が空値の注入として素通りしてしまう —
-  # I6 が排除したい「沈黙した成功」そのもの。v=$(cat "$f") || exit 1 と
-  # 独立した文で読み、非空を再検査してから export する
-  # (設計書 §4.3 rev.4)。
+  # この設計が排除したい「秘密の欠落が沈黙した成功になる」形そのもの。
+  # v=$(cat "$f") || exit 1 と独立した文で読み、非空を再検査してから
+  # export する (.local/prod-secret-isolation-design.md §4.3)。
   v=$(cat "$f") || exit 1
   [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
   export "${f##*/}=$v"

@@ -5,11 +5,11 @@
 # /run/secrets/CLOUDFLARE_API_TOKEN の有無を見て注入するかどうかを決める
 # 薄いラッパー。意味論は三値 (存在→注入 / 空→エラー / 不在→素通し) で、
 # prod / dev のどちらでも同じに振る舞う。環境の判別はしない
-# (設計書 .local/prod-secret-isolation-design.md §4.3 / D15)。
+# (.local/prod-secret-isolation-design.md §4.3)。
 #
-# env -u NODE_OPTIONS は両分岐に付ける。Node の diagnostic report が
-# NODE_OPTIONS 経由で意図せず有効化されるのを防ぐ対策 (§4.4) で、
-# secret 注入の有無とは無関係に効くべきものだから。
+# env -u NODE_OPTIONS は両分岐に付ける。Node の diagnostic report は
+# environmentVariables を含むため、NODE_OPTIONS 経由で意図せず有効化される
+# のを防ぐ対策であり、secret 注入の有無とは無関係に効くべきものだから。
 set -eu
 f=/run/secrets/CLOUDFLARE_API_TOKEN
 if [ -e "$f" ]; then
@@ -18,9 +18,9 @@ if [ -e "$f" ]; then
   # `exec env VAR="$(cat "$f")" ...` の形だと、cat が失敗しても終了コード
   # は外側の env のものになるため set -e が発火しない。「ファイルは存在し
   # 非空だが読めない (例: mode 000)」が空値の注入として素通りしてしまう
-  # — I6 が排除したい「沈黙した成功」そのもの。v=$(cat "$f") || exit 1 と
-  # 独立した文で読み、非空を再検査してから exec する
-  # (設計書 §4.3 rev.4)。
+  # — この設計が排除したい「秘密の欠落が沈黙した成功になる」形そのもの。
+  # v=$(cat "$f") || exit 1 と独立した文で読み、非空を再検査してから
+  # exec する (.local/prod-secret-isolation-design.md §4.3)。
   v=$(cat "$f") || exit 1
   [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
   exec env -u NODE_OPTIONS \

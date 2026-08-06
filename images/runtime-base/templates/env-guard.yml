@@ -1,7 +1,5 @@
 # env-guard.yml — 平文 env のコミットを CI 側で検知する workflow のスタブ
 #
-# 設計: .local/prod-secret-isolation-design.md §8.1, §8.2
-#
 # 各プロジェクトの `.github/workflows/env-guard.yml` としてこのまま置く。
 # 検査ロジックはこのファイルにも、呼び出す先の workflow にも入っていない。
 # karakuri の images/runtime-base/bin/env-guard-scan という 1 本のスキャナに

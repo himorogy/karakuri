@@ -12,8 +12,7 @@
 # container の中で常駐する LLM エージェントがこのファイルを書き換えられて
 # しまう。正規 broker の呼び出しの前後に「鍵を別の場所へ複製する」コードを
 # 仕込む、といった攻撃が構成上可能になる。broker と起動スクリプト自体を
-# dev から到達不能なホストの固定パスに置くことで、この経路を構造的に断つ
-# （設計書 .local/prod-secret-isolation-design.md §4.1）。
+# dev から到達不能なホストの固定パスに置くことで、この経路を構造的に断つ。
 #
 # 同じ理由から、compose ファイルのパスもこのファイル自身の場所からの
 # リポジトリ相対推測をしない。PROD_COMPOSE_FILE で毎回明示的に受け取る。
@@ -35,9 +34,10 @@ set -euo pipefail
 # たとえば usage エラーではなく 0 を返せば、bash 既定の $?（パイプ最後の
 # コマンドのものだけを見る）はパイプ全体を成功とみなしてしまう。
 # secret が一切注入されないまま `docker compose run` 経由で prod
-# コマンドが走る、という最悪のケースを起動前に止めるための必須設定
-# （設計書 I6）。entrypoint 側の非空検証は第二の防波堤に過ぎない。ここで
-# 止められるものはここで止める。
+# コマンドが走る、という最悪のケースを起動前に止めるための必須設定である。
+# secret の欠落を沈黙した成功にしない、というのがこの構成全体の要求であり、
+# entrypoint 側の非空検証は第二の防波堤に過ぎない。ここで止められるものは
+# ここで止める。
 
 usage() {
 	cat <<'EOF'
@@ -55,8 +55,9 @@ Required environment:
 Optional environment:
   PROD_ALLOW_MUTABLE_REF
                      1 を指定すると、GIT_REF が完全な commit sha でなくて
-                     も警告付きで実行を続ける（署名検証は未実装。設計書
-                     §11 参照。危険を理解した上でのみ使うこと）
+                     も警告付きで実行を続ける（タグの署名検証は未実装な
+                     ので、署名タグであっても保証は得られない。危険を
+                     理解した上でのみ使うこと）
 
 Example:
   PROD_COMPOSE_FILE=~/.config/acme/compose.prod.yaml \
@@ -69,7 +70,7 @@ dotenvx は pnpm の外側に置くこと。`pnpm run` は node_modules/.bin を
 PATH の先頭に積むため、プロジェクトがローカルに dotenvx を持っていると
 script 内の dotenvx がイメージの shim に勝ち、鍵が注入されない。
 
---strict と --no-armor は必須（rev.5 / D20）:
+--strict と --no-armor は必須:
   --strict    dotenvx は復号に失敗しても非ゼロ終了せず、暗号文をその
               まま値として注入して rc=0 を返す（実測: FOO=encrypted:...
               のままアプリが起動し、deploy は成功と報告される）。
@@ -105,24 +106,27 @@ if [ "${#missing[@]}" -gt 0 ]; then
 	exit 1
 fi
 
-# --- GIT_REF: 完全な commit sha を既定で強制する（rev.6 / D21） --------------
+# --- GIT_REF: 完全な commit sha を既定で強制する ------------------------------
 # 軽量タグ・ブランチ名は付け替え可能で、「明示された ref」としての強さが
-# commit sha に劣る。R10 の唯一のゲートは deploy 前の人間のレビューであり、
-# その前提は「レビューした対象と流したものが一致する」ことなので、既定は
-# 拒否する。署名検証は未実装であり、現状はタグを許容してもリスクが増える
-# だけなので「署名タグは正当な用途」という理由での許容はしない（設計書
-# §11）。危険を理解した上でブランチ運用を選ぶ場合だけ
+# commit sha に劣る。dev container が prod の実行コードを書き換えうること
+# （この構成が守るのは機密性であって整合性ではない）に対する唯一のゲートは
+# deploy 前の人間のレビューであり、その前提は「レビューした対象と流したもの
+# が一致する」ことなので、既定は拒否する。失敗の性質も違う — ブランチ名は
+# 「押した瞬間に何を流したか分からず、後から再現もできない」のに対し、sha は
+# 「古いかもしれないが既知で再現可能」である。タグの署名検証は未実装であり、
+# 現状はタグを許容してもリスクが増えるだけなので「署名タグは正当な用途」と
+# いう理由での許容はしない。危険を理解した上でブランチ運用を選ぶ場合だけ
 # PROD_ALLOW_MUTABLE_REF=1 を明示する。
 #
 # ここでの検査は早期フィードバックのためのものであり、権威は
-# prod-entrypoint.sh 側にある（設計書 §4.6 / D21）。このラッパーを迂回して
+# prod-entrypoint.sh 側にある。このラッパーを迂回して
 # 直接 `docker compose run` された場合でも、entrypoint 側の同じ検査が
 # 効くため fail-closed は保たれる。
 if ! [[ "$GIT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
 	if [ "${PROD_ALLOW_MUTABLE_REF:-}" = 1 ]; then
-		echo "prod-run: WARNING: GIT_REF '$GIT_REF' is not a 40-character commit sha. A branch or lightweight tag can be repointed after the fact, which weakens the 'explicit ref' guarantee this design relies on (I7 / R10). PROD_ALLOW_MUTABLE_REF=1 is set, continuing anyway." >&2
+		echo "prod-run: WARNING: GIT_REF '$GIT_REF' is not a 40-character commit sha. A branch or lightweight tag can be repointed after the fact, so what you reviewed before deploying is no longer guaranteed to be what runs. PROD_ALLOW_MUTABLE_REF=1 is set, continuing anyway." >&2
 	else
-		echo "prod-run: GIT_REF '$GIT_REF' is not a 40-character commit sha. Set PROD_ALLOW_MUTABLE_REF=1 to continue anyway (not recommended; signature verification for tags is not implemented — design doc §11)." >&2
+		echo "prod-run: GIT_REF '$GIT_REF' is not a 40-character commit sha. Pass the full sha so that the commit you reviewed is the commit that runs. Set PROD_ALLOW_MUTABLE_REF=1 to continue anyway (not recommended; tag signature verification is not implemented, so even a signed tag buys you nothing here)." >&2
 		exit 1
 	fi
 fi
@@ -135,7 +139,7 @@ fi
 #
 # -T は必須。stdin が secret の搬送路であり、pseudo-TTY の割り当てとは
 # 両立しない。付け忘れると compose が TTY 確保を試みてパイプ入力を正しく
-# 消費できない（設計書 §4.1）。
+# 消費できない。
 #
 # broker と docker、どちらが失敗したのかを区別して報告するため、パイプ
 # ラインを `if` の条件として実行する。`if` の条件式は `set -e` の対象外
@@ -173,7 +177,7 @@ fi
 # 真の原因（docker）を隠して「broker failed (exit 141)」と誤報告してしまう。
 # SIGPIPE は docker が先に落ちた結果であって原因ではないため、broker が 141
 # かつ docker も非ゼロなら docker を原因として報告し、docker の終了コードで
-# 終了する（設計書 §4.1 rev.4）。
+# 終了する。
 if [ "$broker_rc" -eq 141 ] && [ "$docker_rc" -ne 0 ]; then
 	echo "prod-run: docker compose run failed (exit ${docker_rc}); broker received SIGPIPE (exit 141) because docker closed stdin first — docker is the root cause, not the broker" >&2
 	exit "$docker_rc"

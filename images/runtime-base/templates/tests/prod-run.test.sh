@@ -171,7 +171,7 @@ esac
 #     docker が先に失敗して stdin を閉じると broker は SIGPIPE (141) で
 #     落ちる。真の原因は docker であり、broker の 141 はその症状に過ぎない
 #     ため、docker の終了コードで終了し、メッセージも docker を原因として
-#     示すべき (regression: 設計書 §4.1 rev.4)。
+#     示すべき (regression)。
 echo "broker 141 (SIGPIPE) + docker non-zero: docker is reported as the cause"
 reset_env
 export PROD_BROKER="$BROKER_141"
@@ -198,7 +198,7 @@ esac
 # --- 両方非ゼロ (141 以外) regression: 両方の終了コードが出る ------------------
 #     broker が (SIGPIPE 以外の理由で) 非ゼロ、かつ docker も非ゼロのとき、
 #     どちらが「本当の」原因かは機械的に決められないため、両方の終了コード
-#     をメッセージに出す (regression: 設計書 §4.1 rev.4)。
+#     をメッセージに出す (regression)。
 echo "broker non-zero (not 141) + docker non-zero: both exit codes are shown"
 reset_env
 export PROD_BROKER="$BROKER_FAIL" # exit 7
@@ -255,10 +255,10 @@ else
 	ng "fake docker was never invoked (no stdin file)"
 fi
 
-# --- GIT_REF が 40 桁 hex でない (既定): 早期に拒否される (rev.6 / D21) --------
+# --- GIT_REF が 40 桁 hex でない (既定): 早期に拒否される ---------------------
 #     entrypoint 側が権威であり拒否するようになったため、ラッパー側も
 #     docker を起動する前に同じ既定で早期に落とす。
-echo "non-sha GIT_REF is rejected by default (rev.6 / D21)"
+echo "non-sha GIT_REF is rejected by default"
 reset_env
 export GIT_REF="main"
 

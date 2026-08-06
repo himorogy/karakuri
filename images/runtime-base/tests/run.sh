@@ -16,3 +16,8 @@ bash "$SCRIPT_DIR/prod-context.test.sh"
 # ため、テストもここに並べる。
 bash "$SCRIPT_DIR/env-guard.test.sh"
 bash "$SCRIPT_DIR/hook.test.sh"
+
+# 出荷物 (イメージに COPY されるコード / templates / README) に、このリポジトリ
+# の外では参照先が存在しない記号が残っていないことの検査。棚卸しを一度やっても
+# 次に書けば戻るので、検査として置いている。
+bash "$SCRIPT_DIR/shipped-symbols.test.sh"
