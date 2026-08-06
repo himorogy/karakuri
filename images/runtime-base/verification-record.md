@@ -606,18 +606,84 @@ fetch / checkout / reset / clean が `core.fsmonitor` を起動させるか」�
 - **A35（ASSERT）** — `/src` が named volume の構成で entrypoint が非ゼロ終了し、かつ
   **`/src` が tmpfs でないことを名指ししたメッセージが出る**こと。「落ちた」だけでは通さない
   （§0.71 の教訓: 失敗が何も言わない検査は二度手間になる）
-- **M11（MEASURE）** — secret の置き場（`/run`）を tmpfs から外した構成で何が起きるか。
-  `read_only: true` との併用可否も、uid 1000 が `mkdir -p /run/secrets` できるかも
-  docker 無しでは確認できないため、**推測で ASSERT にせず**測定として記録する。出力に
-  `is not a tmpfs` が含まれていれば自己検査が止めた直接証拠なので ASSERT へ昇格してよい。
-  別の失敗（compose の起動エラー、`mkdir` の Permission denied 等）ならその旨を記録するに
-  留める、という昇格条件をハーネスのコメントに明記してある
+- **A36（当初は M11 という MEASURE）** — secret の置き場（`/run`）を tmpfs から外した構成。
+  `read_only: true` との併用可否も、uid 1000 が `mkdir -p /run/secrets` できるかも docker
+  無しでは確認できなかったため、初回は**推測で ASSERT にせず**測定として書いた。どちらかで
+  先に落ちるなら「自己検査までは届かない」が観測結果であって、自己検査が止めたわけではない
+  ためである。昇格条件（出力に `is not a tmpfs` を含むこと）をハーネスのコメントに明記して
+  おき、**CI 11 回目でそれが満たされたので ASSERT に変えた**（§0.12）
 - **誤検知側の担保に新規 ASSERT は足していない。** B1〜B5 は出荷ファイル由来の全 tmpfs
   構成で entrypoint を完走させる ASSERT なので、自己検査が誤検知すれば軒並み FAIL する
   （`docker_prod_run` 経由の A5 / A10 / A16 も同じ性質）
 
-**A35 / M11 / 迂回のいずれも、まだ docker 上で一度も実行していない。** 実際の rc・出力・
-`read_only` との併用可否は次回の CI で初めて分かる。
+## 0.12 CI 11 回目（2026-08-06）— rev.7 の docker 依存分が全て通り、M6 の腐りが 1 件出た
+
+```
+42 measurements recorded, 40 assertions passed, 0 failed
+```
+
+### A35 / A36 — tmpfs 自己検査は実際にドリフトを止める
+
+**A35 が通った。** `/src` を named volume に戻した構成で entrypoint が非ゼロ終了し、
+`/src is not a tmpfs` と名指しした。設計上の防壁が動くことが実測で確認できた。
+
+**A36（旧 M11）は昇格した。** 未確認だった前提が両方とも肯定側で決着している。
+
+```
+prod-entrypoint: /run is not a tmpfs: fstype=ext4
+prod-entrypoint:   mount line: /dev/root /run ext4 rw,relatime,discard,errors=remount-ro,commit=30 0 0
+```
+
+- `read_only: true` と `/run` への bind mount の併用は**受理される**
+- uid 1000 は 0777 の bind mount 先に `mkdir -p /run/secrets` **できる**
+- したがって自己検査まで到達し、そこで止まる
+
+ハーネスに書いておいた昇格条件（出力に `is not a tmpfs` を含むこと）を満たしたので、測定から
+ASSERT へ変えた。測定のままだと、この経路が壊れても記録に残るだけで CI は緑になる。
+
+### 迂回は効いた — N-2 は健在
+
+番兵パスへの差し替えは意図どおり動いた（`WARNING: cannot verify that
+/verify-tmpfs-self-check-disabled is a tmpfs` が出力に残る）。N-2 の再現は無傷である。
+
+```
+named volume: FSMONITOR_RAN が 8 回
+tmpfs:        0 (fresh .git/config)
+```
+
+### N-1 が D21 に食われていた（この回で見つけた腐り）
+
+```
+2nd run (同じ volume、GIT_REF=v9.9.9): rc=1
+  prod-entrypoint: GIT_REF must be a full 40-character commit sha: v9.9.9
+```
+
+N-1 の再現はタグ（`v9.9.9`）を `GIT_REF` に渡すことで成立する測定だが、rev.6 で入れた D21 が
+完全な commit sha 以外を既定で拒否するため、**ref 解決に一度も到達していなかった**。
+
+named volume 側は「rc=1」だけが残って再現を示せず、**tmpfs 側はもっと質が悪い** —
+期待していたのが「`v9.9.9` が存在せず fail-closed」なので、ゲートで落ちても rc=1 になり、
+**期待値と一致しているように見える**。意図した経路を一度も通らずに期待どおりの結果が出る、
+この記録が繰り返し踏んできた偽の合格そのものである。
+
+D18 の歴史的な根拠（CI 3 回目、D21 が存在しなかった時点の実測）は有効なので設計判断は動かない。
+ただし**この形のままでは N-1 の退行を検出できない**ため、2nd run に
+`PROD_ALLOW_MUTABLE_REF=1` を渡してタグ経路を実際に通すよう直した。あわせて、出力の読み方
+（何が出ていれば再現で、何が出ていたら測定が成立していないのか）を測定自身が出すようにした。
+**次回の CI が初回の実行になる。**
+
+教訓の追加: **不変条件を強化すると、その不変条件を破る前提で書かれた過去の測定が黙って
+無効化される。** 検査を足したときは、その検査より前に書かれた測定が意図した経路を通り続けて
+いるかを確認する必要がある。
+
+### 設計書の記号がそのまま運用の出力に出ている
+
+```
+prod-entrypoint:   意図する場合は PROD_ALLOW_MUTABLE_REF=1 を設定する（設計書 D21）
+```
+
+設計書は git 管理外にあり、イメージは他 org へ配布する前提なので、受け取った側に `D21` の
+参照先は存在しない。§4.8 の規約どおり、PR 前に一括で棚卸しする。
 
 ## 0.7 原理上この方法では測れないもの
 
@@ -818,7 +884,7 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 
 | # | 項目 | 状態 | 根拠 |
 |---|---|---|---|
-| 51 | `/src` が tmpfs でない構成（named volume へ戻す一行）で entrypoint が明示的に落ちる | ⬜ | **A35** としてハーネスに追加済み。**docker 上では未実行**（次回 CI で消化する）。secret の置き場側は **M11**（測定。ASSERT への昇格条件はハーネスに明記）。§0.10 参照 |
+| 51 | `/src` が tmpfs でない構成（named volume へ戻す一行）で entrypoint が明示的に落ちる | ✅ | **A35**（CI 11 回目で通過）。secret の置き場側は **A36**（測定から昇格。`read_only` との併用が受理され uid 1000 も書けるため、自己検査まで到達して止まることを実測）。§0.10 / §0.12 参照 |
 | 52 | `/proc/mounts` に該当行が無い場合に WARNING を出して続行する | ✅ | `tests/entrypoint.test.sh`（テスト環境そのものがこの経路） |
 | 53 | 40 桁 hex を名前とする ref（オブジェクト不在）で非ゼロ終了し記録が残らない | ✅ | `tests/entrypoint.test.sh`。**現行 git ではそもそも成立しない**（下記 §0.9） |
 | 54 | 大文字の完全 commit sha が誤って拒否されない | ✅ | `tests/entrypoint.test.sh` |

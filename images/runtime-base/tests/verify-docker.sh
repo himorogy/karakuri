@@ -133,7 +133,7 @@ assert() {
 # compose のパース時点で失敗が確定するため fetch の成否と無関係、A17 (broker
 # 失敗の伝播) も broker 自体が secrets を一切渡さず失敗する経路なので
 # fetch の成否と無関係 — この 2 つはゲートの対象に含めない。A35 (named
-# volume の /src を tmpfs 自己検査が止める) と M11 (/run が tmpfs でない
+# volume の /src を tmpfs 自己検査が止める) と A36 (/run が tmpfs でない
 # 構成) も、entrypoint が fetch より前の自己検査で終わる経路なので同様に
 # ゲートの対象に含めない。A19〜A34 (出荷
 # compose.prod.yaml の構造検証) は docker (compose config) は使うが bare
@@ -619,7 +619,7 @@ services:
 EOS
 sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
 
-# compose-run-volume.yaml: M11 用。secret の置き場 (/run) だけを tmpfs から
+# compose-run-volume.yaml: A36 用。secret の置き場 (/run) だけを tmpfs から
 # 外し、ホスト側ディレクトリの bind mount に差し替えた構成。/src は tmpfs
 # (exec 付き) のままにする — entrypoint の自己検査は /src を先に見るため、
 # /src も named volume にすると /run 側の検査に到達しない。
@@ -2110,12 +2110,24 @@ m6_n1_named_volume() {
 	compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
 		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod sh -c "git tag v9.9.9 $TEST_COMMIT2" <<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
+	# PROD_ALLOW_MUTABLE_REF=1 (bugfix: D21 の追加に伴う変更): この測定は
+	# GIT_REF にタグ (v9.9.9) を渡すことで成立するが、D21 以降 entrypoint は
+	# 完全な commit sha 以外を既定で拒否するため、ref 解決に一度も到達せず
+	# 「rc=1」だけが残る。tmpfs 側は期待どおりの rc に見えてしまうので質が悪い
+	# — 意図した経路を通らずに期待値と一致する、この記録が繰り返し踏んできた
+	# 偽の合格そのものである。脱出口を明示して tag 経路を実際に通す。
+	# `-e` はコンテナの env に効く (compose ファイルの ${...} 補間とは別経路で、
+	# パース時点を過ぎていても間に合う)。
 	out2="$(compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "v9.9.9" \
 		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
+		-e PROD_ALLOW_MUTABLE_REF=1 \
 		-T --rm prod cat file.txt <<<"FOO=bar" 2>&1)" || rc2=$?
 	compose_down "$SCRATCH/compose-current.yaml" "$proj"
 	echo "1st run (commit1 を checkout 後、ローカルタグ v9.9.9 を commit2 に打つ): rc=$rc1"
-	echo "2nd run (同じ volume、GIT_REF=v9.9.9): rc=$rc2 file.txt=$out2 (commit1=hello / commit2=world)"
+	echo "2nd run (同じ volume、GIT_REF=v9.9.9、PROD_ALLOW_MUTABLE_REF=1): rc=$rc2 file.txt=$out2"
+	echo "  読み方: file.txt が world なら汚染された ref (commit2) が解決された = N-1 再現。"
+	echo "  hello (commit1) なら再現せず。'must be a full 40-character commit sha' が出ていたら"
+	echo "  脱出口が届いておらず、この測定は N-1 を測れていない。"
 }
 measure_git M6 "named volume 再利用: ref 汚染 (N-1) が再現するか" m6_n1_named_volume
 
@@ -2128,11 +2140,18 @@ m6_n1_tmpfs() {
 	# 参照) ので、ここは exec 付きの compose-src-tmpfs-exec.yaml を使う。
 	compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
 		-T --rm prod sh -c "git tag v9.9.9 $TEST_COMMIT2" <<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
+	# PROD_ALLOW_MUTABLE_REF=1: m6_n1_named_volume と同じ理由 (D21 の sha ゲートを
+	# 通さないと ref 解決に到達せず、この測定が N-1 を測れない)。tmpfs 側は
+	# 特に紛らわしい — ゲートで落ちても「rc=1」になり、期待値と一致して見える。
 	out2="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "v9.9.9" \
+		-e PROD_ALLOW_MUTABLE_REF=1 \
 		-T --rm prod cat file.txt <<<"FOO=bar" 2>&1)" || rc2=$?
 	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	echo "1st run: rc=$rc1"
-	echo "2nd run (GIT_REF=v9.9.9。tmpfs なので /src は毎回まっさらのはず、v9.9.9 は存在せず失敗するのが期待): rc=$rc2 out=$out2"
+	echo "2nd run (GIT_REF=v9.9.9、PROD_ALLOW_MUTABLE_REF=1。tmpfs なので /src は毎回まっさら): rc=$rc2 out=$out2"
+	echo "  読み方: 'does not resolve to a commit' で落ちていれば、前回のタグが残っておらず"
+	echo "  fail-closed になった = tmpfs 化が効いている。file.txt の中身が出ていたらタグが"
+	echo "  残っている。'must be a full 40-character commit sha' なら脱出口が届いていない。"
 }
 measure_git M6 "tmpfs /src: ref 汚染 (N-1) が消えるか" m6_n1_tmpfs
 
@@ -2365,7 +2384,7 @@ m8_caller_detects_prefix() {
 measure M8 "呼び出し側が注入値の encrypted: 接頭辞で復号失敗を検出できるか" m8_caller_detects_prefix
 
 # =============================================================================
-# M11: secret の置き場 (/run) が tmpfs でない構成で何が起きるか
+# A36: secret の置き場 (/run) が tmpfs でない構成で何が起きるか
 #
 # entrypoint の tmpfs 自己検査は /src と「secret を書く先の親」の 2 つを見る。
 # /src 側は A35 が ASSERT として押さえられる (named volume を差せば必ず
@@ -2377,32 +2396,48 @@ measure M8 "呼び出し側が注入値の encrypted: 接頭辞で復号失敗�
 #     書き込みが先に失敗しないか (uid/権限)
 #
 # このどちらかで先に落ちるなら「自己検査までは届かない」が観測結果であり、
-# 自己検査が止めたわけではない。docker の無い環境では確認できないため、
-# ここでは ASSERT にせず MEASURE として生の rc と出力を記録する
-# (推測で ASSERT を書くと、実際には別の理由で落ちているものを「防壁が
-# 効いた」と誤読する — この検証記録が二度踏んでいる偽の合格の形そのもの)。
+# 自己検査が止めたわけではない。docker の無い環境では確認できなかったため、
+# 初回は ASSERT にせず MEASURE として生の rc と出力を記録した (推測で ASSERT を
+# 書くと、実際には別の理由で落ちているものを「防壁が効いた」と誤読する —
+# この検証記録が二度踏んでいる偽の合格の形そのもの)。
 #
-# 期待する読み方: 出力に "is not a tmpfs" が含まれていれば自己検査が止めた
-# ことの直接証拠になる。その場合はこの測定を ASSERT へ昇格させてよい。
-# 別の失敗 (compose のパース/起動エラー、mkdir の Permission denied 等) で
-# あれば、その旨を記録に残したうえで ASSERT にはしないこと。
+# 実測で決着した (2026-08-06 の CI)。read_only との併用は受理され、uid 1000 は
+# 0777 の bind mount 先に書けて、自己検査まで到達した:
+#
+#   prod-entrypoint: /run is not a tmpfs: fstype=ext4
+#   prod-entrypoint:   mount line: /dev/root /run ext4 rw,relatime,... 0 0
+#
+# 昇格条件 (出力に "is not a tmpfs" を含む) を満たしたので A36 として ASSERT に
+# 変える。measure のままだと、この経路が壊れても記録に残るだけで CI が緑になる。
 #
 # fetch 依存ではない (自己検査は fetch より前) ため、A11 / A17 と同じく
-# preflight ゲートの対象にしない = measure_git ではなく measure を使う。
+# preflight ゲートの対象にしない = assert_git ではなく assert を使う。
 # =============================================================================
 echo
-echo "=== M11: /run が tmpfs でない構成 ==="
+echo "=== A36: /run が tmpfs でない構成 ==="
 
-m11_run_not_tmpfs() {
-	local proj="verify-m11-$$" rc=0 out
+a36_run_not_tmpfs_rejected() {
+	local proj="verify-a36-$$" rc=0 out
 	out="$(compose_run "$SCRATCH/compose-run-volume.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
 		-T --rm prod true <<<"FOO=bar" 2>&1)" || rc=$?
 	compose_down "$SCRATCH/compose-run-volume.yaml" "$proj"
-	echo "rc=$rc"
-	echo "--- 出力 (自己検査が止めたなら 'is not a tmpfs' を含む) ---"
-	echo "$out"
+	# A23 の教訓: 「落ちた」だけでは通さない。別の理由 (compose の起動エラー、
+	# mkdir の Permission denied) で落ちたのを「防壁が効いた」と誤読しないよう、
+	# 自己検査のメッセージが出ていることまで確認し、失敗時は実際の出力を出す。
+	if [ "$rc" -eq 0 ]; then
+		echo "secret の置き場が tmpfs でないのに entrypoint が完走した (rc=0)。出力:" >&2
+		echo "$out" >&2
+		return 1
+	fi
+	case "$out" in
+	*"is not a tmpfs"*) return 0 ;;
+	esac
+	echo "非ゼロ終了はしたが、自己検査のメッセージ ('is not a tmpfs') が無い。" >&2
+	echo "別の理由 (compose の起動エラー / mkdir の権限) で落ちた可能性がある。rc=$rc 出力:" >&2
+	echo "$out" >&2
+	return 1
 }
-measure M11 "/run を tmpfs から bind mount に差し替えた構成で entrypoint が何を出して終わるか" m11_run_not_tmpfs
+assert A36 "secret の置き場が tmpfs でない構成で entrypoint が非ゼロ終了し、tmpfs でないことを名指しする [compose-run-volume.yaml。自己検査は fetch より前なので harness preflight とは無関係]" a36_run_not_tmpfs_rejected
 
 # =============================================================================
 # ASSERT: 設計上確定している性質。落ちたらスクリプトは最後に非ゼロ終了する。
