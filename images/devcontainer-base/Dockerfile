@@ -8,6 +8,15 @@
 # =============================================================================
 ARG CRIT_VERSION=v0.18.0
 
+# 下段の `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` が使う。
+# **ここから動かさないこと。** FROM の中で参照する ARG は、最初の FROM より前
+# (グローバルスコープ) で宣言されていなければならない。ステージの中で宣言した
+# ものは、その次の FROM からは見えない。見えないまま空文字に展開されると
+# `ghcr.io/himorogy/runtime-base:` という壊れた参照になり、pull を試みる前に
+# 「invalid reference format」で落ちる。イメージが取得できないのとは別の失敗で、
+# エラーだけを読むと取り違えやすい。
+ARG RUNTIME_BASE_VERSION=1
+
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS crit-builder
 
 ARG CRIT_VERSION
@@ -38,7 +47,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 #             prod container でも使うもの       -> images/runtime-base 側
 #               (設計書 docs/prod-secret-isolation-design.md §4.5)
 # =============================================================================
-ARG RUNTIME_BASE_VERSION=1
+# RUNTIME_BASE_VERSION はファイル冒頭のグローバルスコープで宣言してある。
 FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}
 
 ARG USERNAME=node

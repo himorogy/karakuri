@@ -21,8 +21,15 @@ name: devcontainer-base
 # devcontainer-base は images/runtime-base の上に載る (FROM ghcr.io/himorogy/
 # runtime-base:${RUNTIME_BASE_VERSION})。そのためリリース順は runtime-base →
 # devcontainer-base の順を守ること。runtime-base をまだ GHCR に push していない
-# 段階 (例: 初回リリース前) では、devcontainer-base のビルドは FROM の解決に
-# 失敗する。
+# 段階 (例: 初回リリース前) では、devcontainer-base のビルドは pull に失敗する。
+#
+# **このジョブが赤いことを「まだ push していないからだ」で片付けないこと。**
+# 実際にそれで長く赤いままだったが、原因は別にあった — RUNTIME_BASE_VERSION が
+# ステージの中で宣言されていて FROM から見えず、空文字に展開されて
+# `ghcr.io/himorogy/runtime-base:` という壊れた参照になっていた。pull を試みる
+# 前に「invalid reference format」で落ちるので、GHCR の有無とは無関係である。
+# 「赤いのは想定どおり」という但し書きが、別の失敗を見えなくしていた。
+# 落ちたときは、想定していた理由と実際のエラーが一致しているかを毎回見ること。
 #
 # なお PR の paths に images/runtime-base/** は足していない。runtime-base の
 # 変更は runtime-base 側の workflow (.github/workflows/runtime-base.yml) が
