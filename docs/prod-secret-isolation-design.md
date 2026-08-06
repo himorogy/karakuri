@@ -472,9 +472,11 @@ tmpfs にすれば毎回まっさらな repo から始まるため、**両方と
 
 ### 4.7 コミット前検査（T6 / 緩和策）
 
-検査ロジックは dotenvx 本体が持つ。`dotenvx precommit` は `.env` が暗号化も gitignore もされていない状態を検出する。monorepo でのディレクトリ指定は**位置引数**（`dotenvx precommit apps/backend`）。注意: 検査対象は **`git diff HEAD` に現れるコミット予定ファイルのみ**で、ディスク上の全 `.env*` を無差別に見るわけではない（CI での流用可否に影響する — §8.2）。
+検査ロジックは**自前の共有スキャナ 1 本**が持つ（`packages/env-guard/bin/env-guard-scan`。D24 / D25）。hook と CI が同じファイルを呼び、違うのは渡すファイル一覧の作り方だけである（hook は staged、CI は tracked）。
 
-`dotenvx precommit --install` は `.git/hooks/pre-commit` に書き込むが、`.git/hooks` は versioned ではないため clone ごとに実行が必要で、既存 clone には効かず、改善も伝播しない。代わりに `core.hooksPath` をイメージに焼く。
+**当初は dotenvx 本体の `dotenvx precommit` を使う設計だった。** 外した理由は 2 つあり、どちらも実測で決まった。第一に、`precommit` の検査対象は `git diff HEAD` に現れる差分だけで、差分の無いクリーンな checkout では平文の tracked `.env` を見つけたうえで rc=0 を返す（D23。§8.2）。第二に、自前のファイル名フィルタを持っていてプロジェクト側から上書きできないため、hook にだけ残すと「CI は通るが hook だけ落ちる」という逆向きの分岐を作る（D24）。**hook の文脈で `precommit` 自体は正しく動く** — 壊れているから外したのではなく、判定を 2 つ持たないために外した。
+
+配布は `core.hooksPath` による。`dotenvx precommit --install` のように `.git/hooks/pre-commit` へ書き込む方式は、`.git/hooks` が versioned でないため clone ごとに実行が要り、既存 clone には効かず、改善も伝播しない（D12）。代わりに `core.hooksPath` をイメージに焼く。
 
 ```dockerfile
 # images/runtime-base/Dockerfile
@@ -527,34 +529,27 @@ done
 
 実際のリスクは、イメージ焼き込みを理由に per-repo の hook 導入（simple-git-hooks 等）を撤去した場合に、**ホスト側だけが無防備になる**ことである。撤去する場合はホスト側の手当てを同時に行う。
 
-現行の `.git/hooks/pre-commit`（simple-git-hooks が `prepare` で書き込む）がホストで実際に動作するかは、以下に依存するため実測が必要である。
+#### 方式は A（simple-git-hooks との併用）で確定した（rev.8）
 
-- `node_modules` が named volume になっていないか。なっているとホストからパスが解決できず、`sh node_modules/.../check.sh` が失敗する
-- スクリプトが呼ぶバイナリがホストの PATH に存在するか
-- GUI クライアントの PATH。Finder / Dock から起動したプロセスはログインシェルの PATH を継承しない
+二案あった。**A. 併用** — コンテナは `core.hooksPath`、ホストは既存の simple-git-hooks を維持する。**B. ホストも `core.hooksPath`** — `git config --global core.hooksPath ~/.config/git/hooks` を dotfiles で配布する。
 
-いずれも**静かに失敗しうる**点が問題で、「効いているつもりで効いていない」状態は hook がないより悪い。ホスト側 hook は fail-closed に書き、かつコンテナ側と同様に per-repo hook へ**チェーン**する（案 B を採る場合、これを欠くとホストでも husky 等が黙って死ぬ）。
+**A を採る。** simple-git-hooks が macOS 実機で動作していることが確認できており、動いている仕組みの上に載せる方が、新しい仕組みを持ち込んで挙動を一から確かめるより速い。加えて B は `.git/hooks/` を丸ごと無視させるため、そのリポジトリが持っている他の hook を黙って殺す。イメージの中でそれが許されるのは、コンテナの中の git 設定という閉じた場所だからである。人のホストの global 設定に対して同じことをするのは筋が違う。
 
-```sh
-#!/bin/sh
-# ~/.config/git/hooks/pre-commit
-set -e
-if ! command -v dotenvx >/dev/null 2>&1; then
-  export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
-fi
-command -v dotenvx >/dev/null 2>&1 || {
-  echo "dotenvx not found — pre-commit check cannot run" >&2; exit 1; }
-dotenvx precommit
-root=$(git rev-parse --show-toplevel)
-for h in "$root/.husky/pre-commit" "$root/.githooks/pre-commit"; do
-  if [ -x "$h" ]; then "$h"; fi
-done
-```
+導入は `@himorogy/env-guard` の `env-guard install` が行う。`package.json` の `simple-git-hooks.pre-commit` に hook の呼び出しを 1 行足し、simple-git-hooks を実行して `.git/hooks/pre-commit` を実体化し、**それが実在し実行可能で意図した hook を呼んでいることを確かめてから**成功を報告する。書いただけで「入った」と報告して実際には何も検査されていない状態を作らない。
 
-ホスト側の方式は二案あり、実測後に決定する（§11）。
+既に別の `pre-commit` コマンドが設定されていれば**上書きせず落ちる**。既存の検査を黙って消さないためで、合成は人間に委ねる。
 
-- **A. 併用** — コンテナは `core.hooksPath`、ホストは既存の simple-git-hooks を維持。双方が最終的に `dotenvx precommit` を呼ぶ形に揃えれば、二系統でも実質の乖離は生じない。
-- **B. ホストも** `core.hooksPath` — `git config --global core.hooksPath ~/.config/git/hooks` を dotfiles / セットアップスクリプトで配布する。伝播モデルがコンテナ側と揃い、`node_modules` の有無に依存しなくなる。
+#### PATH の問題は測る前に消えた（rev.8）
+
+rev.7 まではここに「GUI クライアントの PATH。Finder / Dock から起動したプロセスはログインシェルの PATH を継承しない」を実測項目として置いていた。**これは測って決める問いではなかった。**
+
+hook は自分自身の場所（`$0`）からスキャナの位置を割り出す。隣の `bin/env-guard-scan` を見て、無ければ `/usr/local/bin/env-guard-scan` を見る。**`PATH` を一度も引かない。** したがって GUI クライアントの `PATH` がログインシェルと違っても、走るスキャナは同じである。
+
+残るのは「見つけられなかったときに何が起きるか」だけで、これは環境の性質ではなく**こちらが書くコードの性質**である。どちらにも無ければ非ゼロで終わる。テストで確かめられる。
+
+同じ理由で「`node_modules` が named volume になっていないか」も、測るべき問いから外れた。named volume ならホストからパスが解決できず、hook の呼び出し（`sh node_modules/@himorogy/env-guard/hooks/pre-commit`）が 127 で落ちる。**落ちる方向なので commit は止まる。** 静かに通る経路がない以上、事前に測る必要はない。
+
+**「静かに失敗しうる」ことが問題だった**という認識は正しかった。効いているつもりで効いていない状態は hook がないより悪い。ただし対処は実測ではなく、静かに失敗しない書き方をすることだった。
 
 ### 4.8 出荷物に設計書の記号を書かない（rev.7）
 
