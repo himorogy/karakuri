@@ -8,7 +8,7 @@
 # "$@" を exec する。環境変数を一切経由しないため、ホストシェルの environ にも
 # compose プロセスの environ にも docker inspect の Config.Env にも
 # secret は現れない
-# (.local/prod-secret-isolation-design.md §4.1 / §4.6)。
+# (docs/prod-secret-isolation-design.md §4.1 / §4.6)。
 set -eu
 : "${GIT_REPO:?}" "${GIT_REF:?}"
 
@@ -26,7 +26,7 @@ mkdir -p /run/secrets
 # secret 本体そのものでありうる。`logging: none` はホストのログファイルを
 # 止めるだけで、アタッチ先の端末表示 (とそのスクロールバック) は止められ
 # ないため、位置は行番号だけで示す
-# (.local/prod-secret-isolation-design.md §4.6)。
+# (docs/prod-secret-isolation-design.md §4.6)。
 #
 # lineno は「読んだ行」の通し番号 (空行・コメント行も数える)。n は「取り
 # 込んだ secret の件数」で意味が異なる — n を流用すると後段の
@@ -78,7 +78,7 @@ export GIT_ASKPASS=/usr/local/bin/git-askpass
 
 # --- self-check: /src が exec であること ----------------------------------------
 # docker の tmpfs は既定で noexec が付き、uid=/gid=/mode= を渡してもそれは
-# 消えない (.local/prod-secret-isolation-design.md §4.2)。これを忘れて
+# 消えない (docs/prod-secret-isolation-design.md §4.2)。これを忘れて
 # `/src:uid=1000,gid=1000,mode=0755` のように `exec` を明示し忘れると、
 # /src 自体のマウントは成立したまま起動してしまう。失敗が表面化するのは
 # ずっと後、pnpm install が node_modules/.bin 配下の実行ファイル
@@ -99,7 +99,7 @@ export GIT_ASKPASS=/usr/local/bin/git-askpass
 # されていれば常に読めるカーネル由来の情報源なので、外部コマンドに頼らず
 # 検査できるこちらを選んだ (この判断は docker が使える環境での実測なしに
 # 書いている。docker を要する検証項目
-# (.local/prod-secret-isolation-design.md §10) に追加すべき)。
+# (docs/prod-secret-isolation-design.md §10) に追加すべき)。
 #
 # /proc/mounts が読めない環境 (procfs 非マウント等) では検査自体が新しい
 # 失敗原因になっては本末転倒なので、スキップして続行する。
@@ -231,7 +231,7 @@ fi
 # tmpfs 指定という外部の前提に依存しているためで、その前提が崩れても
 # 「明示された ref の内容が実行される」が成立するようにしておく (多重防御)。
 # 前回実行が途中で失敗して /src に残骸が残っているケースも、この経路が
-# 拾う (.local/prod-secret-isolation-design.md §4.6)。
+# 拾う (docs/prod-secret-isolation-design.md §4.6)。
 git -C /src fetch --tags --prune origin
 
 # --- GIT_REF: 完全な commit sha を既定で強制する --------------------------------
@@ -249,7 +249,7 @@ git -C /src fetch --tags --prune origin
 # `docker compose run` された場合や、ラッパー自体の改変・迂回があっても
 # 効くようにするため (ラッパー側の同種チェックは「権威」ではなく早期
 # フィードバックに過ぎない。
-# .local/prod-secret-isolation-design.md §4.6)。
+# docs/prod-secret-isolation-design.md §4.6)。
 case "$GIT_REF" in
   *[!0-9a-fA-F]*|"") mutable=1 ;;
   *) [ "${#GIT_REF}" -eq 40 ] && mutable=0 || mutable=1 ;;
@@ -315,7 +315,7 @@ fi
 # 対話シェルを二段構え (`compose run -dT` で起動しておき `docker exec -it`
 # で入る) にした場合は entrypoint の出力が detached 側へ行くため、
 # `docker exec` で入ったシェルからは /run/prod-ref を読む (prod-context が
-# 表示する。.local/prod-secret-isolation-design.md §4.3 / §4.6)。
+# 表示する。docs/prod-secret-isolation-design.md §4.3 / §4.6)。
 echo "prod-entrypoint: GIT_REF=$GIT_REF resolved to $commit" >&2
 
 # /run/prod-ref は umask 077 (このファイル冒頭) の影響を受けて既定では
@@ -345,7 +345,7 @@ git -C /src clean -xdff
 # $HOME/.config/pnpm/rc に手で書いても効かない。`pnpm config set` だけが
 # 効くことを実測で確認した。ただしこの設定が実際どのファイルへの
 # 書き込みに依存して効いているのかは特定できていない
-# (.local/prod-secret-isolation-design.md §11 の未決事項)。この行が壊れた
+# (docs/prod-secret-isolation-design.md §11 の未決事項)。この行が壊れた
 # ときにどこを見ればよいかは今のところ不明。
 #
 # store (/src/.pnpm-store) は /src の中にあるため、上の `clean -xdff` の
@@ -379,7 +379,7 @@ pnpm config set store-dir /src/.pnpm-store
 # clone 用トークンは checkout 後に破棄する。以降 exec で走るのは
 # checkout 済みの信頼しないコードであり、そこから /run/secrets/GH_TOKEN
 # を読ませない。取得用と実行用の資格情報を同一セッションに同居させない
-# (.local/prod-secret-isolation-design.md §4.6)。
+# (docs/prod-secret-isolation-design.md §4.6)。
 rm -f /run/secrets/GH_TOKEN
 unset GIT_ASKPASS
 

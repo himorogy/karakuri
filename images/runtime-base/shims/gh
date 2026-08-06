@@ -4,7 +4,7 @@
 # GH_TOKEN を常時環境変数として保持せず、実行のたびに /run/secrets/GH_TOKEN
 # の有無を見て注入するかどうかを決める薄いラッパー。wrangler の shim と同型
 # (意味論は三値: 存在→注入 / 空→エラー / 不在→素通し。環境の判別はしない。
-# .local/prod-secret-isolation-design.md §4.3)。
+# docs/prod-secret-isolation-design.md §4.3)。
 #
 # env -u NODE_OPTIONS は両分岐に付ける。理由は shims/wrangler と同じ:
 # Node の diagnostic report は environmentVariables を含むため NODE_OPTIONS
@@ -20,7 +20,7 @@ if [ -e "$f" ]; then
   # 非空だが読めない (例: mode 000)」が空値の注入として素通りしてしまう
   # — この設計が排除したい「秘密の欠落が沈黙した成功になる」形そのもの。
   # v=$(cat "$f") || exit 1 と独立した文で読み、非空を再検査してから
-  # exec する (.local/prod-secret-isolation-design.md §4.3)。
+  # exec する (docs/prod-secret-isolation-design.md §4.3)。
   v=$(cat "$f") || exit 1
   [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
   exec env -u NODE_OPTIONS \

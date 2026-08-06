@@ -4,7 +4,7 @@
 # core.hooksPath でイメージから全リポジトリ・全 clone・worktree に効かせる
 # (.git/hooks への書き込みは clone ごとに必要で既存 clone にも改善にも
 # 伝播しないため採らない。
-# .local/prod-secret-isolation-design.md §4.7)。
+# docs/prod-secret-isolation-design.md §4.7)。
 # core.hooksPath は全 hook を上書きするため、husky / lefthook 等の
 # per-repo hook を黙って壊さないよう明示的にチェーンする。
 set -e

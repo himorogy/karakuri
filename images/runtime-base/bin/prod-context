@@ -5,7 +5,7 @@
 # /run/prod-ref の内容を表示する。「持っているべき鍵の一覧」はプロジェクト
 # 固有なので runtime-base には持てない。注入済みのものを列挙するだけに
 # 留め、無いものが映らないことで気づかせる
-# (.local/prod-secret-isolation-design.md §4.3)。
+# (docs/prod-secret-isolation-design.md §4.3)。
 #
 # /run/secrets の「ファイル名」だけを出す。ファイル名は環境変数名そのもの
 # なので安全に出せるが、値は絶対に出さない。
@@ -64,7 +64,7 @@ esac
 		# ls の出力をパースするのは一般には避けるべきだが、ここに並ぶ
 		# のは entrypoint が鍵名検査 ([A-Za-z0-9_] のみ) を通した名前で
 		# 作ったファイルであり
-		# (.local/prod-secret-isolation-design.md §4.6)、空白・改行・glob
+		# (docs/prod-secret-isolation-design.md §4.6)、空白・改行・glob
 		# 文字を含む名前は来ない。
 		# shellcheck disable=SC2045 # 上記のとおり鍵名は [A-Za-z0-9_]
 		# のみで、ls 出力のパースが壊れる余地が無い。glob は zsh の
@@ -84,7 +84,7 @@ esac
 
 	# /run/prod-ref は prod-entrypoint.sh が GIT_REF= / GIT_COMMIT= /
 	# MUTABLE_REF= の3行 (dotenv 形式ではなく単純な KEY=VALUE) を
-	# 書く (.local/prod-secret-isolation-design.md §4.6)。無ければ何も
+	# 書く (docs/prod-secret-isolation-design.md §4.6)。無ければ何も
 	# 出さない (prod-entrypoint.sh を経由せず起動した場合など)。
 	if [ -r /run/prod-ref ]; then
 		git_ref=""

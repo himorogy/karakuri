@@ -11,8 +11,10 @@ ghcr.io/himorogy/runtime-base:1
 チェーン面積が構造的に dev を超えないことが保証される。共通の第三のベースを両者が継承する
 構成ではこの性質は得られない。
 
-本 README は収録物と運用手順を扱う。個々の設計判断の根拠は、それが効いている場所
-（entrypoint のコメント、`templates/compose.prod.yaml` のコメント）に書いてある。
+本 README は収録物と運用手順を扱う。設計の全体像・脅威モデル・判断根拠は
+[`docs/prod-secret-isolation-design.md`](../../docs/prod-secret-isolation-design.md) にある。
+個々の判断の根拠は、それが効いている場所（entrypoint のコメント、
+`templates/compose.prod.yaml` のコメント）にも書いてある。
 
 ---
 

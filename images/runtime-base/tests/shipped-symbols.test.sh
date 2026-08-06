@@ -2,7 +2,7 @@
 #
 # 出荷物に、このリポジトリの外では意味を持たない記号が残っていないことの検査。
 #
-# 設計メモの中でしか通じない記号 (不変条件・残余リスク・設計判断の番号や
+# 設計文書の中でしか通じない記号 (不変条件・残余リスク・設計判断の番号や
 # 節番号、版番号) は、書いた本人には意味があるが、イメージやテンプレートを
 # 受け取った側には参照先が存在しない。「可変 ref はレビュー対象と実行対象の
 # 一致を保証しない (設計書 R10 / D21)」という stderr を運用中に踏んだ人間は、
@@ -11,16 +11,17 @@
 #
 # 検査の強さは「読者が参照先に到達できるか」で二段に分ける。
 #
-#   strict  … templates/ と README。他リポジトリへコピーされ、あるいは
-#             他 org の運用者が読む。記号も、このリポジトリ内の設計メモへの
-#             パス参照も残せない
+#   strict  … templates/ と README。記号は残せない。README はこのリポジトリ
+#             に留まるので docs/ 配下の文書はパスで参照してよいが、
+#             templates/ は他リポジトリへ丸ごとコピーされるため、そこでは
+#             docs/ へのパスも解決できない (下の別検査で見る)
 #   lenient … イメージに COPY されるコード (bin / shims / hooks)。コメントは
-#             設計メモをフルパスで参照してよいが、記号を裸で置くことと、
+#             docs/ の文書をフルパスで参照してよいが、記号を裸で置くことと、
 #             echo/printf で外へ出す文字列に記号を混ぜることは許さない
 #
 # 対象は runtime-base の出荷物に限る。images/devcontainer-base の文書が参照して
-# いるのは docs/secure-publish.md (git 管理下) と自分自身の節番号なので、
-# 受け取った側が辿れないという問題が起きない。
+# いるのは docs/secure-publish.md と自分自身の節番号なので、受け取った側が
+# 辿れないという問題が起きない。
 #
 set -uo pipefail
 
@@ -53,15 +54,22 @@ SYMBOL_RE="§|${NUM_RE}|設計書|rev\\.[0-9]+"
 # したいので、それ以外をこちらで見る。
 BARE_RE="${NUM_RE}|設計書|rev\\.[0-9]+"
 
-# git 管理下にあり、誰でも辿れる参照。記号があってもよい。
-ALLOWED_REF='docs/secure-publish\.md'
+# git 管理下にあり、このリポジトリを見られる人なら誰でも辿れる参照。
+# この形でなら記号を伴ってよい。
+ALLOWED_REF='docs/(secure-publish|prod-secret-isolation-design)\.md'
 
-# 設計メモは .local/ にあり gitignore されている。clone した人間にも存在しない。
-PRIVATE_DOC='\.local/prod-secret-isolation-design\.md'
+# 設計文書そのもの。git 管理下にあるので karakuri の中では辿れるが、
+# templates/ は他リポジトリへコピーされるため、コピー先では解決できない。
+DESIGN_DOC='docs/prod-secret-isolation-design\.md'
 
 # scan_strict <file> -> 違反行を stdout に出す
 scan_strict() {
 	grep -nE "$SYMBOL_RE" "$1" 2>/dev/null | grep -vE "$ALLOWED_REF"
+}
+
+# scan_design_doc <file> -> 設計文書へのパス参照を stdout に出す
+scan_design_doc() {
+	grep -nE "$DESIGN_DOC" "$1" 2>/dev/null
 }
 
 # scan_lenient <file> -> 違反行を stdout に出す
@@ -73,7 +81,7 @@ scan_strict() {
 scan_lenient() {
 	local f="$1"
 	grep -nE "$BARE_RE" "$f" 2>/dev/null | grep -vE "$ALLOWED_REF"
-	grep -nE '§' "$f" 2>/dev/null | grep -vE "$PRIVATE_DOC" | grep -vE "$ALLOWED_REF"
+	grep -nE '§' "$f" 2>/dev/null | grep -vE "$ALLOWED_REF"
 	grep -nE '(echo|printf)' "$f" 2>/dev/null | grep -E "$SYMBOL_RE" | grep -vE "$ALLOWED_REF"
 }
 
@@ -103,36 +111,15 @@ ${hits}
 
 mapfile -t TEMPLATE_FILES < <(find "$IMG_DIR/templates" -type f | sort)
 
-check "templates/ に設計メモ内でしか通じない記号が無い" scan_strict "${TEMPLATE_FILES[@]}"
+check "templates/ に設計文書内でしか通じない記号が無い" scan_strict "${TEMPLATE_FILES[@]}"
 
 # templates は丸ごとコピーされるので、パスで参照しても受け取った側では解決できない。
-check_private_doc() {
-	local label="$1"
-	shift
-	local f hits all=""
-	for f in "$@"; do
-		[ -f "$f" ] || continue
-		hits="$(grep -nE "$PRIVATE_DOC" "$f" 2>/dev/null)"
-		if [ -n "$hits" ]; then
-			all="${all}${f}
-${hits}
-"
-		fi
-	done
-	if [ -z "$all" ]; then
-		ok "$label"
-	else
-		ng "$label"
-		printf '%s\n' "$all" >&2
-	fi
-}
+check "templates/ がコピー先で解決できない設計文書のパスを持たない" scan_design_doc \
+	"${TEMPLATE_FILES[@]}"
 
-check_private_doc "templates/ が gitignore 下の設計メモを参照していない" "${TEMPLATE_FILES[@]}"
-
-check "README に設計メモ内でしか通じない記号が無い" scan_strict \
-	"$IMG_DIR/README.md" "$IMG_DIR/migration.md"
-
-check_private_doc "README が gitignore 下の設計メモを参照していない" \
+# README はこのリポジトリに留まるので、docs/ 配下へのリンクは辿れる。
+# 禁じるのは記号だけ。
+check "README に設計文書内でしか通じない記号が無い" scan_strict \
 	"$IMG_DIR/README.md" "$IMG_DIR/migration.md"
 
 # --- lenient: イメージに COPY されるコード -----------------------------------------
@@ -163,7 +150,7 @@ else
 fi
 
 # 逆向きの対照。lenient が許すべきものを誤検知しないこと。
-printf '# 詳細は .local/prod-secret-isolation-design.md §4.6 にある\n' >"$t/lenient-okref"
+printf '# 詳細は docs/prod-secret-isolation-design.md §4.6 にある\n' >"$t/lenient-okref"
 if [ -z "$(scan_lenient "$t/lenient-okref")" ]; then
 	ok "否定対照: lenient はフルパス参照付きの節番号を誤検知しない"
 else
@@ -175,6 +162,13 @@ if [ -z "$(scan_strict "$t/allowed-ref")" ]; then
 	ok "否定対照: git 管理下の文書への参照は strict でも通る"
 else
 	ng "否定対照: git 管理下の文書への参照は strict でも通る"
+fi
+
+printf '# 詳細は docs/prod-secret-isolation-design.md にある\n' >"$t/doc-path"
+if [ -n "$(scan_design_doc "$t/doc-path")" ]; then
+	ok "否定対照: templates 向けの検査が設計文書へのパスを検知する"
+else
+	ng "否定対照: templates 向けの検査が設計文書へのパスを検知する"
 fi
 
 rm -rf "$t"

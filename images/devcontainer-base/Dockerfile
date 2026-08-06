@@ -36,7 +36,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 #             npm で入るもの (Biome, dprint 等) -> プロジェクトの devDependency
 #             プロジェクト固有のもの (psql 等)  -> プロジェクトの Dockerfile
 #             prod container でも使うもの       -> images/runtime-base 側
-#               (設計書 .local/prod-secret-isolation-design.md §4.5)
+#               (設計書 docs/prod-secret-isolation-design.md §4.5)
 # =============================================================================
 ARG RUNTIME_BASE_VERSION=1
 FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}

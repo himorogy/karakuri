@@ -2,7 +2,7 @@
 # =============================================================================
 # verify-docker.sh — docker が要る検証項目の実行ハーネス
 #
-# images/runtime-base の設計 (.local/prod-secret-isolation-design.md) には
+# images/runtime-base の設計 (docs/prod-secret-isolation-design.md) には
 # docker / docker compose の実挙動に依存する未検証の前提がいくつも残っている
 # (同ファイル §10、images/runtime-base/verification-record.md 参照)。この
 # dev container には docker が無い — これは設計の前提条件そのものであり

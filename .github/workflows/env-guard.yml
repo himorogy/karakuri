@@ -4,7 +4,7 @@ name: env-guard
 # リポジトリの .github/workflows/env-guard.yml に 5 行のスタブ
 # (images/runtime-base/templates/env-guard.yml) を置いて使う。
 #
-# 設計: .local/prod-secret-isolation-design.md §8.1 / §8.2
+# 設計: docs/prod-secret-isolation-design.md §8.1 / §8.2
 #
 # ----------------------------------------------------------------------------
 # 判定は 1 本。ここが変えるのはスコープだけ
