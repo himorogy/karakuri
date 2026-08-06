@@ -2524,29 +2524,26 @@ a22_entrypoint_exact() {
 }
 assert A22 'services.prod.entrypoint が ["/usr/local/bin/prod-entrypoint.sh"] [docker compose config の解決結果]' a22_entrypoint_exact
 
-# ulimits の短縮記法 (`core: 0`) を docker compose config がどう正規化するかは
-# 版に依存する。CI 8 回目は「単一の整数 0」と「{soft: 0, hard: 0}」の 2 形だけを
-# 許す式で落ちたため、形を決め打ちするのをやめた。
+# `docker compose config` は ulimits の値 0 を落とす。CI 9 回目の実測:
 #
-# 見たいのは「core の実効値が 0 であること」の一点なので、core 以下に現れる
-# 全ての葉が 0 であることを見る。単一値・{soft} のみ・{hard} のみ・{soft,hard}
-# のいずれでも通り、値が 0 でないケースだけを落とす。文字列 "0" も許容する
-# (compose が数値を文字列化して返す版があるかは未確認のため)。
-# core キー自体が消えた場合 (null) は失敗させる — ulimits の指定が
-# 落ちているのに緑になっては意味がない。
-a23_ulimits_core_zero() {
-	# shellcheck disable=SC2016  # jq の式。シェルで展開させない
-	jq_check '
-		def num: if type == "string" then (tonumber? // -1) else . end;
-		.services.prod.ulimits.core as $c
-		| if $c == null then false
-		  elif ($c | type) == "object" then
-		    ([$c[] | num] | (length > 0) and all(. == 0))
-		  else (($c | num) == 0)
-		  end
-	' '.services.prod.ulimits'
+#   実際の値 (.services.prod.ulimits): {"core":{}}
+#
+# `core: 0` と書いてあるのに空オブジェクトになる。Go 側の omitempty が
+# ゼロ値を落としているとみられる (未確認)。つまり config の出力では
+# **「core が 0」と「core が未設定」を区別できない**。値の検査はこの経路では
+# 原理的に不可能なので、ここでは「core キーが存在すること」= ulimits の
+# 指定がまるごと消えていないことだけを見る。
+#
+# 実効値が 0 であることは B5 で確認する — 出荷ファイル由来のコンテナを
+# 実際に起動して `ulimit -c` を読む。値を見たいなら挙動を見るしかない。
+#
+# 他の A 系検査がこの罠を踏んでいないことも確認した: read_only は true、
+# user / working_dir / logging.driver は文字列、entrypoint / tmpfs は配列で、
+# いずれもゼロ値ではないため omitempty の対象にならない。
+a23_ulimits_core_present() {
+	jq_check '(.services.prod.ulimits // {}) | has("core")' '.services.prod.ulimits'
 }
-assert A23 "services.prod.ulimits.core の実効値が 0 (正規化形を問わない) [docker compose config の解決結果]" a23_ulimits_core_zero
+assert A23 "services.prod.ulimits に core キーが存在する (値 0 は config が落とすため実効値は B5 で見る) [docker compose config の解決結果]" a23_ulimits_core_present
 
 a24_logging_driver_none() {
 	jq_check '.services.prod.logging.driver == "none"' '.services.prod.logging'
@@ -2747,6 +2744,20 @@ b4_run_owner_node() {
 	return "$rc"
 }
 assert_git B4 "stat -c '%U:%G' /run が node:node を返す [出荷 compose.prod.yaml からの最小派生]" b4_run_owner_node
+
+# `docker compose config` は ulimits の値 0 を落として {"core":{}} にするため
+# (A23 のコメント参照)、コアダンプ抑止が実際に効いているかは起動して読むしかない。
+# 出荷ファイル由来のコンテナで `ulimit -c` が 0 を返すことを直接確認する。
+b5_ulimit_core_zero() {
+	local proj="verify-b5-$$" rc=0
+	# SC2016: 単引用符は意図的。コンテナ内の sh に評価させる。
+	# shellcheck disable=SC2016
+	compose_run "$SCRATCH/compose-shipped.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '[ "$(ulimit -c)" = "0" ]' <<<"FOO=bar" || rc=$?
+	compose_down "$SCRATCH/compose-shipped.yaml" "$proj"
+	return "$rc"
+}
+assert_git B5 "ulimit -c が 0 を返す (コアダンプ抑止の実効確認。config では値が見えない) [出荷 compose.prod.yaml からの最小派生]" b5_ulimit_core_zero
 
 # =============================================================================
 # summary
