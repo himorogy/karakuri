@@ -409,6 +409,56 @@ allow   *.env.container.example
 既定のパターンは basename が `.env` で始まるものしか拾わない。`production.env` のような
 名前を使っているプロジェクトは、上記のように `pattern` で明示すること。
 
+雛形は `images/runtime-base/templates/env-guard.conf`（全項目がコメントアウトされた状態で、
+書式と既定値の説明が入っている）。
+
+### セットアップ
+
+新しいプロジェクトに検査を入れるときにやること。**多くのプロジェクトでは 1 と 3 だけで済む。**
+
+**1. コミット時の検査 — 何もしなくてよい**
+
+devcontainer が devcontainer-base（= runtime-base の上）に載っていれば、`core.hooksPath` が
+イメージに焼かれているので全リポジトリ・全 clone・worktree で自動的に効く。導入コマンドは
+無い。過去に `dotenvx precommit --install` や simple-git-hooks が書いた
+`.git/hooks/pre-commit` が残っていると「入っているつもりで効いていない」状態になるので、
+移行時に掃除すること（ただしホストからコミットする運用があるなら消さない。下記
+「ホスト側の git はこれを読まない」参照）。
+
+**2. 検査対象の指定 — 既定で足りるなら不要**
+
+まず、いま何が tracked になっているかを見る。
+
+```sh
+git ls-files | grep -E '\.env'
+```
+
+出てきたものが全て `.env` で始まる basename（`.env` / `.env.production` /
+`apps/api/.env.local` 等）なら、**`env-guard.conf` は置かなくてよい。** 置かない状態が既定で
+あり、それが正しい状態である。`production.env` のような名前や、平文が正常なサンプルファイルが
+あるときだけ置く。
+
+**3. CI の検査 — スタブを 1 枚置く**
+
+```yaml
+# .github/workflows/env-guard.yml
+on: [push, pull_request]
+jobs:
+  env-guard:
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@v1
+```
+
+雛形は `images/runtime-base/templates/env-guard.yml`。呼び出し側 org の Actions ポリシーが
+「選択した actions / reusable workflows のみ許可」なら、`himorogy/karakuri/...` を allowlist へ
+明示的に追加する必要がある（プランの制限ではなく設定項目）。
+
+**確認すること**: 初回の実行で「何件検査したか」が出る。`0 file(s) were inspected` なら、
+それは「安全だった」ではなく「検査対象が 1 つも無かった」である。2 の `pattern` が
+プロジェクトの実態と合っているかを疑うこと。
+
+なお CI は tracked なファイル全体を見るので、**過去にコミット済みの平文もここで初めて
+表面化する**。移行直後の 1 回目が赤くなる可能性がある。
+
 ### リポジトリ側から無効化できる（強制装置ではない）
 
 git の設定優先順位は **local > global > system** である。イメージが書くのは system

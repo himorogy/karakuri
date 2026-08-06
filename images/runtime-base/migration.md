@@ -106,6 +106,10 @@ pnpm 10 → 11 の移行を同時に踏む場合は
   git ls-files | grep -E '\.env'
   ```
 
+  出てきたものが全て `.env` で始まる basename なら、**`env-guard.conf` は置かなくてよい。**
+  雛形は `images/runtime-base/templates/env-guard.conf`、手順の全体は README の
+  「セットアップ」節にある。
+
 - **検査内容が変わっている。** hook が呼んでいた `dotenvx precommit` は外れ、共有スキャナ
   `env-guard-scan` に一本化された。CI 側とまったく同じ 1 本のファイルが判定する。以前は
   「hook は通るが CI で落ちる」が起こりえたが、いまはスコープ（staged か tracked か）だけが
