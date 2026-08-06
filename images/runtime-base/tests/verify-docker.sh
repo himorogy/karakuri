@@ -2482,39 +2482,74 @@ assert A18 '$HOME が tmpfs で空であり、fallback 資格情報 (~/.config/g
 # preflight (HARNESS_GIT_OK) には依存させず、常に assert() を使う
 # (assert_git() ではない)。
 # =============================================================================
+# jq による構造検査の共通ヘルパ。
+#
+# 失敗時に「何を見たのか」を必ず stderr へ出す。CI 8 回目の A23 は
+# `jq -e ... >/dev/null` だけで書かれていたため、落ちた事実は分かっても
+# 実際の値が分からず、正規化形を推測し直す羽目になった。判定式と一緒に
+# 「失敗したときに表示する部分」の jq パスを受け取り、そこを出す。
+#
+#   jq_check <判定式> <失敗時に表示する jq パス>
+jq_check() {
+	local expr="$1" show="$2" cfg
+	cfg="$(compose_prod_config)" || {
+		echo "docker compose config の実行に失敗した" >&2
+		return 1
+	}
+	if printf '%s' "$cfg" | jq -e "$expr" >/dev/null 2>&1; then
+		return 0
+	fi
+	printf '実際の値 (%s): %s\n' "$show" \
+		"$(printf '%s' "$cfg" | jq -c "$show" 2>&1)" >&2
+	return 1
+}
+
 a19_read_only_true() {
-	compose_prod_config | jq -e '.services.prod.read_only == true' >/dev/null
+	jq_check '.services.prod.read_only == true' '.services.prod.read_only'
 }
 assert A19 "services.prod.read_only が true [docker compose config の解決結果]" a19_read_only_true
 
 a20_user_1000_1000() {
-	compose_prod_config | jq -e '.services.prod.user == "1000:1000"' >/dev/null
+	jq_check '.services.prod.user == "1000:1000"' '.services.prod.user'
 }
 assert A20 'services.prod.user が "1000:1000" [docker compose config の解決結果]' a20_user_1000_1000
 
 a21_working_dir_src() {
-	compose_prod_config | jq -e '.services.prod.working_dir == "/src"' >/dev/null
+	jq_check '.services.prod.working_dir == "/src"' '.services.prod.working_dir'
 }
 assert A21 "services.prod.working_dir が /src [docker compose config の解決結果]" a21_working_dir_src
 
 a22_entrypoint_exact() {
-	compose_prod_config | jq -e '.services.prod.entrypoint == ["/usr/local/bin/prod-entrypoint.sh"]' >/dev/null
+	jq_check '.services.prod.entrypoint == ["/usr/local/bin/prod-entrypoint.sh"]' '.services.prod.entrypoint'
 }
 assert A22 'services.prod.entrypoint が ["/usr/local/bin/prod-entrypoint.sh"] [docker compose config の解決結果]' a22_entrypoint_exact
 
-# 未確認: ulimits の短縮記法 (`core: 0`) を docker compose config が単一の
-# 整数のまま返すのか、{soft, hard} のオブジェクトへ正規化するのかは docker
-# の無いこの環境では確認できていない。両方の形に耐えるように書く。
+# ulimits の短縮記法 (`core: 0`) を docker compose config がどう正規化するかは
+# 版に依存する。CI 8 回目は「単一の整数 0」と「{soft: 0, hard: 0}」の 2 形だけを
+# 許す式で落ちたため、形を決め打ちするのをやめた。
+#
+# 見たいのは「core の実効値が 0 であること」の一点なので、core 以下に現れる
+# 全ての葉が 0 であることを見る。単一値・{soft} のみ・{hard} のみ・{soft,hard}
+# のいずれでも通り、値が 0 でないケースだけを落とす。文字列 "0" も許容する
+# (compose が数値を文字列化して返す版があるかは未確認のため)。
+# core キー自体が消えた場合 (null) は失敗させる — ulimits の指定が
+# 落ちているのに緑になっては意味がない。
 a23_ulimits_core_zero() {
-	compose_prod_config | jq -e '
+	# shellcheck disable=SC2016  # jq の式。シェルで展開させない
+	jq_check '
+		def num: if type == "string" then (tonumber? // -1) else . end;
 		.services.prod.ulimits.core as $c
-		| ($c == 0) or (($c | type) == "object" and $c.soft == 0 and $c.hard == 0)
-	' >/dev/null
+		| if $c == null then false
+		  elif ($c | type) == "object" then
+		    ([$c[] | num] | (length > 0) and all(. == 0))
+		  else (($c | num) == 0)
+		  end
+	' '.services.prod.ulimits'
 }
-assert A23 "services.prod.ulimits.core が 0 (単一値/{soft,hard} 両形式を許容。正規化形は未確認) [docker compose config の解決結果]" a23_ulimits_core_zero
+assert A23 "services.prod.ulimits.core の実効値が 0 (正規化形を問わない) [docker compose config の解決結果]" a23_ulimits_core_zero
 
 a24_logging_driver_none() {
-	compose_prod_config | jq -e '.services.prod.logging.driver == "none"' >/dev/null
+	jq_check '.services.prod.logging.driver == "none"' '.services.prod.logging'
 }
 assert A24 'services.prod.logging.driver が "none" [docker compose config の解決結果]' a24_logging_driver_none
 
@@ -2647,7 +2682,7 @@ assert A33 "GIT_REF 未指定で docker compose config が失敗する (\${GIT_R
 # A34: 補間の影響を受けないフィールドなので、A19〜A24 と同じく config の
 # 出力をそのまま見る。
 a34_image_has_sha256_digest() {
-	compose_prod_config | jq -e '(.services.prod.image | type) == "string" and (.services.prod.image | contains("@sha256:"))' >/dev/null
+	jq_check '(.services.prod.image | type) == "string" and (.services.prod.image | contains("@sha256:"))' '.services.prod.image'
 }
 assert A34 'services.prod.image が "@sha256:" を含む (digest pin のまま。タグ参照へ退化していない) [docker compose config の解決結果]' a34_image_has_sha256_digest
 
