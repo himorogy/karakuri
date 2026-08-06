@@ -522,9 +522,20 @@ services:
 EOS
 sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-flat.yaml"
 
-# compose-src-tmpfs.yaml: M2 用。/src を named volume ではなく tmpfs にした
-# 場合の実現可能性を測る。uid= 形式が使えることを前提にする (M1 が否定的な
-# 結果を出した場合、この変種の結果はその文脈で読むこと)。
+# compose-src-tmpfs.yaml: M9-a/M9-b 専用 (bugfix で用途を絞った。旧: M2 も
+# これを使っていた)。/src の tmpfs に `exec` を明示しない「現状形」で、M9-e
+# (exec 付き) との比較対象という意味そのものが測定内容なので、ここに exec を
+# 足してはならない (M9-d と同じ理由。M9 セクションのコメント参照: 「M9-e が
+# exec 付き tmpfs で測り直す…M9-b はそのまま残す (exec を付ける前後の比較の
+# ため)」)。
+#
+# prod-entrypoint.sh の自己検査 (rev.6 / codex 指摘 #6) は /src が noexec だと
+# secrets 取込の直後で exit 1 するため、この compose を経由する呼び出しは
+# 毎回そこで止まり、以降の git checkout / pnpm install には到達しない。
+# M9-a/M9-b にとってはそれ自体が観測結果 (noexec だと動かない) だが、M2/M6 は
+# tmpfs /src の他の性質 (df サイズ、git 操作の完走、ref 汚染が消えるか) を
+# 見たいのであって noexec 自体を測りたいわけではないため、M2/M6 は
+# compose-src-tmpfs-exec.yaml (下記) に切り替えた。
 cat >"$SCRATCH/compose-src-tmpfs.yaml" <<'EOS'
 services:
   prod:
@@ -557,6 +568,14 @@ sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs.yaml"
 # M9-a / M9-b がともに rc=126 (tsup: Permission denied) で落ちた件 (M9 参照) の
 # 原因を「/src の tmpfs に既定で付く noexec」と疑っており、M9-d でその実測を
 # 取ったうえで、この compose ファイルで M9-b (案B) を exec 付きで測り直す。
+#
+# bugfix (prod-entrypoint.sh の /src noexec 自己検査追加に伴う変更): M2 と
+# M6 の tmpfs /src ケースも、entrypoint を経由して git checkout /
+# pnpm install / ref 汚染確認まで到達する必要があるため、この exec 付き
+# ファイルを流用する (compose-src-tmpfs.yaml 側のコメント参照)。M2/M6 は
+# 元々「uid=1000,gid=1000,mode=0755 形の /src tmpfs で実運用できるか」を
+# 見る節であって exec の有無自体を比較する測定ではないため、exec を足しても
+# 測定の意味は変わらない。
 cat >"$SCRATCH/compose-src-tmpfs-exec.yaml" <<'EOS'
 services:
   prod:
@@ -618,6 +637,13 @@ sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
 docker_prod_run() {
 	local repo="$1" ref="$2" stdin_payload="$3"
 	shift 3
+	# /src:exec (bugfix): prod-entrypoint.sh (rev.6 / codex 指摘 #6) は /src が
+	# noexec だと自己検査で exit 1 する。ここで exec を明示しないと、entrypoint
+	# を実際に経由する呼び出し (この関数、および preflight / A5 / A10) が
+	# secrets 取込の直後で毎回落ち、後続の依存ケースが軒並み SKIPPED になる
+	# (CI 11 回目で発火)。他の /run /tmp /out /home/node は自己検査の対象外
+	# なので noexec のままでよい (B2 が「/run に noexec があること」を別途 assert
+	# している)。
 	printf '%s' "$stdin_payload" | docker run --rm -i \
 		--read-only \
 		--user 1000:1000 \
@@ -625,7 +651,7 @@ docker_prod_run() {
 		--tmpfs /tmp:uid=1000,gid=1000,mode=1777 \
 		--tmpfs /out:uid=1000,gid=1000,mode=0755 \
 		--tmpfs /home/node:uid=1000,gid=1000,mode=0755 \
-		--tmpfs /src:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /src:exec,uid=1000,gid=1000,mode=0755 \
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="$repo" -e GIT_REF="$ref" \
@@ -776,18 +802,25 @@ measure M1 "/home/node を素の tmpfs (mode 1777) にした場合の gh / npm �
 # named volume から tmpfs へ変更することが決まっている (ref 汚染と
 # .git/config 持続攻撃を構造的に消すため、M6 参照)。ここでは実現可能性
 # — read_only 下での git 操作の完走、pnpm install の完走、store の逃げ先、
-# tmpfs 既定サイズ、RAM 使用量 — を測る。compose-src-tmpfs.yaml
-# (/src も uid=1000,gid=1000,mode=0755 の tmpfs) を使う。M1 で uid= 形式が
-# 拒否される結果が出た場合、この節の結果はその制約の上で読むこと。
+# tmpfs 既定サイズ、RAM 使用量 — を測る。compose-src-tmpfs-exec.yaml
+# (/src も uid=1000,gid=1000,mode=0755 の tmpfs、exec 付き) を使う。M1 で
+# uid= 形式が拒否される結果が出た場合、この節の結果はその制約の上で読むこと。
+#
+# bugfix: 以前は exec を明示しない compose-src-tmpfs.yaml を使っていたが、
+# prod-entrypoint.sh の /src noexec 自己検査 (rev.6) がここで先に exit 1 して
+# しまい、この節が見たい git 操作 / pnpm install / tmpfs サイズのいずれにも
+# 到達できなかった。M2 は exec の有無そのものを比較する測定ではない
+# (それは M9-d/M9-e の役目) ので、exec 付きに切り替えても測定の意味は
+# 変わらない。
 # =============================================================================
 echo
 echo "=== M2: /src の tmpfs 化 ==="
 
 m2_git_ops() {
 	local proj="verify-m2-git-$$" rc=0 out
-	out="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
 		-T --rm prod sh -c 'test -f pnpm-lock.yaml && git rev-parse HEAD' <<<"FOO=bar" 2>&1)" || rc=$?
-	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then
 		echo "OK (git init+fetch+checkout+clean 完走。HEAD=$out)"
 	else
@@ -802,7 +835,7 @@ m2_pnpm_install() {
 	local proj="verify-m2-pnpm-$$" rc=0 out
 	# SC2016: 単引用符は意図的。この sh -c ブロックはコンテナ内で評価させる。
 	# shellcheck disable=SC2016
-	out="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
 		-T --rm prod sh -c '
 			set -e
 			pnpm install --frozen-lockfile
@@ -812,7 +845,7 @@ m2_pnpm_install() {
 			echo "--- du -sh \$store ---"
 			du -sh "$store" 2>/dev/null || echo "du failed (store may not exist)"
 		' <<<"FOO=bar" 2>&1)" || rc=$?
-	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then
 		echo "OK: $out"
 	else
@@ -827,9 +860,9 @@ measure_git M2 "read_only + tmpfs /src で pnpm install --frozen-lockfile が完
 # 判断する。
 m2_df_default_size() {
 	local proj="verify-m2-df-$$" out rc=0
-	out="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
 		-T --rm prod df -h /src <<<"FOO=bar" 2>&1)" || rc=$?
-	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then echo "$out"; else echo "FAILED (rc=$rc): $out"; fi
 }
 measure_git M2 "tmpfs /src の既定サイズ (df -h /src、size= 未指定)" m2_df_default_size
@@ -840,7 +873,7 @@ measure_git M2 "tmpfs /src の既定サイズ (df -h /src、size= 未指定)" m2
 # であることに注意。
 m2_ram_usage() {
 	local proj="verify-m2-ram-$$" rc=0 out
-	out="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
 		-T --rm prod sh -c '
 			set -e
 			pnpm install --frozen-lockfile >/dev/null 2>&1 || true
@@ -848,7 +881,7 @@ m2_ram_usage() {
 			echo dummy-build-artifact > /out/dummy
 			du -sh /src /out 2>/dev/null
 		' <<<"FOO=bar" 2>&1)" || rc=$?
-	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	if [ "$rc" -eq 0 ]; then echo "$out"; else echo "FAILED (rc=$rc): $out"; fi
 }
 measure_git M2 "/src + /out 合計 RAM 使用量 (du -sh、pnpm install 後)" m2_ram_usage
@@ -1981,11 +2014,16 @@ measure_git M6 "named volume 再利用: ref 汚染 (N-1) が再現するか" m6_
 
 m6_n1_tmpfs() {
 	local proj="verify-m6-n1-tmpfs-$$" rc1=0 rc2=0 out2
-	compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+	# bugfix: exec なしの compose-src-tmpfs.yaml だと prod-entrypoint.sh の
+	# /src noexec 自己検査で 1st run の checkout 前に落ち、この測定が見たい
+	# 「tag を打った後の 2nd run で state が消えているか」に到達できない。
+	# compose-src-tmpfs.yaml 自体は M9-a/M9-b 専用に残す (同ファイルのコメント
+	# 参照) ので、ここは exec 付きの compose-src-tmpfs-exec.yaml を使う。
+	compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
 		-T --rm prod sh -c "git tag v9.9.9 $TEST_COMMIT2" <<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
-	out2="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$TEST_BARE_DIR" "v9.9.9" \
+	out2="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "v9.9.9" \
 		-T --rm prod cat file.txt <<<"FOO=bar" 2>&1)" || rc2=$?
-	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	echo "1st run: rc=$rc1"
 	echo "2nd run (GIT_REF=v9.9.9。tmpfs なので /src は毎回まっさらのはず、v9.9.9 は存在せず失敗するのが期待): rc=$rc2 out=$out2"
 }
@@ -2007,13 +2045,15 @@ measure_git M6 "named volume 再利用: core.fsmonitor 持続 (N-2) が再現す
 
 m6_n2_tmpfs() {
 	local proj="verify-m6-n2-tmpfs-$$" rc1=0 rc2=0 out2
-	compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+	# bugfix: m6_n1_tmpfs と同じ理由で exec 付き compose-src-tmpfs-exec.yaml に
+	# 切り替える (compose-src-tmpfs.yaml は M9-a/M9-b 専用に残す)。
+	compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
 		-T --rm prod git config core.fsmonitor 'sh -c "echo FSMONITOR_RAN >> /tmp/fsmonitor-marker; exit 1"' \
 		<<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
-	out2="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+	out2="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
 		-T --rm prod sh -c 'grep -c fsmonitor /src/.git/config 2>/dev/null || echo "0 (fresh .git/config)"' \
 		<<<"FOO=bar" 2>&1)" || rc2=$?
-	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
 	echo "1st run: rc=$rc1"
 	echo "2nd run (tmpfs なので /src は毎回まっさらのはず): rc=$rc2 fsmonitor 設定の有無=$out2"
 }
@@ -2267,13 +2307,17 @@ a6_no_secret_in_inspect() {
 	# "no secrets received on stdin" で exit 1 する — これが rc=1 の
 	# 実際の原因だった (メッセージが空に見えたのは、下の元コードが
 	# `docker start` の出力を /dev/null に捨てていたため)。
+	# /src:exec (bugfix): docker_prod_run() 冒頭のコメントと同じ理由。ここは
+	# --entrypoint で prod-entrypoint.sh を明示しているため、noexec のままだと
+	# secrets 取込直後の自己検査で start が非ゼロ終了し、この関数が検証したい
+	# 「docker inspect に secret が漏れないこと」まで到達できない。
 	create_out="$(docker create \
 		--read-only --user 1000:1000 --interactive \
 		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
 		--tmpfs /tmp:uid=1000,gid=1000,mode=1777 \
 		--tmpfs /out:uid=1000,gid=1000,mode=0755 \
 		--tmpfs /home/node:uid=1000,gid=1000,mode=0755 \
-		--tmpfs /src:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /src:exec,uid=1000,gid=1000,mode=0755 \
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
@@ -2427,13 +2471,17 @@ a15_husky_chain_runs() {
 assert A15 ".husky/pre-commit を置いたリポジトリで、チェーン先の hook が実行される" a15_husky_chain_runs
 
 a16_recovers_from_leftover() {
+	# /src:exec (bugfix): docker_prod_run() 冒頭のコメントと同じ理由。この
+	# ケースは leftover を仕込んだ後 `exec /usr/local/bin/prod-entrypoint.sh`
+	# するため、noexec のままだと自己検査で即 exit 1 し、検証したい「/src
+	# 非空・.git 無しの状態からの復帰」に到達できない。
 	docker run --rm -i \
 		--read-only --user 1000:1000 \
 		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
 		--tmpfs /tmp:uid=1000,gid=1000,mode=1777 \
 		--tmpfs /out:uid=1000,gid=1000,mode=0755 \
 		--tmpfs /home/node:uid=1000,gid=1000,mode=0755 \
-		--tmpfs /src:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /src:exec,uid=1000,gid=1000,mode=0755 \
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
