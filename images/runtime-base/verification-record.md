@@ -961,7 +961,7 @@ fail-closed ではあるので安全側だが、**「その ref は存在しな�
 |---|---|---|---|
 | 23 | PATH 解決が shim に当たる（`/usr/local/bin/<name>`） | ✅ | Dockerfile の `command -v` 検証がビルドを通っており、さらに CI で **A1** が push 前のイメージに対して直接確認している |
 | 24 | `core.hooksPath` が `/usr/local/share/git-hooks` に設定されている | ✅ | **A3**（`git config --system --get`）。あわせて **M6** で「repo の `.git/config` から上書きできる」ことも実測した（§0.5） |
-| 25 | 両アーキ（amd64 / arm64）で起動する | ⬜ | `runtime-base-verify` は単一アーキ（amd64）のローカルビルドのみ。マルチアーキビルドは `runtime-base.yml` のタグ push 時にしか走らず、**まだ一度も GHCR へ push していない** |
+| 25 | 両アーキ（amd64 / arm64）で起動する | ✅ | **2026-08-06、`runtime-base-v1.0.0` をリリースした**（下記 §0.13）。`linux/amd64,linux/arm64` のマルチアーキビルドが通り、GHCR へ push された |
 
 ---
 
@@ -1047,6 +1047,59 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 
 ---
 
+### 0.13 runtime-base 1.0.0 のリリース（2026-08-06）
+
+初回リリース。`runtime-base-v1.0.0` タグの push でマルチアーキビルドが走り、GHCR へ入った。
+
+```
+ghcr.io/himorogy/runtime-base:1
+sha256:33da300c1fb83499debf2af0d805674cd4fd69fee041be7d917d53a0a5db5651
+platforms: linux/amd64, linux/arm64
+```
+
+- **両アーキのビルドが通った**（項目 25）。`runtime-base-verify` は amd64 の単一アーキ
+  ローカルビルドしか行わないので、arm64 はここが初めての実証になる
+- **パッケージは private で作られたため、Public へ切り替えた。** これを飛ばすと
+  devcontainer-base のビルドは匿名 pull を拒否され、**「まだ push していない」ときと同じ
+  403 で落ち続ける**。タグを打てば通る、ではない
+- 切り替え後、**devcontainer-base のビルドが緑になった**。このジョブが成功したのは初めてである
+  （それまで赤かった理由は GHCR ではなく `ARG RUNTIME_BASE_VERSION` のスコープ違反だった。
+  下記）
+
+#### 「赤いのは想定どおり」が実バグを隠していた
+
+devcontainer-base のビルドは長く赤く、workflow のコメントにも移行ガイドにも
+「runtime-base をまだ GHCR に push していないので `FROM` が解決できない」と書かれていた。
+**実際の失敗は別だった。**
+
+```
+UndefinedArgInFrom: FROM argument 'RUNTIME_BASE_VERSION' is not declared
+failed to parse stage name "ghcr.io/himorogy/runtime-base:": invalid reference format
+```
+
+`ARG RUNTIME_BASE_VERSION=1` が `crit-builder` ステージの中で宣言されていた。`FROM` で参照する
+`ARG` は最初の `FROM` より前（グローバルスコープ）になければならず、ステージ内のものは次の
+`FROM` からは見えない。空文字に展開され、レジストリに問い合わせる前に落ちていた。
+
+**このビルドは一度も成功したことがないまま、タグ待ちとして扱われていた。** 但し書きが理由を
+説明済みにしてしまい、誰もエラー本文を読まなかった。
+
+対処として、期待するエラーの実物を workflow のコメントに書いた。「赤いのは想定どおり」を
+確かめられる主張にするためである。
+
+#### digest はテンプレートに焼かない
+
+`templates/compose.prod.yaml` の `image:` はプレースホルダのままにしてある。差し替えは運用者が
+自分の `~/.config/<project>/compose.prod.yaml` で行う。テンプレートに実 digest を書くと、
+(a) 差し替え忘れが起動失敗として現れる設計が消え、(b) リリースのたびに古い digest がテンプレート
+に残り、後からコピーした人が黙って古いイメージを pin することになる。
+
+digest は次で取れる。
+
+```sh
+docker buildx imagetools inspect ghcr.io/himorogy/runtime-base:1 --format '{{.Manifest.Digest}}'
+```
+
 ## 4. 恒常チェック
 
 | # | 項目 | 状態 | 結果 |
@@ -1064,7 +1117,7 @@ prod container への `docker exec` や任意 volume の mount が可能にな�
 1. **ホストで docker の空き容量を確保する。** 検証を始めた時点で dev container が載っている
    overlay は 95G 中 90G 使用（残り 15MB）で、イメージのビルドすらできない状態だった。
    ホスト側で `docker system prune` 等の整理が要る。
-2. runtime-base を一度 GHCR へ push する（項目 23〜25 が消化される）。
+2. ~~runtime-base を一度 GHCR へ push する~~ → **2026-08-06 に完了**（§0.13）。
 3. docker のあるホストで項目 26〜47 を消化する。**32 と 40 を先に見ること** — どちらも
    落ちれば設計の作り直しが要る箇所で、他の項目はその後でよい。
 4. 項目 48 / 49 は設計書 §9 の手順 4（reusable workflow の設置）の範囲。本セッションの
