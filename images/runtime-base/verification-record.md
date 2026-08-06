@@ -449,6 +449,176 @@ SKIP なし。**docker が要る検証項目は全て消化した。** 出荷す
 以降、この一覧で「未実施」として残るのは §11 の未決事項に紐づくもの
 （macOS ホスト固有の項目と、手順 4 以降の範囲）だけである。詳細は下記 §3 の表を参照。
 
+## 0.8 dotenvx precommit は CI で「検査した風の緑」を返す（項目 48 に決着）
+
+2026-08-06、この dev container 上で dotenvx **2.19.2** を使って実測した（docker は不要）。
+設計書 §8.2 が「CI のクリーン checkout では no-op になる**疑い**」として残していた項目である。
+
+```
+クリーン checkout / 差分ゼロ / 平文 .env が tracked（2 件）  rc=0  ▣ encrypted/gitignored (2)
+  ├ 同上 + 位置引数 apps/backend                            rc=0  ▣ encrypted/gitignored (1)
+平文 .env を staged にした状態                              rc=1  ☠ .env not encrypted/gitignored
+平文 .env を未 staged で編集した状態                        rc=1  ☠ 同上
+平文 .env.new を untracked のまま置いた状態                 rc=0
+  └ 同 .env.new を staged にした状態                        rc=1  ☠ .env.new not encrypted/gitignored
+平文 .env が gitignore 済み・untracked（正常系）            rc=0
+暗号化済み .env が tracked / 差分ゼロ（正常系）             rc=0
+```
+
+**疑いより悪かった。** 単に何も検査しないのではなく、平文の tracked `.env` を 2 件
+**見つけたうえで**「encrypted/gitignored (2)」という件数付きの緑を返す。CI に置けば
+「見ている」という誤った安心だけが残り、無いより悪い。
+
+`precommit` が壊れているのではなく、**文脈が違う**。検査対象は `git diff HEAD` の差分で
+あり、staged 差分がある hook の文脈では正しく効く（上の 2 行目・4 行目が実測）。CI は
+クリーンな checkout なので、見るべきは差分ではなく **tracked なファイルの現在の状態**である。
+同じ道具を両方の文脈に使い回そうとしたのが誤りだった。
+
+設計書は当初案（CI で `dotenvx precommit` を呼ぶ）を破棄し、tracked ファイルの直接走査へ
+差し替えた（rev.7 / D23）。
+
+**さらにその先で hook 側も変わった（D24）。** CI を差し替えた結果、hook（`dotenvx precommit`）
+と CI（独自走査）で**判定の実装が 2 つ**になり、「hook は通るが CI で落ちる」という新しい
+分岐を作ってしまっていた。判定を共有スキャナ `bin/env-guard-scan` 1 本へ寄せ、hook は staged
+の一覧を、CI は tracked の一覧を渡すだけにした。**スコープだけが違い、判定は同一**になる。
+hook から `dotenvx precommit` は外れた — 自前のファイル名フィルタを持っていて上書きできず、
+プロジェクトごとの検査対象の上書きを入れた時点で逆向きの分岐を作るためである。
+
+### 併せて決着: `--convention flow --strict` は実際に壊れる
+
+設計書 D20（`--strict` をイメージ側で強制しない）の最大の論拠が、rev.6 の時点では
+`--ignore=MISSING_ENV_FILE` の存在**からの推論**だけに立っていた。レビューで
+「未実測の推論だけで決めたのは不十分」と指摘された箇所である。同じ実測で潰した。
+
+```
+ファイル構成: .env, .env.local（存在）/ .env.development（不在）
+
+--convention flow                                  rc=0  injected env (2) from .env.local, .env
+--convention flow --strict                         rc=1  ☠ [MISSING_ENV_FILE] missing file (.env.development.local)
+--convention flow --strict --ignore=MISSING_ENV_FILE  rc=0
+-f .env（存在）--strict                            rc=0
+-f .env.missing（不在）--strict                    rc=1
+-f .env.missing（不在）strict なし                 rc=1
+```
+
+**壊れる。** `--strict` を焼き込めば `--convention flow` の正当な使い方が落ちる。D20 の
+判断は維持され、根拠が推論から実測に変わった。
+
+**副次的な発見**: 最後の 2 行が示すとおり、`-f` でファイルを明示した場合は不在ファイルが
+`--strict` の有無に関わらず rc=1 になる。prod は `-f .env.prod` を明示する運用なので、
+prod で `--strict` が追加で担うのは**復号失敗の顕在化だけ**である。
+
+## 0.9 40 桁 hex を名前とする ref は現行 git では成立しない（項目 53）
+
+レビューが「未確認」として挙げた攻撃経路 —
+「dev が 40 桁 hex 文字列を名前とするブランチ／タグを push し、その hex に対応する
+オブジェクトは存在しない状態を作ると、`git rev-parse --verify "<40hex>^{commit}"` が
+`refs/remotes/origin/<40hex>` へフォールバックして解決に成功しうる」— を git **2.39.5**
+で実測した。
+
+**再現しない。** git はこのケースを意図的に無視する。
+
+```
+warning: refname '<40hex>' is ambiguous.
+  Git normally never creates a ref that ends with 40 hex characters ...
+  ... it will be ignored when you just specify 40-hex.
+rc=1
+```
+
+ブランチ（`refs/remotes/origin/<40hex>`）とタグ（`refs/tags/<40hex>`）の両方で確認した。
+
+それでも一致検査（解決結果が `GIT_REF` 自身と一致すること）は実装に入れてある。
+`rev-parse` の DWIM 規則は git のバージョンと実装（libgit2 系、将来の変更）に属するもので、
+本設計が管理できる範囲にない。3 行で済み、完全 sha の経路にしか走らない。
+**現行 git に対しては多重防御である**ことを、ここに明示して記録する。
+
+なお回帰テストが押さえているのは「非ゼロ終了し、実行 ref の記録が残らない」ことであり、
+どちらの経路（新しい一致検査か、既存の "does not resolve" か）で落ちるかは git 版に依存する。
+
+## 0.11 env-guard のテストが「検知能力を持つ」ことの否定対照（2026-08-06）
+
+この記録が繰り返し学んできたのは、**検査が緑であることと、検査に検知能力があることは別**という
+一点である（§0.2 の偽の合格、§0.71 の何も言わない検査、そして §0.8 の `dotenvx precommit`）。
+新しく入れた env-guard のテスト自体が同じ罠に落ちていないことを、実際に壊して確認した。
+
+**否定対照 1 — 判定ロジックを壊す。** スキャナの暗号化判定
+（`^[A-Z0-9_]+="?encrypted:`）を `.*`（何にでも一致 = 常に「暗号化済み」と見なす）へ差し替えた。
+
+```
+68 passed, 0 failed   → 51 passed, 17 failed
+```
+
+落ちたものの中に、平文 fixture が rc=0 で通ってしまう形が含まれる:
+
+```
+expected rc=1, got rc=0
+output: env-guard: inspected docs/.env.sample
+        env-guard: OK — inspected 1 file(s), no unencrypted values.
+```
+
+**否定対照 2 — hook と CI を食い違わせる。** hook 側にだけ CI が持たない絞り込み
+（`grep -v '\.env\.sample'`）を挟んだ。
+
+```
+68 passed, 0 failed   → 66 passed, 2 failed
+```
+
+落ちたのは「両方の入口から同じ終了コードが返る」と「両方の入口から出力がバイト単位で同一に
+なる」の 2 件。**D24 の本題がテストで守られている**ことの直接の証拠になる。
+
+どちらも元に戻して 68 passed / 0 failed に復帰することを確認済み。全スイート合計は
+25（shim）+ 38（entrypoint）+ 15（prod-context）+ 68（env-guard）+ 5（hook）= **151 passed,
+0 failed**、`shellcheck` は rc=0。
+
+**GitHub Actions 上での実行は未実施。** reusable workflow の呼び出し規約（呼び出し側の
+checkout、第二 checkout の ref 解決）はローカルでは動かせないため、次回 CI が初回になる。
+
+## 0.10 tmpfs 自己検査を入れたことで、ハーネスの一部が entrypoint を迂回する
+
+rev.7 で entrypoint に「`/src` と secret の置き場が tmpfs であること」の自己検査を入れた
+結果、**named volume 構成を意図的に作って測っていた既存の測定が、測りたいところへ到達する
+前に止まる**ようになった。該当は M6（N-1 の ref 汚染 / N-2 の `.git/config` 持続 /
+credential.helper 経由の窃取）と M1 の `compose_uid_stat`。
+
+これらは「named volume だと穴が残る」ことを実証した測定であり、tmpfs 化（D18）の根拠その
+ものなので、消すわけにはいかない。
+
+**採った手段**: setup 時に**イメージの中身**から entrypoint を取り出し
+（`docker run --entrypoint cat "$IMG" /usr/local/bin/prod-entrypoint.sh`。作業ツリーの
+`bin/` ではない）、自己検査のループ対象行だけを sed で番兵パスへ差し替えたコピーを作り、
+該当測定にだけ `--entrypoint` で渡す。番兵はどのマウントとも一致しないため、検査は
+「該当行なし → WARNING → 続行」に落ちる（迂回した痕跡が出力に残る形を選んでいる）。
+
+**沈黙した迂回にしないための手当て**:
+
+- sed が効かなかった場合（entrypoint の書き方が将来変わった場合）は素通りさせず、setup で
+  `exit 1` する。素通りすると M6 が「自己検査で止まった rc=1」を N-1 / N-2 の結果として
+  記録する**偽の測定**になる
+- setup ログに `diff -u`（元 vs 番兵差し替え後）を出力し、何を無効化したかが記録に残る
+- 自己検査そのものが効いていることは **A35** が別途 ASSERT する（下記）
+
+**entrypoint を経由しない形は採らなかった。** N-2 が見たいのは「entrypoint 自身の
+fetch / checkout / reset / clean が `core.fsmonitor` を起動させるか」であり、entrypoint を
+外すと測定の意味が変わる。
+
+### 新しく足した docker 依存の検証
+
+- **A35（ASSERT）** — `/src` が named volume の構成で entrypoint が非ゼロ終了し、かつ
+  **`/src` が tmpfs でないことを名指ししたメッセージが出る**こと。「落ちた」だけでは通さない
+  （§0.71 の教訓: 失敗が何も言わない検査は二度手間になる）
+- **M11（MEASURE）** — secret の置き場（`/run`）を tmpfs から外した構成で何が起きるか。
+  `read_only: true` との併用可否も、uid 1000 が `mkdir -p /run/secrets` できるかも
+  docker 無しでは確認できないため、**推測で ASSERT にせず**測定として記録する。出力に
+  `is not a tmpfs` が含まれていれば自己検査が止めた直接証拠なので ASSERT へ昇格してよい。
+  別の失敗（compose の起動エラー、`mkdir` の Permission denied 等）ならその旨を記録するに
+  留める、という昇格条件をハーネスのコメントに明記してある
+- **誤検知側の担保に新規 ASSERT は足していない。** B1〜B5 は出荷ファイル由来の全 tmpfs
+  構成で entrypoint を完走させる ASSERT なので、自己検査が誤検知すれば軒並み FAIL する
+  （`docker_prod_run` 経由の A5 / A10 / A16 も同じ性質）
+
+**A35 / M11 / 迂回のいずれも、まだ docker 上で一度も実行していない。** 実際の rc・出力・
+`read_only` との併用可否は次回の CI で初めて分かる。
+
 ## 0.7 原理上この方法では測れないもの
 
 - **`credential.helper` 経由の `GH_TOKEN` 窃取。** `file://` はホスト上のパスへの直接アクセスで
@@ -574,74 +744,94 @@ fail-closed ではあるので安全側だが、**「その ref は存在しな�
 
 ## 2. ビルド時 / CI で確認するもの
 
+**2026-08-06 更新（rev.7）。** CI は 10 回イメージをビルドしており、「ビルド未実行」は
+もはや事実ではない。§0 の実測と食い違ったままだった表を実態に合わせる。
+
 | # | 項目 | 状態 | 根拠 |
 |---|---|---|---|
-| 23 | PATH 解決が shim に当たる（`/usr/local/bin/<name>`） | ⬜ | Dockerfile に `command -v` 検証を焼き込み済み。**ビルド未実行** |
-| 24 | `core.hooksPath` が `/usr/local/share/git-hooks` に設定されている | ⬜ | CI smoke test に登録。**ビルド未実行** |
-| 25 | 両アーキ（amd64 / arm64）で起動する | ⬜ | CI smoke test に登録。**ビルド未実行** |
-
-イメージを一度も GHCR へ push していないため 23〜25 は未実施。最初のタグ push
-（`runtime-base-v1.0.0`）で確認できる。
+| 23 | PATH 解決が shim に当たる（`/usr/local/bin/<name>`） | ✅ | Dockerfile の `command -v` 検証がビルドを通っており、さらに CI で **A1** が push 前のイメージに対して直接確認している |
+| 24 | `core.hooksPath` が `/usr/local/share/git-hooks` に設定されている | ✅ | **A3**（`git config --system --get`）。あわせて **M6** で「repo の `.git/config` から上書きできる」ことも実測した（§0.5） |
+| 25 | 両アーキ（amd64 / arm64）で起動する | ⬜ | `runtime-base-verify` は単一アーキ（amd64）のローカルビルドのみ。マルチアーキビルドは `runtime-base.yml` のタグ push 時にしか走らず、**まだ一度も GHCR へ push していない** |
 
 ---
 
-## 3. 実機（docker のあるホスト）で確認が要るもの — **全て未実施**
+## 3. 実機（docker のあるホスト）で確認が要るもの
 
-⛔ は dev container 内で原理的に実施できない項目。ホスト側で実施すること。
+**2026-08-06 更新（rev.7）。** この表は「全て未実施」の見出しのまま §0 の実測結果と
+矛盾していた。設計書 §10 が「消化状況はこの記録を正とする」と宣言している以上、
+表だけを読んだ読者が「一度も docker で検証されていない」と結論する状態は放置できない。
+
+凡例: ✅ CI で消化済み（根拠の A/B/M は `tests/verify-docker.sh` のケース ID）/
+⬜ 未実施・実施可能 / ⛔ この環境では実施不能（macOS ホスト等が要る）
 
 ### secret 搬送路
 
-| # | 項目 | 状態 |
-|---|---|---|
-| 26 | entrypoint 実行後、`/run/secrets/<VAR>` が mode 600 で tmpfs 上にある（`mount \| grep /run`） | ⛔ |
-| 27 | `docker inspect` の `Config.Env` / `Mounts` に secret が一切現れない | ⛔ |
-| 28 | broker 出力の形式（quoting / 改行）と entrypoint パーサの整合 | ⛔ |
-| 29 | broker が非対話環境で非ゼロ終了し、`pipefail` 下でパイプ全体が止まる | ⛔ |
-| 30 | macOS `security` の ACL 設定（毎回確認 / Touch ID / 常時許可）ごとの挙動 | ⛔ |
-| 31 | 必要 secret を欠いた状態で下流コマンドが認証失敗として顕在化する（`$HOME` tmpfs により fallback 資格情報が拾われないことを含む） | ⛔ |
+| # | 項目 | 状態 | 根拠 |
+|---|---|---|---|
+| 26 | entrypoint 実行後、`/run/secrets/<VAR>` が mode 600 で tmpfs 上にある | ✅ | **A5**（docker run 経由）+ **B1**（出荷 compose 由来） |
+| 27 | `docker inspect` の `Config.Env` / `Mounts` に secret が一切現れない | ✅ | **A6** |
+| 28 | broker 出力の形式（quoting / 改行）と entrypoint パーサの整合 | ⛔ | パーサ側は自動テスト 3〜5 と **A7 / A8 / A9** で消化済み。残るのは**実 broker（macOS `security`）の出力**との突き合わせで、これはホストが要る |
+| 29 | broker が非対話環境で非ゼロ終了し、`pipefail` 下でパイプ全体が止まる | ⛔ | フェイク broker での `pipefail` 伝播は **A17** と自動テスト 18〜19 で消化済み。実 broker の非対話時の挙動はホストが要る |
+| 30 | macOS `security` の ACL 設定（毎回確認 / Touch ID / 常時許可）ごとの挙動 | ⛔ | |
+| 31 | 必要 secret を欠いた状態で下流コマンドが認証失敗として顕在化する | ⛔ | `$HOME` tmpfs により fallback 資格情報が存在しないことは **A18** で消化済み。「実際の認証失敗として現れる」ことの確認には実トークンと実サービスが要る |
 
 ### compose の実挙動
 
-| # | 項目 | 状態 | 備考 |
+| # | 項目 | 状態 | 根拠 |
 |---|---|---|---|
-| 32 | `tmpfs: - /run:uid=1000,gid=1000,mode=0755` の記法で実際に node 所有の tmpfs が作られる | ⛔ | **最優先。効かなければ起動直後に落ちる**（`USER node` が `/run/secrets` を作れない） |
-| 33 | `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走する | ⛔ | `/home/node` の書き込み先、named volume `/src` の所有権を含む |
-| 34 | `GIT_REF` 未指定時に compose が失敗する | ⛔ | |
-| 35 | `logging: driver: none` でもアタッチ時に stdout が手元に表示される | ⛔ | |
-| 36 | ホストの `/proc/sys/kernel/core_pattern` の内容と、`ulimits: core: 0` 下でコアが生成されないこと | ⛔ | |
-| 37 | 対話二段構え（`run -dT --rm` + `docker exec -it`）で TTY シェルが得られ `/run/secrets` が注入済み。退出 + `docker stop` で消えること | ⛔ | |
-| 38 | `dotenvx get -f .env.prod` がファイルを生成しない | ⛔ | |
-| 39 | `git clean -xdff` と `node_modules` 保持のトレードオフ（`-e node_modules` 除外の可否） | ⛔ | 設計書 §11 の未決事項 |
+| 32 | `tmpfs: - /run:uid=...` の記法で node 所有の tmpfs が作られる | ✅ | §0 / §0.4（`docker run` と `docker compose` の双方で一致）+ **A31** / **B4** |
+| 33 | `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走する | ✅ | §0.68 の **M9-e**（`prepare` の tsup ビルドまで完走）。`exec` の明示が必須であることも同時に確定 |
+| 34 | `GIT_REF` 未指定時に compose が失敗する | ✅ | **A11**（`compose run`）+ **A32 / A33**（`compose config`） |
+| 35 | `logging: driver: none` でもアタッチ時に stdout が手元に表示される | ✅ | **A12** |
+| 36 | ホストの `core_pattern` の内容と、`ulimits: core: 0` 下でコアが生成されないこと | ⛔ | `ulimit -c` が 0 を返すことは **A13** / **B5** で消化済み（`docker compose config` は値 0 を落とすため挙動でしか見られない。§0.71）。**ホストの `/proc/sys/kernel/core_pattern` の実際の内容**はホストでの確認が要る |
+| 37 | 対話二段構え（`run -dT --rm` + `docker exec -it`）で TTY シェルが得られること | ⬜ | 未実施。設計書 §11 の「対話 prod shell の要否」が未決のため後回しにしている |
+| 38 | `dotenvx get -f .env.prod` がファイルを生成しない | ✅ | **M3**（`ls -la` 前後で差分なし。§0） |
+| 39 | ~~`git clean -xdff` と `node_modules` 保持のトレードオフ~~ | — | **消滅**。`/src` が tmpfs である以上、run をまたいだ `node_modules` の保持は元から成立しない（D18） |
 
-### dotenvx 2.x への引き上げに伴う未検証の前提
+### dotenvx 2.x への引き上げに伴う前提
 
 runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env の peer range `^1.63.0`
 下で運用）。2.0.0 は keyring 対応の導入にあわせて `run` / `config` / `get` を
-`@dotenvx/primitives` 由来の共有 resolver 経由へ付け替えている。
+`@dotenvx/primitives` 由来の共有 resolver 経由へ付け替えている。**40 / 41 が落ちれば
+1.75.1 へ戻す**という条件付きの前提だったが、どちらも通ったので 2.19.2 のまま進む。
 
-| # | 項目 | 状態 | 備考 |
+| # | 項目 | 状態 | 根拠 |
 |---|---|---|---|
-| 40 | dotenvx 2.x で `DOTENV_PRIVATE_KEY_*` の環境変数注入が従来通り効く | ⛔ | **本設計の shim はこの経路に全面的に依存する。落ちると shim 機構そのものが機能しない** |
-| 41 | dotenvx 1.x で暗号化した `.env.*` を 2.x が復号できる | ⛔ | 既存 4 repo の移行可否に直結 |
-| 41b | `pnpm run` の内側でローカル依存の dotenvx が呼ばれた場合に鍵が届く | ⛔ | `pnpm run` は `node_modules/.bin` を PATH 先頭に積むため shim が素通りされる。最上位に `dotenvx run -f ... -- pnpm ...` を置く運用で回避する（README / migration に反映済み）。**設計書 §4.3 / D5 の「全経路で効く」は誤りで rev.5 で訂正する** |
-
-2.0.0 の BREAKING は全て `lib/main` のライブラリ API（`set` / `get` の async 化、
-`doctor` / `keypair` / `genexample` の export 削除、`rotate` コマンドの削除）であり、
-CLI の `run` / `get` / `set` / `encrypt` / `decrypt` / `precommit` は存続していることは
-CHANGELOG で確認済み。40 / 41 が落ちた場合は 1.75.1 へ戻す。
+| 40 | dotenvx 2.x で `DOTENV_PRIVATE_KEY_*` の環境変数注入が従来通り効く | ✅ | **M3**（§0。`get` / `run` の双方、shim 経由・複数鍵同居・`-f` による鍵選択を含む） |
+| 41 | dotenvx 1.x で暗号化した `.env.*` を 2.x が復号できる | ✅ | **M4**（§0。1.75.1 で暗号化した `.env.legacy` を 2.19.2 が復号） |
+| 41b | `pnpm run` の内側でローカル依存の dotenvx が呼ばれた場合に鍵が届く | ✅ | **M5**（§0）。**届かない**ことが確定し、最上位に `dotenvx run` を置く運用で回避する。設計書 D5 の「全経路で効く」は rev.5 で訂正済み |
 
 ### コミット前検査
 
-| # | 項目 | 状態 | 備考 |
+| # | 項目 | 状態 | 根拠 |
 |---|---|---|---|
-| 42 | `core.hooksPath` 設定下で平文 `.env` のコミットが実際に拒否される | ⛔ | |
-| 43 | husky を使うプロジェクトでチェーン先の hook が引き続き実行される | ⛔ | |
-| 44 | prod container 内でも hook が有効である | ⛔ | |
+| 42 | `core.hooksPath` 設定下で平文 `.env` のコミットが実際に拒否される | ✅ | **A14** |
+| 43 | husky を使うプロジェクトでチェーン先の hook が引き続き実行される | ✅ | **A15** |
+| 44 | prod container 内でも hook が有効である | ✅ | **A3 / A4 / A14 / A15** はいずれも runtime-base イメージ内で実行している |
 | 45 | ホストの GUI クライアント（Fork）から平文 `.env` の commit が拒否される | ⛔ | 現行の simple-git-hooks 構成で今どうなっているかの確認を含む |
 | 46 | `node_modules` が named volume か bind mount か | ⛔ | ホスト側 hook のパス解決に影響する |
-| 47 | ホスト側 hook が依存バイナリを解決できない場合に非ゼロ終了する（沈黙して通過しない） | ⛔ | |
-| 48 | CI（クリーン checkout・差分ゼロ）で `dotenvx precommit` が実際に検出能力を持つか | ⬜ | no-op なら設計書 §8.2 の fallback へ差し替え。**§9 手順 4 の範囲** |
-| 49 | 他 org の private リポジトリから karakuri の reusable workflow が呼び出せる | ⬜ | **§9 手順 4 の範囲** |
+| 47 | ホスト側 hook が依存バイナリを解決できない場合に非ゼロ終了する | ⛔ | |
+| 48 | CI（クリーン checkout・差分ゼロ）で `dotenvx precommit` が検出能力を持つか | ✅ | **持たない**ことが確定（下記 §0.8）。設計書は当初案を破棄し、tracked ファイルの直接走査へ差し替えた（D23） |
+| 49 | 他 org の private リポジトリから karakuri の reusable workflow が呼び出せる | ⛔ | 他 org の repo が要る。呼び出し側 org の Actions ポリシーが「選択した actions / reusable workflows のみ許可」の場合に allowlist 追加が要ることは文書化済み（プラン制限ではなく設定項目） |
+
+### rev.7 で追加した項目
+
+| # | 項目 | 状態 | 根拠 |
+|---|---|---|---|
+| 51 | `/src` が tmpfs でない構成（named volume へ戻す一行）で entrypoint が明示的に落ちる | ⬜ | **A35** としてハーネスに追加済み。**docker 上では未実行**（次回 CI で消化する）。secret の置き場側は **M11**（測定。ASSERT への昇格条件はハーネスに明記）。§0.10 参照 |
+| 52 | `/proc/mounts` に該当行が無い場合に WARNING を出して続行する | ✅ | `tests/entrypoint.test.sh`（テスト環境そのものがこの経路） |
+| 53 | 40 桁 hex を名前とする ref（オブジェクト不在）で非ゼロ終了し記録が残らない | ✅ | `tests/entrypoint.test.sh`。**現行 git ではそもそも成立しない**（下記 §0.9） |
+| 54 | 大文字の完全 commit sha が誤って拒否されない | ✅ | `tests/entrypoint.test.sh` |
+| 55 | `GIT_REPO` の資格情報埋め込みを拒否し、stderr にトークンが出ない | ✅ | `tests/entrypoint.test.sh`（ssh 形式を誤検知しないことも含む） |
+| 56 | dotenvx shim が prod 鍵注入時の `--strict` 欠落だけを警告する | ✅ | `tests/shim.test.sh`（警告の有無で引数と rc が変わらないことを含む） |
+| 57 | prod-context が空の `/run/secrets` で zsh でも完走する | ✅ | `tests/prod-context.test.sh`（zsh 実行込み。旧実装が実際に落ちることも確認済み） |
+| 58 | pre-commit hook がサブディレクトリの `.env.keys` を検出する | ✅ | `tests/hook.test.sh`（`node_modules` 除外、`find` 自体の失敗時の fail-closed を含む） |
+| 59 | env-guard が平文の tracked `.env` を実際に検出する | ✅ | `tests/env-guard.test.sh`。**GitHub Actions 上での実行だけが未実施**（push はユーザーが行う）。下記 §0.11 の否定対照を参照 |
+| 60 | hook と CI が同一 fixture に対して同一の判定を返す | ✅ | `tests/env-guard.test.sh`（終了コードだけでなく**出力がバイト単位で同一**であることまで見る）。D24 の本題 |
+| 61 | `env-guard.conf` による上書きが hook と CI の両方に効く | ✅ | 同上（`pattern` / `allow` の双方） |
+| 62 | 設定ファイルが `source` / `eval` されない | ✅ | スキャナは行単位のパースのみで、値をパターン文字列としてしか使わない |
+| 63 | CI が checkout するスキャナの ref が reusable workflow 自身の ref と一致する | ⬜ | `github.job_workflow_ref` から取る実装済み（`github.workflow_ref` は呼び出し**側**を指すので使えない）。parse に失敗したら ref を推測せず落とす。**GitHub Actions 上での実行は未実施** |
+| 64 | 検出時の出力に平文の値が含まれない | ✅ | `tests/env-guard.test.sh`（`=` を含まない行では鍵名すら出さない経路を含む） |
 
 ---
 

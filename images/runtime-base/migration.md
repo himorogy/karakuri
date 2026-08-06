@@ -88,6 +88,29 @@ pnpm 10 → 11 の移行を同時に踏む場合は
   クライアント（Fork 等）は従来通り `.git/hooks/pre-commit` を参照する。消すとホスト側だけが
   無防備になる。
 
+- **検査対象のファイル名がプロジェクトの実態と合っていること。** 既定で検査されるのは
+  basename が `.env` で始まるファイル（`.env`、`.env.production`、`apps/api/.env` 等）と
+  `secret.env.*` だけである。`production.env` や `config/dev.env` のような名前を使っている
+  プロジェクトは、リポジトリルートに `env-guard.conf` を置いて明示する。
+
+  ```
+  pattern (^|/)production\.env$
+  allow   *.env.container.example
+  ```
+
+  `pattern` / `allow` は指定した側の既定を**置き換える**（追加ではない）。この設定は hook と
+  CI の両方が同じように読むので、片方にだけ効くことはない。移行時に一度、いま何が tracked に
+  なっているかを見ておくとよい。
+
+  ```sh
+  git ls-files | grep -E '\.env'
+  ```
+
+- **検査内容が変わっている。** hook が呼んでいた `dotenvx precommit` は外れ、共有スキャナ
+  `env-guard-scan` に一本化された。CI 側とまったく同じ 1 本のファイルが判定する。以前は
+  「hook は通るが CI で落ちる」が起こりえたが、いまはスコープ（staged か tracked か）だけが
+  違い、判定は同一である。
+
 ---
 
 ## 3. 鍵束を OS キーチェーンへ移す
@@ -214,9 +237,40 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
 
 ---
 
-## 5. 旧構成を撤去する
+## 5. CI 側の検査を入れる
 
-4 が安定して動くことを確認してから。
+`.github/workflows/env-guard.yml` を置く。中身はこれだけで、検査ロジックは karakuri 側にある。
+
+```yaml
+on: [push, pull_request]
+jobs:
+  env-guard:
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@v1
+```
+
+雛形は `images/runtime-base/templates/env-guard.yml`。
+
+hook（2 で入った）と**同じ 1 本のスキャナ**が判定するので、両者の間で結果が食い違うことはない。
+違うのはスコープだけで、hook は staged なファイルを、CI は tracked なファイル全体を見る。
+CI がクリーンな checkout（差分ゼロ）で走ることを踏まえた設計であり、**過去にコミット済みの
+平文もここで初めて表面化する**。移行直後の 1 回目は、既存の平文を掘り起こして赤くなる可能性が
+ある点に注意。
+
+### 確認すること
+
+- **出力に「何件検査したか」が出ること。** `0 file(s) were inspected` と出ているなら、
+  それは「安全だった」ではなく「検査対象が 1 つも無かった」である。`env-guard.conf` の
+  `pattern` がプロジェクトの実態と合っているかを疑う
+- **呼び出し側 org の Actions ポリシー。** 「選択した actions / reusable workflows のみ許可」に
+  している org では、`himorogy/karakuri/...` を allowlist へ明示的に追加する必要がある。
+  これはプランの制限ではなく設定項目
+- karakuri が public であること（他 org から reusable workflow を呼ぶ前提）
+
+---
+
+## 6. 旧構成を撤去する
+
+4 と 5 が安定して動くことを確認してから。
 
 - `scripts/prod-shell.sh` を削除
 - dev/prod 相互排他チェック（`init-check-dev.sh` / `init-check-prod.sh` の
@@ -225,9 +279,11 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
 - 2 層 devcontainer（`prod/devcontainer.json`）を使っていれば削除
 - `~/.config/<project>/.env.container` が残っていないことを再確認
 
-`@himorogy/enclave-env` 自体の去就は保留。検査は dotenvx 純正、配布は `core.hooksPath` に
-移るため、package として残る中身は hook スクリプト程度になる。ホスト側で simple-git-hooks を
-維持する場合は `check.sh` の配布先として残る可能性がある。
+`@himorogy/enclave-env` 自体の去就は保留。ただし判断材料は増えた — 検査ロジックは
+`env-guard-scan` としてイメージ側へ移り、配布は `core.hooksPath` と reusable workflow に
+乗ったので、package として残る中身がほぼ無くなっている。`check.sh` の実質的な後継が
+`env-guard-scan` であり、ホスト側で simple-git-hooks を維持する場合の配布先という用途だけが
+残る。
 
 ---
 

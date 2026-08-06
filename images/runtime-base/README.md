@@ -119,14 +119,40 @@ prod の運用手順としては必須だが、**このイメージは強制し�
 
 強制できる場所は shim しかない。しかし shim は devcontainer-base にも継承され、`--strict` は
 **正当な使い方を壊す** — dotenvx には `--convention flow`（`.env` / `.env.local` /
-`.env.development` を重ねる規約）があり、この規約では一部のファイルが存在しないのが正常である
-ところ、`--ignore=MISSING_ENV_FILE` が示すとおりファイル不在はエラーコードの一つなので、
-`--strict` 下では重ね掛けの 1 枚が無いだけで落ちうる。`--no-armor` も、dev の開発者が自分の
-dev 鍵を Armor で管理している運用を壊す。
+`.env.development` を重ねる規約）があり、この規約では一部のファイルが存在しないのが正常である。
+実測すると、`.env` と `.env.local` があって `.env.development` が無い状態で
+`--convention flow --strict` は rc=1 で落ちる（欠けていると言われるのは `.env.development.local`）。
+`--no-armor` も、dev の開発者が自分の dev 鍵を Armor で管理している運用を壊す。
 
 **これは dotenvx の使い方の問題であってコンテナの責務ではない。** shim がプロジェクトの env
 構成を知らないまま焼く判断ではない。付け忘れたときに何が起きるかは上記のとおりで、`git hook`
 （§コミット前検査）と同じく**予防ではなく運用手順**の位置づけになる。
+
+### ただし黙ってはいない — shim が警告する
+
+強制しないことと黙ることは別である。`--strict` を欠いたときの失敗は rc=0 で暗号文が値として
+注入される静かなものなので、忘れたことに気付く機会が一度も無くなってしまう。
+
+shim は以下を**すべて**満たすときだけ、stderr へ 1 行（3 行に折り返して）出す。
+
+- 引数に `run` がある
+- 引数に `--strict` が無い
+- `/run/secrets/DOTENV_PRIVATE_KEY_PROD` が存在する
+
+```
+dotenvx: WARNING: production key is injected but --strict
+dotenvx:   is absent. dotenvx exits 0 even when decryption
+dotenvx:   fails, injecting the ciphertext as the value.
+```
+
+見ているのは「環境」ではなく「注入済みの prod 鍵ファイルの有無」である。shim の三値意味論
+（存在→注入 / 空→エラー / 不在→素通し）は環境を判別しない設計であり、prod 鍵の観測はその設計と
+矛盾しない。**dev には prod 鍵が来ない設計なので、dev では一度も出ない。**
+`--convention flow` も `--ignore=` も壊さない。
+
+なお `-f` でファイルを明示した場合、不在ファイルは `--strict` の有無に関わらず rc=1 になる
+（実測）。prod は `-f .env.prod` を明示する運用なので、prod で `--strict` が追加で担うのは
+**復号失敗の顕在化だけ**である。
 
 `--no-armor` の根本対処は prod への egress 制限に寄せる。フラグを個別に追いかけるより、
 外への通信を面で塞ぐ方が Armor 以外の同種の機構もまとめて止まる。
@@ -180,12 +206,64 @@ fallback 資格情報が存在しえない。したがって必要な secret を
 
 1. stdin（dotenv 形式）を EOF まで読み、`/run/secrets/<変数名>` へ書く（umask 077）
 2. 空値・`=` を含まない行・不正な鍵名は**即座に非ゼロ終了**する。取込件数が 0 でも落とす
-3. `GIT_ASKPASS` を設定し、`/src`（tmpfs）を `git init` + `fetch` で用意する
-4. `GIT_REF` が commit として解決できることを `rev-parse --verify` で確認する
-5. `checkout --detach --force` → `reset --hard` → `clean -xdff` の順で `GIT_REF` の状態へ復元する
-6. `pnpm config set store-dir /src/.pnpm-store` で store を node_modules と同一 tmpfs へ向ける
-7. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する
-8. `exec "$@"`（引数が無ければ非ゼロ終了）
+3. **自己検査** — `/src` と secret の置き場が tmpfs であること、`/src` が `exec` であること
+4. **`GIT_REPO` に資格情報が埋まっていないこと**を確認する
+5. `GIT_ASKPASS` を設定し、`/src`（tmpfs）を `git init` + `fetch` で用意する
+6. `GIT_REF` が完全な commit sha であることと、**それが自分自身に解決されること**を確認する
+7. 解決した sha を stderr と `/run/prod-ref` へ記録する
+8. `checkout --detach --force` → `reset --hard` → `clean -xdff` の順で `GIT_REF` の状態へ復元する
+9. `pnpm config set store-dir /src/.pnpm-store` で store を node_modules と同一 tmpfs へ向ける
+10. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する
+11. `exec "$@"`（引数が無ければ非ゼロ終了）
+
+順序には意味がある。自己検査（3）が secret 取込（1）の後・git 操作（5）の前にあるのは、
+secret が届いていない状態で環境の話をされても診断の役に立たず、かつ無駄な fetch を避けたい
+ため。資格情報の検証（4）が `remote set-url`（5）より前なのは、通した時点で
+`/src/.git/config` にトークンが書かれてしまうため。一致検証（6）が記録（7）より前なのは、
+逆だと拒否した ref が「immutable な sha を実行した」という記録として残るため
+**（記録が嘘をつくのが一番悪い）**。トークン破棄（10）が `exec`（11）の直前なのは、
+そこから先が信頼しないコードだからである。
+
+### tmpfs であることを自分で確かめる
+
+`compose.prod.yaml` の `read_only` / `tmpfs` は**一行の変更で静かに外せる**。特に危ないのが
+`/src` を named volume に戻す変更で、「毎回 clone して依存を落とし直すのは遅い」という
+性能上の動機から出る自然な一行であり、`read_only: true` を保ったままでも成立してしまう。
+そして**起動も deploy も成功し続けたまま**、前回実行の信頼しないコードが `.git/config` に
+仕込んだ設定が entrypoint 自身の git 操作で発火する経路が復活する（下記「なぜ `/src` を
+毎回捨てるのか」）。
+
+そこで entrypoint は `/proc/mounts` を読み、`/src` と secret の置き場が tmpfs でなければ
+実際の fstype を名指しして落とす。
+
+```
+prod-entrypoint: /src is not a tmpfs: fstype=ext4
+prod-entrypoint:   mount line: /dev/vda1 /src ext4 rw,relatime 0 0
+```
+
+該当する行が `/proc/mounts` に無い場合、あるいは `/proc/mounts` 自体が読めない場合は
+WARNING を出して続行する。**黙ってスキップはしない** — これは診断ではなく防壁である。
+
+検査対象を `/run` と直書きせず `/run/secrets` から導出しているのは、守りたいのが
+「`/run` という名前のパス」ではなく「secret を書く先が不揮発ディスクへ落ちないこと」だから。
+
+### `GIT_REPO` に資格情報を埋めない
+
+`https://x:<token>@github.com/...` の形で渡すと、`remote set-url` によって URL が
+`/src/.git/config` に残り、`exec` 後に走る信頼しないコードが `git config remote.origin.url`
+で読める。`/run/secrets/GH_TOKEN` を破棄している防御が丸ごと空振りになるため、この形は拒否
+する。認証は `GIT_ASKPASS` 経由（stdin で渡した `GH_TOKEN`）が唯一の正規経路。
+ssh 形式（`git@github.com:owner/repo.git`）は `://` を含まないので影響しない。
+
+### 完全な sha であることと、それ自身に解決されることは別
+
+`GIT_REF` が 40 桁 hex という**形**をしていることは、それが commit sha であることを意味
+しない。40 桁 hex を名前とするブランチやタグを作ることは可能で、その場合 git の実装によっては
+ref 名として解決されうる。すると**可変 ref の内容が immutable な sha として実行され、
+`/run/prod-ref` にもそう記録される**。解決結果が `GIT_REF` 自身と一致することまで確認する。
+
+現行の git（2.39.5 で実測）はこのケースを意図的に無視するため、この検査は多重防御である。
+`rev-parse` の解決規則は git の版と実装に属するもので、このイメージが管理できる範囲にない。
 
 ### 復元の三段階は重複ではない
 
@@ -288,7 +366,48 @@ tmpfs にすれば毎回まっさらな repo から始まるため、どちら�
 - この設定が効いている間、各リポジトリの `.git/hooks/*` は無視される。過去に `--install` で
   書き込んだ `pre-commit` が死んだまま残るので、移行時に掃除すること
 
-hook の中身は、`.env.keys` が workspace 内に存在しないことの検査と `dotenvx precommit`。
+### hook は判定を持たない — 検査は共有スキャナに一本化してある
+
+hook がすることは「staged なファイルの一覧を作って共有スキャナ `env-guard-scan` に渡す」
+ことと、per-repo hook へのチェーンだけである。何を平文と見なすか・どのファイル名を検査
+対象とするか・許可リスト・`.env.keys` の再帰探索は、すべてスキャナ側にある。
+
+```
+                   ┌─ hook  : git diff --cached --name-only   （staged）
+検査対象の一覧 ────┤
+                   └─ CI    : git ls-files                    （tracked）
+                                        │
+                                        ▼
+                              /usr/local/bin/env-guard-scan
+```
+
+CI（karakuri の reusable workflow `env-guard.yml`）は、まったく同じ 1 本のファイルに
+tracked なファイルの一覧を渡す。**スコープだけが違い、判定は同一になる。** 差分を見るか
+現在の状態を見るかは文脈が決めることで、何を平文と見なすかは文脈に依らない。
+
+以前ここで呼んでいた `dotenvx precommit` は外した。precommit は自前のファイル名フィルタを
+持っていて上書きできないため、残すと「CI は通るのに hook だけ落ちる」逆向きの分岐を作る。
+staged ファイルに対する検査内容は共有スキャナが同じだけ覆う。
+
+### 検査対象はリポジトリごとに変えられる
+
+リポジトリルートに `env-guard.conf` を置くと、ファイル名パターンと許可リストを上書きできる。
+
+```
+pattern (^|/)production\.env$
+allow   *.env.container.example
+```
+
+- 既定は `(^|/)\.env` と `(^|/)secret\.env\.`、許可リストは `*.env.container.example`
+- `pattern` / `allow` は指定した側の既定を**置き換える**（追加ではない）
+- hook と CI が同じファイルを同じ規則で読むので、**上書きが片方にだけ効くことがない**
+- このファイルは **`source` されない**。行単位でパースされ、値はパターン文字列としてしか
+  使われない
+- ファイル名がドットで始まらないのは、`.env-guard.conf` にすると既定パターンに自分自身が
+  一致して、設定ファイルが env ファイルとして検査され必ず落ちるため
+
+既定のパターンは basename が `.env` で始まるものしか拾わない。`production.env` のような
+名前を使っているプロジェクトは、上記のように `pattern` で明示すること。
 
 ### リポジトリ側から無効化できる（強制装置ではない）
 
@@ -304,6 +423,11 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 `--no-verify` でも素通りするし、git CLI を経由しない書き込み（GitHub API、libgit2 系）にも
 効かない。**この hook は予防ではなく早期検知**であり、設計上も不変条件ではなく緩和策として
 位置づけている。本線は CI 側の検査に置く。
+
+`env-guard.conf` による上書きができることも、この性質と整合する。設定ファイルはリポジトリの
+中にあり書き換えられるが、そもそも `--no-verify` で素通りする装置なので防御水準は下がらない。
+「攻撃者を止める装置」ではなく「事故を早く見つける装置」であり、プロジェクトが自分の都合で
+検査範囲を宣言できることの方が価値が大きい。
 
 同じ性質が prod にも効く。`.git/config` は clone 後のコードが書き換えられるため、
 `core.fsmonitor` のような**コマンドを実行する設定**を仕込まれると、次回の git 操作で走る。
