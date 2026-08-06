@@ -57,6 +57,26 @@ jobs:
   env-guard-propagation:
     uses: himorogy/karakuri/.github/workflows/env-guard.yml@feat-new-prodshell
 
+  # composite action 版。reusable workflow 版が他 org で成立しないことが
+  # 実測で確定したため（github.job_workflow_ref がローカルパス呼び出しでも
+  # 完全参照呼び出しでも空。詳細は .github/actions/env-guard/action.yml の
+  # 冒頭）、こちらへ移す前提で並走させる。
+  #
+  # 呼び出し方は他 org のプロジェクトが書くのと同じ完全参照形にする。
+  # composite action は `uses:` された時点で自分のリポジトリが指定 ref で
+  # checkout されるため、自分の ref を割り出す必要がない — reusable workflow
+  # で詰まった点がそもそも発生しない。
+  #
+  # ⚠ ref がブランチ名で固定されている。**main へマージする前に @main へ
+  # 直すこと**（上の env-guard-propagation と同じ）。
+  env-guard-action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: himorogy/karakuri/.github/actions/env-guard@feat-new-prodshell
+
   test:
     runs-on: ubuntu-latest
 

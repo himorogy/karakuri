@@ -769,6 +769,47 @@ ref がブランチ名で固定されているため、**main へマージする
 他 org の private リポジトリからの呼び出し可否（項目 49）は、Actions ポリシーの allowlist が
 絡むため依然として別問題として残る。
 
+### 決着（CI 13 回目）— reusable workflow では成立しない
+
+完全参照形での呼び出しでも `job_workflow_ref` は**空だった**。
+
+```
+job_workflow_ref: <empty>
+workflow_ref:     himorogy/karakuri/.github/workflows/ci.yml@refs/pull/11/merge
+```
+
+ローカルパス呼び出しに限った話ではなく、**`github` コンテキストでは常に空**である。同じ
+コンテキストの `workflow_ref` は両方の呼び出し方で正しく埋まっているので、コンテキストの
+取得自体が壊れているのではない。
+
+したがって **reusable workflow 版の remote 経路は死んだコードである。** 他 org からの
+呼び出しは fail-closed で落ち続ける。propagation ジョブが緑になったのは、呼び出し側が
+karakuri 自身で in-tree 経路に落ちたためで、外部のリポジトリにスキャナは無い。
+
+`workflow_ref` を代用にはできない。指しているのは**呼び出し側**の workflow なので、他 org から
+呼ばれれば他 org のリポジトリを指す。**karakuri が自分を呼ぶときだけ動いて他所では壊れる**、
+という使える中で最悪の形になる。
+
+### 移行先: composite action
+
+`uses:` された時点で action のリポジトリが**指定された ref で checkout される**ため、
+`github.action_path` から自分のファイルへ到達できる。**自分の ref を割り出す必要がそもそも
+無い** — reusable workflow で詰まった一点が発生しない。呼び出し側が `@v1` と書けば v1 の
+スキャナが走る。
+
+`.github/actions/env-guard/action.yml` を追加し、`ci.yml` から他 org と同じ完全参照形で呼ぶ
+ジョブ（`env-guard-action`）を並走させた。
+
+- スキャナは `images/runtime-base/bin/env-guard-scan` のまま動かさない。runtime-base の
+  docker build コンテキストが `images/runtime-base` であり、そこから出た場所のファイルを
+  `COPY` できないため。action からは action 自身の位置の相対で引く
+- **未確認**: action のリポジトリが**丸ごと** checkout されるのか、action ディレクトリだけ
+  なのか。丸ごとでなければ相対パスが外れる。その場合は存在検査で落ち、`GITHUB_ACTION_PATH` と
+  実際にそこに在るものを出す（推測で別のものを走らせない）
+- 代償は呼び出し側スタブが数行伸びること（`runs-on` と `actions/checkout` を呼び出し側が
+  書く）。ref を割り出せない以上、選択肢は「呼び出し側が数行書く」か「スキャナを workflow の
+  中へ複製して同一性をテストで担保する」かで、**複製しない方を採る**
+
 ### 設計書の記号がそのまま運用の出力に出ている
 
 ```
