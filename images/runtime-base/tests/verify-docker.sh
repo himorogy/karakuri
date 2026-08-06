@@ -1230,6 +1230,347 @@ measure M9 "3 ケースのまとめ (A/B の合計は二重計上を避けて計
 
 
 # =============================================================================
+# M10: prod で store-dir を既定にする手段 (最後の測定)
+#
+# read_only: true + tmpfs /src (exec 付き) で prod を動かし、pnpm store を
+# /src/.pnpm-store (node_modules と同一 tmpfs) に置くことが M9 で確定した
+# (ハードリンクが効き、RAM が案 A の半分になる)。残る問題は「store-dir を
+# どうやって prod で既定にするか」— `pnpm install --store-dir <path>` の
+# フラグは効くが (M9-b / M9-e で確認済み)、これを compose ファイルや
+# entrypoint に焼くのはこのタスクのスコープ外 (templates/compose.prod.yaml /
+# Dockerfile / prod-entrypoint.sh は変更しない)。設定ファイル側で既定化
+# できないかを、フラグを一切渡さずに確認する。
+#
+# 既に判明していること (M9-c):
+#   - 環境変数 npm_config_store_dir は効かない (store path が変わらなかった)
+#   - `pnpm config set store-dir <path> --global` は効く (`pnpm config list
+#     --global` に反映された。ただし M9-c はこのイメージの PNPM_HOME 配下
+#     ルート fs への書き込みで検証しており、read_only + tmpfs /src の
+#     組み合わせでは未検証)
+#
+# ここで測るのは、$HOME (/home/node) が tmpfs で read_only 下でも書ける、
+# という性質を使って prod だけに効かせる 3 つの手段 (M10-a/b/c) と、実際に
+# 効いた手段で --store-dir フラグなしの install が完走するか (M10-d)。
+# compose-src-tmpfs-exec.yaml (/src が tmpfs + exec、read_only: true。M9-d/e
+# で使ったのと同じファイル) を使う。狙いの値は /src/.pnpm-store/v11
+# (pnpm store path は store-dir 直下に v11 を付けて返す。既定のままなら
+# PNPM_HOME=/usr/local/share/pnpm を使うので /usr/local/share/pnpm/store/v11 —
+# M9-c の実測どおり)。
+#
+# 全て MEASURE。pass/fail 判定はしない。pnpm install が走るのは M10-d の
+# 1 ケースだけに絞る (M10-a/b/c は `pnpm store path` / `pnpm config get` /
+# `pnpm config set` を見るだけで、いずれも install より遥かに軽い)。
+#
+# M10-a と M10-b は必ず別々のコンテナで実行する: 同じコンテナで両方
+# 書いてしまうと、後で `pnpm store path` が変わった原因が $HOME/.npmrc と
+# $HOME/.config/pnpm/rc のどちらなのか切り分けられなくなるため。
+# compose_run() は呼び出すたびに新しいコンテナを起動するので、m10a/m10b/
+# m10c/m10d をそれぞれ独立した関数にしておけば自然にこの要求を満たす
+# (m9a/m9b/m9e と同じ考え方)。
+#
+# M10-d の「最初に効いた方法」の判定は、host 側 (このスクリプト自身) が
+# $SCRATCH/m10{a,b,c}-output.txt (m10a/m10b/m10c が pnpm install を再実行
+# せずに書き出したもの) を a → b → c の順で読み、最初に
+# `M10_?_EFFECTIVE=YES` が付いたものを採用する。採用した方法の識別子
+# (a/b/c) は `docker compose run -e M10D_METHOD=<method>` でコンテナへ渡し、
+# コンテナ内の sh 側で case 分岐させる — bash 側で prep コマンド文字列を
+# 組み立てて sh -c へ埋め込むよりも、GIT_REPO/GIT_REF 同様に環境変数で
+# 渡すほうが誤引用のリスクが無く、この節の他ケースと同じ「sh -c '...' は
+# 常に単引用符でまるごと囲む」書き方を崩さずに済む。三つとも NO
+# (あるいは preflight 失敗で出力ファイルが無い) だった場合は
+# `M10_D=SKIPPED (no working method)` を出し、install は走らせない。
+#
+# 推測 (docker が無い環境のため未実行・未確認):
+#   - $HOME はこのイメージ内で uid 1000 実行時に /home/node へ解決される、
+#     という前提で書いている。images/runtime-base/Dockerfile は ENV HOME=
+#     を明示していない (base image node:24 が uid 1000 の "node" ユーザーを
+#     home /home/node で作っている想定に依存)。compose-src-tmpfs(-exec).yaml
+#     が /home/node へ tmpfs を割り当てているのもこの前提に沿っている
+#     (M9-a のコメント参照)。もし $HOME が実際には空/未設定だった場合、
+#     `$HOME/.npmrc` は `/.npmrc` に化けて read_only なルート fs への
+#     書き込みになり失敗するはずで、これはこれで観測結果として記録される
+#     (このため各ケースの冒頭で `echo "$HOME"` を出し、前提が崩れていた
+#     場合にすぐ分かるようにしている)。
+#   - `$HOME/.config/pnpm/rc` という設定ファイルの存在自体が未確認。pnpm
+#     のドキュメント上、npm 形式の .npmrc とは別に独自の rc ファイルを
+#     持つ可能性がある、というタスク指示の仮説をそのまま測定にしている。
+#     実際には存在しない (pnpm config get store-dir が反映しない) 可能性が
+#     高いことは織り込み済みで、その場合は M10_B_EFFECTIVE=NO がそのまま
+#     結果になる。
+#   - `pnpm config set store-dir <path>` (--global なし) が read_only 下で
+#     どのファイルに書こうとするかは pnpm のバージョン依存の実装詳細で
+#     あり未確認。$HOME/.npmrc と $HOME/.config/pnpm/rc の 2 箇所に加え、
+#     working_dir である /src 直下の npmrc (プロジェクトスコープ) も
+#     念のため見ておく (タスク指示の 2 箇所より広く見ているのは、書き先を
+#     取り違えて UNKNOWN と誤判定するのを避けるため)。
+#   - `docker compose run -e KEY=VALUE` でコンテナへ追加の環境変数を渡せる
+#     という前提で M10-d を書いている (compose run のドキュメント上の
+#     一般的な機能だが、このリポジトリの CI で使うバージョンでの実地
+#     確認はできていない)。
+# =============================================================================
+echo
+echo "=== M10: prod で store-dir を既定にする手段 ==="
+
+# M10-a: $HOME/.npmrc に store-dir= を書く。
+#
+# SC2016: sh -c '...' 内の $ は意図的に単引用符でエスケープしている。
+# コンテナ内の sh に渡して評価させたい文字列であって、このスクリプト
+# 自身のシェルで展開させたいものではないため。
+m10a_home_npmrc() {
+	local proj="verify-m10-a-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '
+			echo "--- \$HOME (前提の確認。/home/node のはず) ---"
+			echo "$HOME"
+			write_rc=0
+			printf "store-dir=/src/.pnpm-store\n" > "$HOME/.npmrc" || write_rc=$?
+			echo "--- \$HOME/.npmrc への書き込み rc=$write_rc ---"
+			echo "--- cat \$HOME/.npmrc ---"
+			cat "$HOME/.npmrc" 2>&1
+			echo "--- pnpm store path (--store-dir フラグなし) ---"
+			store_path=$(pnpm store path 2>&1)
+			echo "$store_path"
+			echo "--- pnpm config get store-dir ---"
+			pnpm config get store-dir 2>&1
+			case "$store_path" in
+				/src/.pnpm-store*) echo "M10_A_EFFECTIVE=YES" ;;
+				*) echo "M10_A_EFFECTIVE=NO" ;;
+			esac
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out" >"$SCRATCH/m10a-output.txt"
+	printf '%s\n' "$out"
+}
+measure_git M10 "M10-a: \$HOME/.npmrc に store-dir= を書き、フラグなしで pnpm store path が /src/.pnpm-store を指すか" m10a_home_npmrc
+
+# M10-b: $HOME/.config/pnpm/rc に store-dir= を書く。M10-a とは別コンテナ
+# (compose_run の呼び出しが別関数・別 project 名になっているので自然に
+# 満たされる。M9-a/M9-b と同じ考え方)。
+#
+# SC2016: 上と同じ理由。
+m10b_pnpm_rc() {
+	local proj="verify-m10-b-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '
+			echo "--- \$HOME (前提の確認。/home/node のはず) ---"
+			echo "$HOME"
+			mkdir_rc=0
+			mkdir -p "$HOME/.config/pnpm" || mkdir_rc=$?
+			write_rc=0
+			printf "store-dir=/src/.pnpm-store\n" > "$HOME/.config/pnpm/rc" || write_rc=$?
+			echo "--- mkdir \$HOME/.config/pnpm rc=$mkdir_rc、\$HOME/.config/pnpm/rc への書き込み rc=$write_rc ---"
+			echo "--- cat \$HOME/.config/pnpm/rc ---"
+			cat "$HOME/.config/pnpm/rc" 2>&1
+			echo "--- pnpm store path (--store-dir フラグなし) ---"
+			store_path=$(pnpm store path 2>&1)
+			echo "$store_path"
+			echo "--- pnpm config get store-dir ---"
+			pnpm config get store-dir 2>&1
+			case "$store_path" in
+				/src/.pnpm-store*) echo "M10_B_EFFECTIVE=YES" ;;
+				*) echo "M10_B_EFFECTIVE=NO" ;;
+			esac
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out" >"$SCRATCH/m10b-output.txt"
+	printf '%s\n' "$out"
+}
+measure_git M10 "M10-b: \$HOME/.config/pnpm/rc に store-dir= を書き、フラグなしで pnpm store path が /src/.pnpm-store を指すか (M10-a とは別コンテナ)" m10b_pnpm_rc
+
+# M10-c: `pnpm config set store-dir <path>` (--global なし) が read_only 下で
+# 成功するか、成功した場合どのファイルに書かれるかを見る。$HOME/.npmrc /
+# $HOME/.config/pnpm/rc に加え、working_dir (/src) 直下の npmrc も
+# 念のため確認する (どちらの想定にも当てはまらず UNKNOWN と誤判定するのを
+# 避けるため)。
+#
+# SC2016: 上と同じ理由。
+m10c_config_set() {
+	local proj="verify-m10-c-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '
+			if set_out=$(pnpm config set store-dir /src/.pnpm-store 2>&1); then
+				set_rc=0
+			else
+				set_rc=$?
+			fi
+			echo "--- pnpm config set store-dir /src/.pnpm-store (--global なし) rc=$set_rc ---"
+			echo "$set_out"
+			echo "--- pnpm store path (--store-dir フラグなし) ---"
+			store_path=$(pnpm store path 2>&1)
+			echo "$store_path"
+			echo "--- pnpm config get store-dir ---"
+			pnpm config get store-dir 2>&1
+			echo "--- ls -la \$HOME/.npmrc \$HOME/.config/pnpm/rc (どちらに書かれたか特定) ---"
+			ls -la "$HOME/.npmrc" "$HOME/.config/pnpm/rc" 2>&1
+			echo "--- ls -la /src/.npmrc (working_dir 直下。念のための追加確認) ---"
+			ls -la /src/.npmrc 2>&1
+			wrote_to=UNKNOWN
+			if [ -f "$HOME/.npmrc" ] && grep -q store-dir "$HOME/.npmrc" 2>/dev/null; then
+				wrote_to="$HOME/.npmrc"
+			elif [ -f "$HOME/.config/pnpm/rc" ] && grep -q store-dir "$HOME/.config/pnpm/rc" 2>/dev/null; then
+				wrote_to="$HOME/.config/pnpm/rc"
+			elif [ -f /src/.npmrc ] && grep -q store-dir /src/.npmrc 2>/dev/null; then
+				wrote_to="/src/.npmrc"
+			fi
+			echo "M10_C_SET_RC=$set_rc"
+			echo "M10_C_WROTE_TO=$wrote_to"
+			case "$store_path" in
+				/src/.pnpm-store*) echo "M10_C_EFFECTIVE=YES" ;;
+				*) echo "M10_C_EFFECTIVE=NO" ;;
+			esac
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out" >"$SCRATCH/m10c-output.txt"
+	printf '%s\n' "$out"
+}
+measure_git M10 "M10-c: pnpm config set store-dir (--global なし) が read_only 下で成功するか、どこに書かれるか" m10c_config_set
+
+# m10_pick_method: M10-a/b/c が書き出した $SCRATCH/m10{a,b,c}-output.txt を
+# a → b → c の順で読み、最初に `M10_?_EFFECTIVE=YES` が付いたものの識別子
+# (a/b/c) を返す。どれも無ければ "none"。docker を呼ばない純粋な host 側の
+# 判定なので measure() を経由させず、m10d_install_case() から直接呼ぶ
+# (m9_summary の field() ヘルパーと同じ考え方で、$SCRATCH 配下の出力
+# ファイルをテキストとして読むだけ)。
+m10_pick_method() {
+	if [ -f "$SCRATCH/m10a-output.txt" ] && grep -q '^M10_A_EFFECTIVE=YES$' "$SCRATCH/m10a-output.txt"; then
+		echo a
+	elif [ -f "$SCRATCH/m10b-output.txt" ] && grep -q '^M10_B_EFFECTIVE=YES$' "$SCRATCH/m10b-output.txt"; then
+		echo b
+	elif [ -f "$SCRATCH/m10c-output.txt" ] && grep -q '^M10_C_EFFECTIVE=YES$' "$SCRATCH/m10c-output.txt"; then
+		echo c
+	else
+		echo none
+	fi
+}
+
+# M10-d: m10_pick_method() が選んだ方法で、--store-dir フラグなしの
+# `pnpm install --frozen-lockfile` が完走するかを見る。pnpm-lock.yaml を
+# 持つ実在のリポジトリが要るため、M10-a/b/c の TEST_BARE_DIR ではなく
+# M9 と同じ SELF_BARE_DIR (このリポジトリ自身) を使う。
+#
+# 採用した方法の識別子はコンテナへ環境変数 M10D_METHOD として渡し、
+# コンテナ内の sh 側で case 分岐させる (このファイル冒頭のコメント参照。
+# bash 側で prep コマンド文字列を組み立てて sh -c へ差し込むより、
+# GIT_REPO/GIT_REF と同じ「env 経由でコンテナへ渡す」やり方に揃えたほうが
+# 誤引用のリスクが無い)。
+#
+# SC2016: 上と同じ理由。
+m10d_install_case() {
+	local method
+	method="$(m10_pick_method)"
+
+	if [ "$method" = none ]; then
+		printf '%s\n' "M10_D=SKIPPED (no working method: M10-a/b/c のいずれも EFFECTIVE=YES にならなかった)"
+		return 0
+	fi
+
+	local proj="verify-m10-d-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+		-T --rm -e M10D_METHOD="$method" prod sh -c '
+			case "$M10D_METHOD" in
+				a) printf "store-dir=/src/.pnpm-store\n" > "$HOME/.npmrc" ;;
+				b) mkdir -p "$HOME/.config/pnpm" && printf "store-dir=/src/.pnpm-store\n" > "$HOME/.config/pnpm/rc" ;;
+				c) pnpm config set store-dir /src/.pnpm-store ;;
+				*) : ;;
+			esac
+			echo "--- 採用した方法 (M10-a/b/c のうち最初に EFFECTIVE=YES だったもの): $M10D_METHOD ---"
+			echo "--- pnpm install --frozen-lockfile (--store-dir フラグなし) ---"
+			pnpm install --frozen-lockfile >/tmp/m10d-install.log 2>&1
+			rc=$?
+			echo "rc=$rc"
+			echo "--- pnpm install 出力の末尾 (トラブル時の手がかり用) ---"
+			tail -20 /tmp/m10d-install.log
+			echo "--- \"Packages are hard linked\" / \"copied\" を含む行 (hardlink か copy かの一次判定) ---"
+			grep -iE "hard linked|copied" /tmp/m10d-install.log || echo "(該当行なし)"
+			echo "--- pnpm store path (--store-dir フラグなし) ---"
+			pnpm store path 2>&1
+			echo "--- hardlink 判定: node_modules 内、リンク数 2 以上 (links+1) のファイル数 / 全ファイル数 ---"
+			linked=$(find node_modules -type f -links +1 2>/dev/null | wc -l)
+			totalf=$(find node_modules -type f 2>/dev/null | wc -l)
+			echo "links+1=$linked total=$totalf"
+			echo "--- store の実際の場所 (du -sh /src/.pnpm-store) ---"
+			du -sh /src/.pnpm-store 2>&1 || echo "du failed (store may not exist)"
+			echo "M10_D_METHOD=$M10D_METHOD"
+			echo "M10_D_RC=$rc"
+			echo "M10_D_LINKED=$linked"
+			echo "M10_D_TOTALF=$totalf"
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s。pnpm install 個別の rc は本文中の rc= 行を見ること)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out" >"$SCRATCH/m10d-output.txt"
+	printf '%s\n' "$out"
+}
+measure_git M10 "M10-d: 最初に効いた方法 (a→b→c の順) で --store-dir フラグなしの pnpm install --frozen-lockfile が完走するか" m10d_install_case
+
+# M10 まとめ: M10-a/b/c/d の出力ファイルを読み、タスク指示の書式
+# (a/b の YES/NO、c の書き込み先、d の rc/hardlink 比) で 1 ブロックに
+# まとめる。m9_summary と同じ考え方で、$SCRATCH 配下のファイルをテキスト
+# として読むだけの host 側処理なので measure_git ではなく measure を使う。
+m10_summary() {
+	field() { grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2-; }
+
+	local a_file="$SCRATCH/m10a-output.txt" b_file="$SCRATCH/m10b-output.txt"
+	local c_file="$SCRATCH/m10c-output.txt" d_file="$SCRATCH/m10d-output.txt"
+	local a_eff b_eff c_eff c_wrote d_summary
+
+	if [ -f "$a_file" ]; then
+		a_eff="$(field "$a_file" M10_A_EFFECTIVE)"
+	else
+		a_eff="SKIPPED (M10-a 未実行)"
+	fi
+
+	if [ -f "$b_file" ]; then
+		b_eff="$(field "$b_file" M10_B_EFFECTIVE)"
+	else
+		b_eff="SKIPPED (M10-b 未実行)"
+	fi
+
+	if [ -f "$c_file" ]; then
+		c_eff="$(field "$c_file" M10_C_EFFECTIVE)"
+		c_wrote="$(field "$c_file" M10_C_WROTE_TO)"
+	else
+		c_eff="SKIPPED (M10-c 未実行)"
+		c_wrote="-"
+	fi
+
+	if [ -f "$d_file" ]; then
+		if grep -q '^M10_D=SKIPPED' "$d_file"; then
+			d_summary="SKIPPED (no working method)"
+		else
+			local d_method d_rc d_linked d_totalf
+			d_method="$(field "$d_file" M10_D_METHOD)"
+			d_rc="$(field "$d_file" M10_D_RC)"
+			d_linked="$(field "$d_file" M10_D_LINKED)"
+			d_totalf="$(field "$d_file" M10_D_TOTALF)"
+			d_summary="$(printf 'method=%s rc=%s hardlink=%s/%s' "${d_method:-?}" "${d_rc:-?}" "${d_linked:-?}" "${d_totalf:-?}")"
+		fi
+	else
+		d_summary="SKIPPED (M10-d 未実行)"
+	fi
+
+	# shellcheck disable=SC2016
+	printf 'M10 まとめ: a($HOME/.npmrc)=%s  b($HOME/.config/pnpm/rc)=%s\n            c(config set, 書き込み先=%s)=%s\n            d(効いた方法で install)=%s' \
+		"${a_eff:-?}" "${b_eff:-?}" "${c_wrote:-?}" "${c_eff:-?}" "${d_summary}"
+}
+measure M10 "4 ケースのまとめ (書式はタスク指示のとおり)" m10_summary
+
+
+# =============================================================================
 # M3: dotenvx 2.x の環境変数注入 (最優先)
 #
 # dotenvx 2.0.0 は keyring 対応で run / config / get を

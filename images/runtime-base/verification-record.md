@@ -297,6 +297,71 @@ M9_C_CHANGED=YES   ← 両方エラーなので誤判定
 `-w /tmp` を付け、両方の rc が 0 のときだけ比較する形へ直した（片方でもエラーなら
 `UNKNOWN` と出す）。
 
+## 0.68 CI 6 回目（2026-08-06）— `noexec` 確定、`exec` で解決、prod は成立する
+
+### tmpfs は `noexec` でマウントされる（M9-d、実測）
+
+```
+exec 明示なし: tmpfs on /src type tmpfs (rw,nosuid,nodev,noexec,relatime,mode=755,uid=1000,gid=1000)
+               /src/t.sh → Permission denied、rc=126
+exec 明示あり: tmpfs on /src type tmpfs (rw,nosuid,nodev,relatime,mode=755,uid=1000,gid=1000)
+               /src/t.sh → EXEC_OK、rc=0
+```
+
+推測どおりだった。**`uid=`/`gid=`/`mode=` を渡しても docker の既定 `noexec` は残る**。
+消すには `exec` の明示が要る。`/run` `/tmp` `/out` `/home/node` も全て `noexec` で
+マウントされていた。
+
+- `/src` … **`exec` が必須**。信頼しないコードを実行するための場所であり、noexec にする
+  意味は元々ない
+- `/run`（secrets）と `/out`（成果物）… noexec のままが正しい
+- `/tmp` … 一時ファイルを実行する種類のツール（node-gyp 等）が踏む可能性がある。
+  実際に踏むまでは noexec のままにする
+
+### 案 B + `exec` で prod は成立する（M9-e、項目 33 に決着）
+
+```
+rc=0
+packages/enclave-env prepare: CLI tsup v8.5.1
+packages/enclave-env prepare: ESM dist/cli.js 7.58 KB
+packages/enclave-env prepare: ESM ⚡️ Build success in 11ms
+M9_E_BUILD_RAN=YES
+hardlink 3491/3547   合計 131M
+```
+
+`read_only: true` + tmpfs `/src`（`exec` 付き）+ store 同居で、`pnpm install` から
+`prepare` の tsup ビルドまで完走した。
+
+### store-dir の固定手段（M9-c）
+
+```
+素の pnpm store path              → /usr/local/share/pnpm/store/v11
+npm_config_store_dir を与えた場合  → /usr/local/share/pnpm/store/v11（変わらない）
+M9_C_CHANGED=NO
+
+pnpm config set store-dir --global → OK
+pnpm config list --global          → "storeDir": "/home/node/.local/share/pnpm/store"
+```
+
+環境変数 `npm_config_store_dir` は**効かない**。`config set --global` は効く。
+
+ただし **Dockerfile に焼くのは不適切**である。dev container の store は
+`/workspaces/.pnpm-store`（実測で 320M 存在）にあり、prod の `/src/.pnpm-store` とは別物。
+runtime-base に焼くと devcontainer-base 側が `/src/.pnpm-store` を作ろうとして壊れる
+（dev に `/src` は無い）。**prod だけに効かせる手段**が要る。
+
+`$HOME`（`/home/node`）が tmpfs で `read_only` 下でも書けることを使う案を M10 で測る。
+
+- **M10-a** `$HOME/.npmrc` に `store-dir=` を書く（第一候補）
+- **M10-b** `$HOME/.config/pnpm/rc` に書く
+- **M10-c** `pnpm config set store-dir`（`--global` なし）が read_only 下で通るか、通るなら
+  どこへ書かれるか
+- **M10-d** 効いた方法で `--store-dir` フラグ**なし**の `pnpm install` が完走するか
+
+いずれも効かない場合の代替は、`prod-run.sh` のコマンドに `--store-dir` を渡す運用にすること。
+忘れると ENOENT で**明示的に落ちる**ので、M5 の dotenvx（rc=0 で沈黙）とは違い fail-loud であり、
+I6 には抵触しない。
+
 ## 0.7 原理上この方法では測れないもの
 
 - **`credential.helper` 経由の `GH_TOKEN` 窃取。** `file://` はホスト上のパスへの直接アクセスで
