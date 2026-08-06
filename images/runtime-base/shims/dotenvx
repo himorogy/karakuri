@@ -25,4 +25,36 @@ for f in /run/secrets/DOTENV_PRIVATE_KEY_*; do
   [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
   export "${f##*/}=$v"
 done
+
+# --- --strict 忘れの警告 --------------------------------------------------------
+# dotenvx は復号に失敗しても非ゼロ終了せず、暗号文をそのまま値として注入した
+# うえで rc=0 を返す (実測済み)。prod ではこれを `--strict` で顕在化させる運用
+# だが、イメージ側では強制しない。`--strict` は `--convention flow` のような
+# 正当な重ね掛けを壊すため (実測: `.env.development.local` 不在で rc=1 になる)。
+# 強制はしないが、忘れたときに黙ってはいない。
+#
+# ここで見ているのは「環境」ではなく「注入済みの prod 鍵ファイルの有無」で
+# ある。この shim の三値意味論 (存在→注入 / 空→エラー / 不在→素通し) は環境を
+# 判別しない設計であり、prod 鍵の観測はその設計と矛盾しない。dev には prod 鍵
+# が来ない設計なので、dev では一度も出ない。
+#
+# `run` の判定は「引数のどこかに run という語がある」で足りる。`-- run` のよう
+# に区切り以降へ現れた語を拾って空振りする可能性はあるが、警告は害の無い側なの
+# で許容する。`--strict=` 形式や `--strict` が別の値を従える形は dotenvx には
+# 無いため、単純な語一致でよい。
+has_run=0
+has_strict=0
+for a in "$@"; do
+  case "$a" in
+  run) has_run=1 ;;
+  --strict) has_strict=1 ;;
+  esac
+done
+if [ "$has_run" -eq 1 ] && [ "$has_strict" -eq 0 ] &&
+  [ -e /run/secrets/DOTENV_PRIVATE_KEY_PROD ]; then
+  echo "dotenvx: WARNING: production key is injected but --strict" >&2
+  echo "dotenvx:   is absent. dotenvx exits 0 even when decryption" >&2
+  echo "dotenvx:   fails, injecting the ciphertext as the value." >&2
+fi
+
 exec env -u NODE_OPTIONS /opt/tools/bin/dotenvx "$@"

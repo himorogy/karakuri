@@ -269,6 +269,103 @@ else
 	rm -rf "$t"
 fi
 
+# --- dotenvx: --strict 忘れの警告 ------------------------------------------------
+#
+# dotenvx は復号に失敗しても rc=0 で暗号文をそのまま値として注入する。
+# イメージ側では `--strict` を強制しない (`--convention flow` のような正当な
+# 重ね掛けを壊すため) が、prod 鍵が注入された状態で `--strict` 無しの run が
+# 走ったときは黙らせない、というのがここの仕様。判定は「環境」ではなく
+# 「prod 鍵ファイルが観測できるか」で行う。
+
+# fake_real_argv <name> <tmpdir> -> 受け取った引数を1行1個で出力し、
+# FAKE_REAL_RC で指定された終了コードで抜けるフェイク実体を置く。警告の有無で
+# 実体への引数と rc が変わらないことを見るために使う。終了コードを環境変数で
+# 渡すのは、shim の `exec env -u NODE_OPTIONS ...` が NODE_OPTIONS 以外の
+# 環境をそのまま実体へ引き継ぐため。
+fake_real_argv() {
+	local name="$1" dir="$2"
+	mkdir -p "$dir/tools"
+	cat >"$dir/tools/$name" <<'FAKE_ARGV'
+#!/bin/sh
+for a in "$@"; do printf 'ARGV:%s\n' "$a"; done
+exit "${FAKE_REAL_RC:-0}"
+FAKE_ARGV
+	chmod +x "$dir/tools/$name"
+}
+
+# 10. prod 鍵が注入済み + run + --strict 無し -> 警告が stderr に出る
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-prod' >"$t/secrets/DOTENV_PRIVATE_KEY_PROD"
+err="$("$t/bin/dotenvx" run -- node -e 1 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+	printf '%s\n' "$err" | grep -q "WARNING" &&
+	printf '%s\n' "$err" | grep -q -- "--strict"; then
+	ok "dotenvx: prod 鍵注入済み + run + --strict 無し -> 警告が出る"
+else
+	ng "dotenvx: prod 鍵注入済み + run + --strict 無し -> 警告が出る (rc=$rc err=$err)"
+fi
+# 警告文は設計書を読める人以外にも意味が通る必要がある。設計書内でしか通じ
+# ない記号 (I6 / R12 / D15 / §4.3 のような) を混ぜないことの回帰確認。
+if ! printf '%s\n' "$err" | grep -qE '§|\b[A-Z][0-9]+\b'; then
+	ok "dotenvx: 警告文に設計書内でしか通じない記号が出ない"
+else
+	ng "dotenvx: 警告文に設計書内でしか通じない記号が出ない (err=$err)"
+fi
+rm -rf "$t"
+
+# 11. prod 鍵が注入済み + run + --strict あり -> 警告は出ない
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-prod' >"$t/secrets/DOTENV_PRIVATE_KEY_PROD"
+err="$("$t/bin/dotenvx" run --strict -- node -e 1 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! printf '%s\n' "$err" | grep -q "WARNING"; then
+	ok "dotenvx: prod 鍵注入済み + run + --strict あり -> 警告は出ない"
+else
+	ng "dotenvx: prod 鍵注入済み + run + --strict あり -> 警告は出ない (rc=$rc err=$err)"
+fi
+rm -rf "$t"
+
+# 12. prod 鍵が不在 (dev 相当) + run + --strict 無し -> 警告は出ない。
+#     dev には prod 鍵が来ない設計なので、dev ではこの警告が一度も出ない
+#     ことの確認でもある。
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-development' >"$t/secrets/DOTENV_PRIVATE_KEY_DEVELOPMENT"
+err="$("$t/bin/dotenvx" run -- node -e 1 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! printf '%s\n' "$err" | grep -q "WARNING"; then
+	ok "dotenvx: prod 鍵が不在 + run + --strict 無し -> 警告は出ない"
+else
+	ng "dotenvx: prod 鍵が不在 + run + --strict 無し -> 警告は出ない (rc=$rc err=$err)"
+fi
+rm -rf "$t"
+
+# 13. 警告は動作を変えない: 警告が出る条件でも出ない条件でも、実体が受け取る
+#     引数と実体の終了コードが同一であること。
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real_argv dotenvx "$t"
+printf 'key-prod' >"$t/secrets/DOTENV_PRIVATE_KEY_PROD"
+argv_warn="$(env FAKE_REAL_RC=7 "$t/bin/dotenvx" run -- node -e 1 2>/dev/null)"
+rc_warn=$?
+rm -f "$t/secrets/DOTENV_PRIVATE_KEY_PROD"
+argv_quiet="$(env FAKE_REAL_RC=7 "$t/bin/dotenvx" run -- node -e 1 2>/dev/null)"
+rc_quiet=$?
+expected_argv="$(printf 'ARGV:run\nARGV:--\nARGV:node\nARGV:-e\nARGV:1')"
+if [ "$argv_warn" = "$expected_argv" ] && [ "$argv_quiet" = "$expected_argv" ] &&
+	[ "$rc_warn" -eq 7 ] && [ "$rc_quiet" -eq 7 ]; then
+	ok "dotenvx: 警告の有無で実体への引数と rc が変わらない"
+else
+	ng "dotenvx: 警告の有無で実体への引数と rc が変わらない (rc_warn=$rc_warn rc_quiet=$rc_quiet argv_warn=$argv_warn argv_quiet=$argv_quiet)"
+fi
+rm -rf "$t"
+
 # --- result --------------------------------------------------------------------
 
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
