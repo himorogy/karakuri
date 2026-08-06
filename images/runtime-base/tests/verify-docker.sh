@@ -1413,6 +1413,30 @@ m10c_config_set() {
 			ls -la "$HOME/.npmrc" "$HOME/.config/pnpm/rc" 2>&1
 			echo "--- ls -la /src/.npmrc (working_dir 直下。念のための追加確認) ---"
 			ls -la /src/.npmrc 2>&1
+
+			# CI 7 回目では上の候補 3 つがいずれも外れ、書き込み先が UNKNOWN の
+			# まま残った。read_only: true 下で rc=0 だった以上、書けるのは tmpfs
+			# のいずれか (/run /tmp /out /home/node /src) に限られる。候補の列挙を
+			# 続けるのをやめ、マーカーより新しいファイルを直接探す。
+			#
+			# marker は set の「前」に作る必要があるが、この時点では既に実行済み
+			# なので、別の値でもう一度 set して前後の差分を取る。設定は最後の実行
+			# が勝つため、探索後に本来の値へ戻す。
+			echo "--- 書き込み先の探索: marker より新しいファイルを tmpfs 上から探す ---"
+			: > /tmp/.m10c-marker
+			pnpm config set store-dir /src/.pnpm-store-probe >/dev/null 2>&1 || true
+			find /home/node /src /tmp /run /out -newer /tmp/.m10c-marker -type f 2>/dev/null \
+				| grep -v "/.m10c-marker$" | head -20
+			echo "--- 上記のうち store-dir を含むものの中身 ---"
+			find /home/node /src /tmp /run /out -newer /tmp/.m10c-marker -type f 2>/dev/null \
+				| while read -r f; do
+					if grep -q store-dir "$f" 2>/dev/null; then
+						echo "[$f]"
+						cat "$f"
+					fi
+				done
+			pnpm config set store-dir /src/.pnpm-store >/dev/null 2>&1 || true
+
 			wrote_to=UNKNOWN
 			if [ -f "$HOME/.npmrc" ] && grep -q store-dir "$HOME/.npmrc" 2>/dev/null; then
 				wrote_to="$HOME/.npmrc"
