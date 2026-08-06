@@ -189,8 +189,15 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
   ためで、そこでは鍵が `.env.keys` か環境変数から来る。prod では鍵が `/run/secrets` から shim
   経由で来るので、最上位の呼び出しが必要になる。二重に `dotenvx run` が走ることになるが、
   内側は継承した鍵で動くので害はない。
-- **`GIT_REF` は完全な commit sha を渡す。** ブランチ名や軽量タグは後から指す先を変えられる。
-  40 桁 sha でない場合ラッパーは警告を出すが実行は続行する。
+- **`GIT_REF` は完全な commit sha を渡す。** 40 桁 hex 以外は **entrypoint が拒否する**。
+  ブランチ名や軽量タグは後から指す先を変えられ、「レビューした対象と流したもの」の一致が
+  切れるため。危険を理解した上でブランチ運用を選ぶなら `PROD_ALLOW_MUTABLE_REF=1` を明示する。
+  解決済みの sha は stderr と `/run/prod-ref` に必ず記録されるので、可変 ref を許した場合でも
+  「何をデプロイしたか」は後から辿れる。
+- **`--strict` と `--no-armor` はイメージが強制しない。** 付け忘れると dotenvx は復号失敗で
+  rc=0 を返し、暗号文をそのまま値として注入する。強制しないのは、shim が dev にも継承され
+  `--convention flow` のような正当な重ね掛けを壊すため（dotenvx の使い方の問題であって
+  コンテナの責務ではない）。**コマンドを書くときに必ず付けること。**
 - **対話 TTY は使えない。** stdin が secret の搬送路なので `-T` が必須で、`run` の pseudo-TTY と
   両立しない。対話シェルが要る場合は `run -dT --rm prod sleep infinity` で起動してから
   `docker exec -it` で入る。

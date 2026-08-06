@@ -195,6 +195,20 @@ COPY bin/prod-entrypoint.sh bin/git-askpass /usr/local/bin/
 RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/git-askpass \
     && chmod 0755 /usr/local/bin/prod-entrypoint.sh /usr/local/bin/git-askpass
 
+# --- prod-context: 注入済み鍵名の表示 (rev.6 / §4.3) ----------------------------
+# 対話シェルの起動時に、/run/secrets の「ファイル名」(= 環境変数名) と
+# /run/prod-ref を表示する。値は出さない。dev では「持っているべき鍵の
+# 一覧」がプロジェクト固有で runtime-base には持てないため、注入済みの
+# ものを列挙するだけに留め、無いものが映らないことで気づかせる。
+#
+# /etc/bash.bashrc から source する。profile.d はログインシェルでしか
+# 読まれず、`docker exec -it <c> bash` は非ログインシェルなので取りこぼす。
+# /etc/bash.bashrc は bash が対話シェルとして起動するたびに読む。
+COPY bin/prod-context /usr/local/bin/prod-context
+RUN chown root:root /usr/local/bin/prod-context \
+    && chmod 0755 /usr/local/bin/prod-context \
+    && printf '%s\n' '. /usr/local/bin/prod-context' >> /etc/bash.bashrc
+
 # entrypoint が clone/fetch する先。prod-src named volume は初回 root 所有で
 # 作られる可能性があるが、node:24 由来イメージでは docker が volume 初期化時
 # にイメージ内の /src の所有権をそのままコピーする。ここで node 所有にして

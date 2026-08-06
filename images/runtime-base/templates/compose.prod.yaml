@@ -39,6 +39,13 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF: ${GIT_REF:?GIT_REF is required}
+      # GIT_REF が完全な 40 桁 commit sha でないとき、既定では
+      # prod-entrypoint.sh が拒否する（rev.6 / D21）。危険を理解した上で
+      # ブランチ運用を選ぶ場合だけ 1 を明示する。`:-` で未設定を許す
+      # （`:?` にしない — 未設定が既定の安全な状態であり、必須ではない）。
+      # ここで渡し忘れると、prod-run.sh 側で警告して続行しても
+      # entrypoint 側には届かず拒否されるだけになる。
+      PROD_ALLOW_MUTABLE_REF: ${PROD_ALLOW_MUTABLE_REF:-}
 
     read_only: true
 

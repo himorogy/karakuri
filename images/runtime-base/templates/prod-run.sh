@@ -49,7 +49,14 @@ Required environment:
                      引数は取れない（単一の実行ファイルとして呼ばれる）。
                      引数が要る broker はラッパースクリプトに包むこと。
   GIT_REPO           clone 元 URL
-  GIT_REF            実行対象の ref（完全な commit sha を推奨）
+  GIT_REF            実行対象の ref。完全な 40 桁 commit sha を要求する
+                     （既定で拒否。下記 PROD_ALLOW_MUTABLE_REF 参照）
+
+Optional environment:
+  PROD_ALLOW_MUTABLE_REF
+                     1 を指定すると、GIT_REF が完全な commit sha でなくて
+                     も警告付きで実行を続ける（署名検証は未実装。設計書
+                     §11 参照。危険を理解した上でのみ使うこと）
 
 Example:
   PROD_COMPOSE_FILE=~/.config/acme/compose.prod.yaml \
@@ -98,12 +105,26 @@ if [ "${#missing[@]}" -gt 0 ]; then
 	exit 1
 fi
 
-# --- GIT_REF: 完全な commit sha を推奨する（I7 / R10 (b)） -------------------
+# --- GIT_REF: 完全な commit sha を既定で強制する（rev.6 / D21） --------------
 # 軽量タグ・ブランチ名は付け替え可能で、「明示された ref」としての強さが
-# commit sha に劣る。ただし署名タグを運用に使う余地を残すため拒否はせず、
-# 警告に留めて実行は続行する。
+# commit sha に劣る。R10 の唯一のゲートは deploy 前の人間のレビューであり、
+# その前提は「レビューした対象と流したものが一致する」ことなので、既定は
+# 拒否する。署名検証は未実装であり、現状はタグを許容してもリスクが増える
+# だけなので「署名タグは正当な用途」という理由での許容はしない（設計書
+# §11）。危険を理解した上でブランチ運用を選ぶ場合だけ
+# PROD_ALLOW_MUTABLE_REF=1 を明示する。
+#
+# ここでの検査は早期フィードバックのためのものであり、権威は
+# prod-entrypoint.sh 側にある（設計書 §4.6 / D21）。このラッパーを迂回して
+# 直接 `docker compose run` された場合でも、entrypoint 側の同じ検査が
+# 効くため fail-closed は保たれる。
 if ! [[ "$GIT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-	echo "prod-run: WARNING: GIT_REF '$GIT_REF' is not a 40-character commit sha. A branch or lightweight tag can be repointed after the fact, which weakens the 'explicit ref' guarantee this design relies on (I7 / R10). Continuing anyway — signed tags are a legitimate use case." >&2
+	if [ "${PROD_ALLOW_MUTABLE_REF:-}" = 1 ]; then
+		echo "prod-run: WARNING: GIT_REF '$GIT_REF' is not a 40-character commit sha. A branch or lightweight tag can be repointed after the fact, which weakens the 'explicit ref' guarantee this design relies on (I7 / R10). PROD_ALLOW_MUTABLE_REF=1 is set, continuing anyway." >&2
+	else
+		echo "prod-run: GIT_REF '$GIT_REF' is not a 40-character commit sha. Set PROD_ALLOW_MUTABLE_REF=1 to continue anyway (not recommended; signature verification for tags is not implemented — design doc §11)." >&2
+		exit 1
+	fi
 fi
 
 # --- 起動 ---------------------------------------------------------------------

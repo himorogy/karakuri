@@ -255,10 +255,37 @@ else
 	ng "fake docker was never invoked (no stdin file)"
 fi
 
-# --- GIT_REF が 40 桁 hex でない: 警告は出るが実行は続行される ----------------
-echo "non-sha GIT_REF warns but does not block execution"
+# --- GIT_REF が 40 桁 hex でない (既定): 早期に拒否される (rev.6 / D21) --------
+#     entrypoint 側が権威であり拒否するようになったため、ラッパー側も
+#     docker を起動する前に同じ既定で早期に落とす。
+echo "non-sha GIT_REF is rejected by default (rev.6 / D21)"
 reset_env
 export GIT_REF="main"
+
+run_case true
+
+if [ "$CASE_RC" -ne 0 ]; then
+	ok "non-sha GIT_REF causes non-zero exit by default"
+else
+	ng "non-sha GIT_REF did not block the run by default (exit $CASE_RC)"
+fi
+
+case "$CASE_STDERR" in
+*"PROD_ALLOW_MUTABLE_REF"*) ok "rejection message mentions the PROD_ALLOW_MUTABLE_REF escape hatch" ;;
+*) ng "rejection message did not mention PROD_ALLOW_MUTABLE_REF (stderr: $CASE_STDERR)" ;;
+esac
+
+if [ -f "$FAKE_DOCKER_ARGV_FILE" ]; then
+	ng "docker was invoked even though GIT_REF was rejected before launch"
+else
+	ok "docker was not invoked when GIT_REF was rejected before launch"
+fi
+
+# --- GIT_REF が 40 桁 hex でない + PROD_ALLOW_MUTABLE_REF=1: 警告付きで続行 -----
+echo "non-sha GIT_REF with PROD_ALLOW_MUTABLE_REF=1 warns but does not block execution"
+reset_env
+export GIT_REF="main"
+export PROD_ALLOW_MUTABLE_REF=1
 
 run_case true
 
@@ -268,10 +295,11 @@ case "$CASE_STDERR" in
 esac
 
 if [ "$CASE_RC" -eq 0 ]; then
-	ok "non-sha GIT_REF still lets the run complete"
+	ok "non-sha GIT_REF with PROD_ALLOW_MUTABLE_REF=1 still lets the run complete"
 else
-	ng "non-sha GIT_REF blocked the run (exit $CASE_RC), but it should only warn"
+	ng "non-sha GIT_REF with PROD_ALLOW_MUTABLE_REF=1 blocked the run (exit $CASE_RC), but it should only warn"
 fi
+unset PROD_ALLOW_MUTABLE_REF
 
 # --- 結果 -----------------------------------------------------------------------
 

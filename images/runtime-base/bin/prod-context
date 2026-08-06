@@ -1,0 +1,94 @@
+#!/bin/sh
+# /usr/local/bin/prod-context
+#
+# 対話シェルの起動時に、注入済みの secret 鍵名 (値ではない) と
+# /run/prod-ref の内容を表示する。「持っているべき鍵の一覧」はプロジェクト
+# 固有なので runtime-base には持てない。注入済みのものを列挙するだけに
+# 留め、無いものが映らないことで気づかせる (設計書
+# .local/prod-secret-isolation-design.md §4.3 rev.6)。
+#
+# /run/secrets の「ファイル名」だけを出す。ファイル名は環境変数名そのもの
+# なので安全に出せるが、値は絶対に出さない。
+#
+# 置き場所: /etc/bash.bashrc から `. /usr/local/bin/prod-context` として
+# source する。profile.d はログインシェルでしか読まれず、
+# `docker exec -it <container> bash` は非ログインシェルなので取りこぼす。
+# /etc/bash.bashrc は bash が対話シェルとして起動するたびに読む。
+# devcontainer-base では zsh 用に /etc/zsh/zshrc にも同様に足す
+# (zsh は dev container 側にしかない。prod container に zsh は無い)。
+#
+# --- 対話シェルでのみ動く -------------------------------------------------------
+# 非対話 (`pnpm install` 等の RUN されるコマンドや、非対話の
+# `docker compose run` 内) で走ると、その出力を汚してしまう。
+# `case $- in *i*)` は「現在のシェルオプション文字列に i (interactive) が
+# 含まれるか」で判定する、bash/zsh 双方で使える標準的な対話判定。
+#
+# ここは source される前提の1行目付近なので、失敗時は「呼び出し元へ
+# return」で抜ける。万一このファイルが直接実行された場合 (source されて
+# いない場合) は return が使えない (bash/zsh とも
+# "can only 'return' from a function or sourced script" 相当のエラーに
+# なる) ため、その場合は exit へフォールバックする。どちらのエラー
+# メッセージも表に出さない (2>/dev/null)。
+case "$-" in
+*i*) ;;
+*)
+	# shellcheck disable=SC2317 # `exit 0` は return が使えない (source
+	# されていない) 場合のフォールバックであり、shellcheck の静的解析が
+	# 想定する「return は必ず抜ける」より広いケースを扱っている。
+	return 0 2>/dev/null || exit 0
+	;;
+esac
+
+# --- 失敗してもシェルを壊さない -------------------------------------------------
+# `/etc/bash.bashrc` / `/etc/zsh/zshrc` が (このプロジェクトの既定では
+# 設定していないが) `set -e` 相当の状態で source している可能性を考え、
+# 本体をサブシェルへ切り出して `|| true` で必ず成功扱いにする。サブシェル
+# 内であれば、途中のコマンドが失敗してもサブシェルの終了ステータスに
+# 畳み込まれるだけで、呼び出し元 (対話シェルそのもの) の起動を止めない。
+(
+	secrets_dir=/run/secrets
+	names=""
+	if [ -d "$secrets_dir" ]; then
+		for f in "$secrets_dir"/*; do
+			# glob が一つも一致しないと、展開されない生パターン文字列
+			# (例: "/run/secrets/*") がそのまま $f に来る。bash はこれを
+			# 黙って通すが、zsh は既定 (nullglob 未設定) だと
+			# "no matches found" でこのサブシェルごと非ゼロ終了する。
+			# どちらの場合も -e で弾いて「ファイルが実在するときだけ」
+			# 処理する。
+			[ -e "$f" ] || continue
+			names="$names ${f##*/}"
+		done
+	fi
+
+	if [ -n "$names" ]; then
+		echo "prod-context: 注入済み:$names"
+	else
+		# /run/secrets が無い、または空。dev で鍵が入っていないことに
+		# ここで気づけるようにする一行。
+		echo "prod-context: /run/secrets に注入済みの鍵が無い"
+	fi
+
+	# /run/prod-ref は prod-entrypoint.sh が GIT_REF= / GIT_COMMIT= /
+	# MUTABLE_REF= の3行 (dotenv 形式ではなく単純な KEY=VALUE) を
+	# 書く (設計書 §4.6)。無ければ何も出さない (prod-entrypoint.sh を
+	# 経由せず起動した場合など)。
+	if [ -r /run/prod-ref ]; then
+		git_ref=""
+		git_commit=""
+		mutable_ref=""
+		while IFS='=' read -r k v; do
+			case "$k" in
+			GIT_REF) git_ref=$v ;;
+			GIT_COMMIT) git_commit=$v ;;
+			MUTABLE_REF) mutable_ref=$v ;;
+			esac
+		done <"/run/prod-ref"
+
+		if [ "$mutable_ref" = "1" ]; then
+			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit (mutable ref)"
+		else
+			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit"
+		fi
+	fi
+) || true

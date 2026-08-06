@@ -8,3 +8,4 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 bash "$SCRIPT_DIR/shim.test.sh"
 bash "$SCRIPT_DIR/entrypoint.test.sh"
+bash "$SCRIPT_DIR/prod-context.test.sh"

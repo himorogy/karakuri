@@ -112,7 +112,24 @@ prod-run.sh pnpm deploy
 後者は鍵が無い状態で復号を試みるが、**`--strict` が無いと沈黙する** — dotenvx は復号に失敗
 しても非ゼロ終了せず、暗号文をそのまま値として注入して rc=0 を返す（実測: `FOO=encrypted:...`
 のままアプリが起動し、deploy は成功と報告される）。`--strict` を付ければ確実に rc=1 になる。
-規約として最上位に置き、かつ `--strict` を必須とする理由がこれである。
+
+### `--strict` / `--no-armor` はイメージ側で強制しない
+
+prod の運用手順としては必須だが、**このイメージは強制しない。**
+
+強制できる場所は shim しかない。しかし shim は devcontainer-base にも継承され、`--strict` は
+**正当な使い方を壊す** — dotenvx には `--convention flow`（`.env` / `.env.local` /
+`.env.development` を重ねる規約）があり、この規約では一部のファイルが存在しないのが正常である
+ところ、`--ignore=MISSING_ENV_FILE` が示すとおりファイル不在はエラーコードの一つなので、
+`--strict` 下では重ね掛けの 1 枚が無いだけで落ちうる。`--no-armor` も、dev の開発者が自分の
+dev 鍵を Armor で管理している運用を壊す。
+
+**これは dotenvx の使い方の問題であってコンテナの責務ではない。** shim がプロジェクトの env
+構成を知らないまま焼く判断ではない。付け忘れたときに何が起きるかは上記のとおりで、`git hook`
+（§コミット前検査）と同じく**予防ではなく運用手順**の位置づけになる。
+
+`--no-armor` の根本対処は prod への egress 制限に寄せる。フラグを個別に追いかけるより、
+外への通信を面で塞ぐ方が Armor 以外の同種の機構もまとめて止まる。
 
 この制約は shim 一般の性質であって dotenvx 固有ではない。`wrangler` / `gh` をローカル依存に
 持つプロジェクトでも同じことが起きる。
@@ -130,6 +147,24 @@ npm がグローバル領域に張るシンボリックリンクは相対パス�
 この関係が壊れると shim が黙って素通りするだけで、失敗が表面化しない。Dockerfile に
 `command -v` による**ビルド時検証**を焼いてあり、PATH 順や配置が変わった時点でビルドが落ちる。
 push されたイメージに対しても CI の smoke test が同じ検証を行う。
+
+### 注入済みの鍵は対話シェルで見える
+
+`/run/secrets` のファイル名は環境変数名そのものなので、**名前だけなら安全に出せる**。対話
+シェルの起動時に一覧が出る（値は出さない）。
+
+```
+$ docker exec -it <container> bash
+prod-context: 注入済み: DOTENV_PRIVATE_KEY_LOCAL GH_TOKEN
+prod-context: GIT_REF=main GIT_COMMIT=4f3a9c2b8e1d7a05... (mutable ref)
+```
+
+これが効くのは主に dev である。`DOTENV_PRIVATE_KEY_LOCAL` は持つが `_DEVELOPMENT` は持たない、
+という**権限階層を鍵束で表現する**運用があり、持っていない鍵を要する操作は復号失敗として
+現れる。何が注入されているかが見えれば切り分けが早い。
+
+「持っているべき鍵の一覧」はプロジェクト固有なので、このイメージには持てない。**注入済みの
+ものを列挙するだけ**で、無いものは映らない。
 
 ### 素通しは fail-open ではない
 
@@ -320,8 +355,39 @@ GIT_REF=<40 桁の commit sha> \
 `node_modules/.bin` を PATH 先頭に積んでローカルの dotenvx が shim に勝ち、鍵が注入されない
 （上の「`pnpm run` の内側では効かない」を参照）。
 
-`GIT_REF` には**完全な commit sha** を渡す。ブランチ名や軽量タグは後から指す先を変えられる。
-40 桁 sha でない場合、ラッパーは警告を出すが実行は続行する（署名タグの運用余地を残すため）。
+### `GIT_REF` は完全な commit sha を強制する
+
+40 桁 hex 以外は **entrypoint が拒否**する。ラッパー側でも早期に落とすが、権威は entrypoint
+にある（ラッパーを迂回しても効く）。
+
+危険を理解した上でブランチ運用を選ぶなら、明示的に外す。
+
+```sh
+PROD_ALLOW_MUTABLE_REF=1 GIT_REF=main ... prod-run.sh ...
+```
+
+既定を拒否にしている理由は、**失敗の性質が違う**こと。
+
+- **ブランチ名** — 押した瞬間に何をデプロイしたか分からず、main が動くので後から再現もできない。
+  事故は「見たことのないものを流した」になる
+- **sha** — 古いかもしれないが既知で再現可能。事故は「一度は見たものの古い版を流した」になる
+
+dev が書いたコードを prod が実行する経路（R10）の唯一のゲートは deploy 前の人間のレビューで、
+その前提は「レビューした対象と流したものが一致する」こと。ブランチ名はその一致を切る。
+
+**解決済みの commit sha は必ず記録される。**
+
+```
+prod-entrypoint: GIT_REF=main resolved to 4f3a9c2b8e1d7a05...
+```
+
+同じ内容が `/run/prod-ref` にも書かれる（tmpfs、sha は秘匿情報ではないので 0644）。
+可変 ref を許した場合、これが「何をデプロイしたか」の唯一の記録になる。`logging: driver: none`
+なので `docker logs` では取れないが、アタッチしている手元には出る。対話二段構えで
+`docker exec` して入った場合は `cat /run/prod-ref` で読む。
+
+署名タグは検証機構が未実装なので、現状はリスクだけが増える。実装するまで `PROD_ALLOW_MUTABLE_REF`
+が唯一の逃げ道で、これは検証を伴わない。
 
 依存インストールはコマンド側の責務になる。`clean -xdff` が `node_modules` も消すため。
 
@@ -331,6 +397,12 @@ GIT_REF=<40 桁の commit sha> \
 ```
 
 `sh -c` で複数コマンドを繋ぐ場合も、`dotenvx` は `pnpm` の外側に置く。
+
+> **`pnpm install` の後に `git clean -xdff` を打たないこと。** store は `/src/.pnpm-store` に
+> あるので `clean` の対象になり、`node_modules` ごと消える。後続の処理が依存を失って失敗する。
+> entrypoint 内の順序（checkout → clean → コマンド）は正しいので、**利用者が渡すコマンドの
+> 中で `clean` を挟んだ場合だけ**の話。復旧は `pnpm install` のやり直しだが、store の
+> 再ダウンロードが要る。
 
 ### 環境変数を確認する
 

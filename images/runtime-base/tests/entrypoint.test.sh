@@ -34,12 +34,16 @@ skip() {
 }
 
 # make_entrypoint <tmpdir> -> $tmpdir/entrypoint.sh に、/run/secrets と /src
-# を tmpdir 配下へ差し替えたコピーを作る。
+# を tmpdir 配下へ差し替えたコピーを作る。/run/prod-ref も同様に差し替える。
+# 実 /run/prod-ref (root 所有が普通) へ書きに行かせないための必須の
+# 差し替えで、対象パスが単なる文字列 "/run/prod-ref" を含む唯一の行
+# (echo の説明文言も含む) すべてに対して機械的に効く。
 make_entrypoint() {
 	local dir="$1"
 	mkdir -p "$dir/secrets" "$dir/src"
 	sed \
 		-e "s#/run/secrets#$dir/secrets#g" \
+		-e "s#/run/prod-ref#$dir/prod-ref#g" \
 		-e "s#/src#$dir/src#g" \
 		"$ENTRYPOINT_SRC" >"$dir/entrypoint.sh"
 	chmod +x "$dir/entrypoint.sh"
@@ -49,6 +53,16 @@ HAVE_GIT=0
 if command -v git >/dev/null 2>&1; then
 	HAVE_GIT=1
 fi
+
+# --- $HOME をテスト用に退避する --------------------------------------------------
+# entrypoint は起動時に $HOME/.config/pnpm への書き込み可否を自己検査する
+# ようになった (codex 指摘 #4)。テスト実行中の実ユーザーの $HOME を触ら
+# ないよう、このテストスクリプト全体で HOME を tmpdir に差し替える。
+# 以降の `env GIT_REPO=... GIT_REF=... "$t/entrypoint.sh" ...` 呼び出しは
+# 明示的に HOME を渡していないため、`env` はここで export した HOME を
+# そのまま子プロセスへ引き継ぐ。
+TEST_HOME="$(mktemp -d)"
+export HOME="$TEST_HOME"
 
 # --- ローカル bare repo の準備 (git 操作を伴うテスト用) -------------------------
 #
@@ -354,10 +368,13 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 	#     メッセージで落ちていた。fetch 直後に `rev-parse --verify` で
 	#     解決可能性を検証し、"does not resolve" という明示的なメッセージ
 	#     で落ちるようにした。
+	#     40 桁 hex 形式 (rev.6 / D21 の書式検査を通過する値) だが repo に
+	#     存在しない sha を使う。書式検査 (下の 15〜18) とは別の経路
+	#     (rev-parse --verify の解決失敗) を切り分けて検証するため。
 	t="$(mktemp -d)"
 	make_entrypoint "$t"
 	out="$(printf 'FOO=bar\n' |
-		env GIT_REPO="$BARE_REPO" GIT_REF="v9.9.9-does-not-exist" "$t/entrypoint.sh" true 2>&1)"
+		env GIT_REPO="$BARE_REPO" GIT_REF="abcdef0123abcdef0123abcdef0123abcdef0123" "$t/entrypoint.sh" true 2>&1)"
 	rc=$?
 	if [ "$rc" -ne 0 ] &&
 		printf '%s\n' "$out" | grep -q "does not resolve" &&
@@ -387,6 +404,105 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 		ng "entrypoint が pnpm config set store-dir <tmpfs 上の /src> を呼ぶ (got: $actual_pnpm_argv)"
 	fi
 	rm -rf "$t"
+
+	# 15〜16 は "origin/main" を可変 ref の例として使う。ローカル repo に
+	# は remote-tracking ref (refs/remotes/origin/main) しか無く、単なる
+	# "main" は `git rev-parse --verify` の探索順に一致しないため解決
+	# できない。16 は警告後に rev-parse まで到達する経路を検証したいので、
+	# 実際に解決できる非 sha ref を使う必要がある。
+
+	# 15. 40 桁 hex でない GIT_REF は既定で非ゼロ終了し、
+	#     PROD_ALLOW_MUTABLE_REF に言及したメッセージが出る (rev.6 / D21)。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="origin/main" "$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q "PROD_ALLOW_MUTABLE_REF"; then
+		ok "40 桁 hex でない GIT_REF -> 既定で非ゼロ終了 (PROD_ALLOW_MUTABLE_REF に言及)"
+	else
+		ng "40 桁 hex でない GIT_REF -> 既定で非ゼロ終了 (PROD_ALLOW_MUTABLE_REF に言及) (rc=$rc out=$out)"
+	fi
+	# この検査は fetch 後・checkout 前に置く設計 (設計書 §4.6) なので、
+	# 拒否された時点で /src/.git 自体は既に (init + fetch により) 存在
+	# する。ここで検証しているのは「拒否されること」であって「git 操作が
+	# 一切走らないこと」ではない。
+	if [ ! -e "$t/prod-ref" ]; then
+		ok "40 桁 hex でない GIT_REF が拒否されたとき /run/prod-ref は書かれない (拒否は記録より前)"
+	else
+		ng "40 桁 hex でない GIT_REF が拒否されたとき /run/prod-ref は書かれない (拒否は記録より前)"
+	fi
+	rm -rf "$t"
+
+	# 16. PROD_ALLOW_MUTABLE_REF=1 なら、40 桁 hex でない GIT_REF でも
+	#     警告付きで続行する (rev.6 / D21)。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="origin/main" PROD_ALLOW_MUTABLE_REF=1 \
+			"$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "WARNING"; then
+		ok "PROD_ALLOW_MUTABLE_REF=1 -> 警告付きで続行する (exit 0)"
+	else
+		ng "PROD_ALLOW_MUTABLE_REF=1 -> 警告付きで続行する (exit 0) (rc=$rc out=$out)"
+	fi
+	rm -rf "$t"
+
+	# 17. 40 桁 hex の GIT_REF は脱出口 (PROD_ALLOW_MUTABLE_REF) なしで通る。
+	#     既存の正常系 (6 番) は同じ COMMIT_SHA を使っているが、ここでは
+	#     「警告メッセージが一切出ない」ことまで明示的に確認する。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$out" | grep -q "WARNING"; then
+		ok "40 桁 hex の GIT_REF は脱出口なしで通る (警告なし)"
+	else
+		ng "40 桁 hex の GIT_REF は脱出口なしで通る (警告なし) (rc=$rc out=$out)"
+	fi
+	rm -rf "$t"
+
+	# 18. /run/prod-ref (相当のファイル) が作られ、GIT_REF / GIT_COMMIT /
+	#     MUTABLE_REF の3行が書かれ、mode 644 であること。stderr に
+	#     "resolved to <sha>" が出ること (rev.6 / §4.6)。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -eq 0 ] && [ -f "$t/prod-ref" ]; then
+		ok "/run/prod-ref 相当のファイルが作られる"
+	else
+		ng "/run/prod-ref 相当のファイルが作られる (rc=$rc out=$out)"
+	fi
+
+	prod_ref_content="$(cat "$t/prod-ref" 2>/dev/null)"
+	expected_prod_ref="$(printf 'GIT_REF=%s\nGIT_COMMIT=%s\nMUTABLE_REF=0\n' "$COMMIT_SHA" "$COMMIT_SHA")"
+	if [ "$prod_ref_content" = "$expected_prod_ref" ]; then
+		ok "/run/prod-ref に GIT_REF= / GIT_COMMIT=<解決済み sha> / MUTABLE_REF=0 の3行が書かれる"
+	else
+		ng "/run/prod-ref の中身が期待どおり (got: $prod_ref_content)"
+	fi
+
+	if [ -f "$t/prod-ref" ]; then
+		mode="$(stat -c '%a' "$t/prod-ref" 2>/dev/null || stat -f '%Lp' "$t/prod-ref" 2>/dev/null)"
+		if [ "$mode" = "644" ]; then
+			ok "/run/prod-ref が mode 644 (umask 077 の影響を受けず chmod で緩めている)"
+		else
+			ng "/run/prod-ref が mode 644 (mode=$mode)"
+		fi
+	else
+		ng "/run/prod-ref が mode 644 (ファイルが無い)"
+	fi
+
+	if printf '%s\n' "$out" | grep -q "resolved to $COMMIT_SHA"; then
+		ok "stderr に 'resolved to <sha>' が出る"
+	else
+		ng "stderr に 'resolved to <sha>' が出る (out=$out)"
+	fi
+	rm -rf "$t"
 else
 	skip "正常系 (secret 保存 / mode 600 / GH_TOKEN 削除 / checkout 復元): git 不在のため未検証"
 	skip "値に '=' を含む行が壊れない: git 不在のため未検証 (checkout まで到達できない)"
@@ -397,6 +513,10 @@ else
 	skip "named volume 再利用時に tracked file の改変が復元される: git 不在のため未検証"
 	skip "存在しない ref -> 明示的なエラーメッセージ: git 不在のため未検証"
 	skip "entrypoint が pnpm config set store-dir を呼ぶ: git 不在のため未検証"
+	skip "40 桁 hex でない GIT_REF が既定で拒否される: git 不在のため未検証"
+	skip "PROD_ALLOW_MUTABLE_REF=1 で警告付き続行: git 不在のため未検証"
+	skip "40 桁 hex の GIT_REF は脱出口なしで通る: git 不在のため未検証"
+	skip "/run/prod-ref の記録 (GIT_COMMIT / mode 644 / resolved to <sha>): git 不在のため未検証"
 fi
 
 # --- 後始末 ----------------------------------------------------------------------
@@ -404,6 +524,7 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 	rm -rf "$BARE_ROOT" "$WORK_ROOT"
 fi
 rm -rf "$FAKE_PNPM_DIR"
+rm -rf "$TEST_HOME"
 
 # --- result ------------------------------------------------------------------
 
