@@ -1276,13 +1276,18 @@ measure_git M9 "M9-b 案B: store-dir=/src/.pnpm-store (/src と同一 tmpfs マ�
 # M9-e: 採用済みの案 B (store-dir=/src/.pnpm-store) を、/src の tmpfs に
 # `exec` を明示した compose-src-tmpfs-exec.yaml で測り直す。M9-b の内容を
 # ほぼそのまま踏襲しつつ (STORE_DIR は同じ /src/.pnpm-store)、追加で
-# 「prepare スクリプト (tsup build) が実際に走ったか」を
-# packages/enclave-env/dist/cli.js の有無で確認する。dist/ は
-# .gitignore 対象 (このリポジトリの .gitignore 参照) なので、bare repo
-# から checkout した直後の working tree には存在しない — install の
-# prepare フックで tsup が完走して初めて現れる。noexec が原因なら
-# ここで rc=0 かつ dist/cli.js が現れるはず、という当てをそのまま測定に
-# する。
+# 「/src 上に置かれた実行ファイルが実際に exec できるか」を確認する。
+# 判定材料は node_modules/.bin の実体を 1 つ実行し、その終了コードを見る
+# こと。noexec のマウント上の実行ファイルを exec すると EACCES になり、
+# シェルは "Permission denied" と報告して rc=126 を返す — そこを名指しで
+# 見る。
+#
+# 以前の判定材料は workspace 内のパッケージが持つ prepare スクリプト
+# (tsup build) の生成物の有無だったが、そのパッケージを廃止した時点で
+# 成立しなくなった (workspace に build/prepare を持つパッケージはもう
+# 無い)。測定対象が消えたことを理由に「NO」を返し続ける測定は、測定が
+# 無いより悪いので、間接的な問い (prepare が走ったか) をやめて直接聞く
+# 形に差し替えた。
 #
 # SC2016: sh -c '...' 内の $ は意図的に単引用符でエスケープしている。
 m9e_pnpm_case_exec() {
@@ -1330,13 +1335,31 @@ m9e_pnpm_case_exec() {
 			echo "links+1=$linked total=$totalf"
 			echo "--- pnpm install 出力中の cross-device / hardlink 関連行 ---"
 			grep -iE "cross-device|exdev|hardlink" /tmp/m9-install.log || echo "(該当行なし)"
-			echo "--- prepare スクリプト (packages/enclave-env: tsup build) が実際に走ったか ---"
-			echo "--- 判定材料: packages/enclave-env/dist/cli.js の有無 (dist は .gitignore 対象なので checkout 直後には存在しない) ---"
-			if [ -f packages/enclave-env/dist/cli.js ]; then
-				ls -la packages/enclave-env/dist 2>&1
-				echo "M9_E_BUILD_RAN=YES (dist/cli.js が存在する = prepare の tsup build が完走した)"
+			echo "--- /src 上の実行ファイルが実際に exec できるか ---"
+			echo "--- 判定材料: node_modules/.bin の実体を 1 つ実行し、その終了コードを見る ---"
+			ls -la node_modules/.bin 2>&1 || echo "(ls に失敗 = node_modules/.bin が無い)"
+			bin_name=""
+			if [ -d node_modules/.bin ]; then
+				if [ -e node_modules/.bin/biome ]; then
+					bin_name="biome"
+				else
+					bin_name=$(ls -1 node_modules/.bin 2>/dev/null | head -1)
+				fi
+			fi
+			if [ -z "$bin_name" ]; then
+				echo "M9_E_EXEC=UNKNOWN (node_modules/.bin が無いか空。install が期待どおり完了していない)"
 			else
-				echo "M9_E_BUILD_RAN=NO (dist/cli.js が無い = prepare/build が実行されていないか失敗した)"
+				echo "--- 実行: ./node_modules/.bin/$bin_name --version (stdout/stderr はそのまま出す) ---"
+				"./node_modules/.bin/$bin_name" --version 2>&1
+				erc=$?
+				echo "(exit code: $erc)"
+				if [ "$erc" -eq 0 ]; then
+					echo "M9_E_EXEC=YES ($bin_name)"
+				elif [ "$erc" -eq 126 ]; then
+					echo "M9_E_EXEC=NO (Permission denied = noexec。/src 上の実行ファイルが動いていない)"
+				else
+					echo "M9_E_EXEC=UNKNOWN (rc=$erc)"
+				fi
 			fi
 			echo "--- pnpm install 出力中の tsup / Permission denied 関連行 (CI 5 回目の症状の再現有無) ---"
 			grep -iE "tsup|permission denied" /tmp/m9-install.log || echo "(該当行なし)"
@@ -1356,7 +1379,7 @@ m9e_pnpm_case_exec() {
 	fi
 	printf '%s\n' "$out"
 }
-measure_git M9 "M9-e 案B + exec 明示: store-dir=/src/.pnpm-store、/src tmpfs に exec を付けた場合 (build 完走確認込み)" m9e_pnpm_case_exec
+measure_git M9 "M9-e 案B + exec 明示: store-dir=/src/.pnpm-store、/src tmpfs に exec を付けた場合 (node_modules/.bin の実行確認込み)" m9e_pnpm_case_exec
 
 # M9-c: store-dir をイメージに焼く方法の確認。pnpm install は走らせない
 # (store path の確認だけで十分、とのタスク指示のとおり)。GIT_REPO/GIT_REF

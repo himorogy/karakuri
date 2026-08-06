@@ -2,7 +2,13 @@
 
 status: draft (rev.8) supersedes: `@himorogy/enclave-env` の `templates/prod-shell.sh`
 
-rev.8 の主変更: **この文書を `.local/` から `docs/` へ移し、git の追跡下に置いた。** rev.7 が §4.8 で「記号ではなくパスで参照せよ」という規約を立てたが、その参照先が `.gitignore` の対象だったため、**許可した形の参照も宙に浮いていた** — 書いた本人以外は、他 org どころか clone した人間も辿れない。規約が成立する前提を揃えた。あわせて §4.8 が予告していた**出荷物からの記号の一括棚卸しを実施し、再発防止の検査を置いた**（`images/runtime-base/tests/shipped-symbols.test.sh`、`pnpm test` から走る）。棚卸しの対象は「karakuri の外へ出るか」で切った。詳細は §4.8。
+rev.8 の主変更（3 件）。
+
+**1. `@himorogy/enclave-env` を廃止し、`@himorogy/env-guard` を新設した。** 保留にしていた「package という配布層が要るか」に答えが出た（§6.3）— 要る。ただし enclave-env としてではない。コンテナの外（ホストの GUI git クライアント）からコミットする経路にはイメージの `core.hooksPath` が届かず、そこを塞ぐにはホストへスキャナを届ける手段が要る。一方で enclave-env に残すべき中身は無かった。共有スキャナと pre-commit hook は `packages/env-guard` へ移し、**リポジトリ内にスキャナは 1 ファイルしか存在しない**状態にした（D25）。イメージへは named build context で供給する（D26）。
+
+**2. この文書を `.local/` から `docs/` へ移し、git の追跡下に置いた。** rev.7 が §4.8 で「記号ではなくパスで参照せよ」という規約を立てたが、その参照先が `.gitignore` の対象だったため、**許可した形の参照も宙に浮いていた** — 書いた本人以外は、他 org どころか clone した人間も辿れない。規約が成立する前提を揃えた。**3. §4.8 が予告していた出荷物からの記号の一括棚卸しを実施し、再発防止の検査を置いた**（`images/runtime-base/tests/shipped-symbols.test.sh`、`pnpm test` から走る）。棚卸しの対象は「karakuri の外へ出るか」で切った。詳細は §4.8。
+
+あわせて、公開リポジトリに置くものと置かないものを分けた。この文書の §11 は「今この瞬間 prod がどうなっているか」を現在形で書いていたが、それは設計ではなく運用状態であり、対象リポジトリ名と並べれば「どの案件のどの防御が開いているか」の一覧になる。構成の性質としての記述に書き換え、運用状態は非公開の記録へ移した。
 
 rev.7 の主変更: rev.6 に対する適合・敵対レビューの指摘を反映し、あわせて**移行手順 4（CI 側の検知）の前提を実測で潰した**。最大の変更は §8.2 で、当初案の `dotenvx precommit` を CI 検査から**破棄した** — クリーンな checkout（差分ゼロ）では平文の tracked `.env` を 2 件見つけておきながら「encrypted/gitignored (2)」と表示して rc=0 を返すことを実測した（D23）。単なる no-op ではなく「検査した風の緑」であり、検知装置としては無いより悪い。tracked ファイルの直接走査へ差し替える。同じ実測で D20 の主柱も確定した — `--convention flow --strict` は実際に落ちる（`.env.development.local` 不在で rc=1）。rev.6 では推論で書いていた箇所が実測になった。
 
@@ -292,7 +298,7 @@ dotenvx:   fails, injecting the ciphertext as the value.
 ```
 
 **これは環境の判別ではなく、注入済み鍵の観測である。** shim が既に行っていること（`/run/secrets/DOTENV_PRIVATE_KEY_*` を見る）の延長にすぎず、D15 の三値意味論とは矛盾しない。prod 鍵は dev container には来ない設計なので、dev 側でのノイズはゼロになる。`--convention flow` も `--ignore=` も壊さない。R12 の「静かな失敗」が「うるさい成功」に変わるだけで、強制なしに I6 の趣旨を回収できる。
-- dotenvx には raw な鍵ファイルを直接読む仕組みがない（`-fk` は dotenv 形式のファイルを要求する）ため、shim による env 注入が正当な経路である。なお dotenvx は私鍵 env が無い場合 `.env.prod` に隣接する `.env.keys` へ**自動フォールバック**するため、workspace 内に `.env.keys` が存在しないことの検査（enclave-env 既存機能）は移行後も維持する。
+- dotenvx には raw な鍵ファイルを直接読む仕組みがない（`-fk` は dotenv 形式のファイルを要求する）ため、shim による env 注入が正当な経路である。なお dotenvx は私鍵 env が無い場合 `.env.prod` に隣接する `.env.keys` へ**自動フォールバック**するため、workspace 内に `.env.keys` が存在しないことの検査は移行後も維持する（共有スキャナが担う。§8.2）。
 - **注入済みの鍵名を対話シェルで表示する（rev.6）。** `/run/secrets` のファイル名は環境変数名そのものなので、**名前だけなら安全に出せる**（値は出さない）。対話シェルの起動時に一覧を出し、`/run/prod-ref` があればそれも出す。
 
   これが効くのは dev である。`DOTENV_PRIVATE_KEY_LOCAL` は持つが `_DEVELOPMENT` は持たない、という**権限階層**を鍵束で表現する運用があり、持っていない鍵を要する操作は復号失敗として現れる。何が注入されているかが見えれば、原因の切り分けが早い。「持っているべき鍵の一覧」はプロジェクト固有なので runtime-base には持てない — **注入済みのものを列挙するだけ**に留め、無いものは映らないことで気づかせる。
@@ -597,6 +603,9 @@ done
 | D24 | hook と CI が**同一の共有スキャナ**を使い、検査対象パターンはプロジェクトごとに上書きできる（rev.7） | D23 で CI 側を差し替えた結果、hook（`dotenvx precommit`）と CI（独自走査）で**判定の実装が 2 つ**になった。パターンだけ揃えても判定が別なら「hook は通るが CI で落ちる」という分岐は残る。判定ロジックをリポジトリ内の 1 ファイルへ切り出し、**入力を検査対象ファイルの一覧だけにする** — hook は staged を、CI は tracked を流す。スコープだけが違い判定は同一になる。差分を見るか現在の状態を見るかは文脈が決めることで（D23）、何を平文と見なすかは文脈に依らない。イメージが `COPY` し、reusable workflow は karakuri を第二 checkout して同じファイルを取る。**hook から `dotenvx precommit` は外れる** — 自前のファイル名フィルタを持ち上書きできないため、残すと逆向きの分岐を作る。上書きはリポジトリルートの設定ファイル 1 枚で、hook と CI が同じ規則で読むので片方にだけ効くことがない。**設定ファイルは `source` せず parse する**（リポジトリの中身は信頼しない側が書ける。防御装置を攻撃経路にしない）。既定は変えず、広げるかどうかは 4 リポジトリの実測後に判断する（R13）（§8.2） |
 | D23 | CI の検査から `dotenvx precommit` を**外す**（rev.7） | `precommit` の検査対象は `git diff HEAD` の差分のみで、CI のクリーンな checkout（差分ゼロ）では平文の tracked `.env` を 2 件見つけておきながら「encrypted/gitignored (2)」と表示して rc=0 を返す（実測）。**単なる no-op ではなく「検査した風の緑」**であり、検知装置としては無いより悪い — 「CI で見ている」という誤った安心を与える。tracked ファイルの直接走査へ差し替える（§8.2）。hook 側（staged 差分がある文脈）では正しく機能するので、そちらは `precommit` のままにする。同じ検査ロジックを二つの文脈で使い回そうとしたことが誤りであり、文脈が違えば手段も違ってよい |
 | D21 | `GIT_REF` は entrypoint で**完全な commit sha を強制**し、`PROD_ALLOW_MUTABLE_REF=1` を明示したときだけ可変 ref を許す（rev.6） | rev.5 は「完全な commit sha を渡す」を要件としながらラッパーの警告だけで続行しており、契約と実装がずれていた。R10 の唯一のゲートは deploy 前の人間のレビューであり、その前提は「レビューした対象と流したものが一致する」ことである。ブランチ名はその一致を切る — 押した瞬間に何を流したか分からず、main は動くので後から再現もできない。一方 sha は「古いかもしれないが既知で再現可能」。**失敗の性質が違う**（未知 vs 既知）ため既定は拒否とする。ただし危険を理解した上でブランチ運用を選ぶ余地は残すため、環境変数による明示的な脱出口を置く。検査は entrypoint 側に置き、ラッパーを迂回しても効くようにする。**ラッパーに `git ls-remote` で事前解決させる案は不採用** — 起動ラッパーにネットワーク経路と資格情報を持ち込むことになり、「broker と secret 以外に触らせない」という位置づけが崩れる（§4.6） |
+| D25 | 共有スキャナの正典を **`packages/env-guard/bin/env-guard-scan`** に置き、リポジトリ内に**複製を作らない**（rev.8） | 配布単位（npm パッケージ）と正典の置き場を一致させる。イメージ・karakuri の CI・ホストの三方向すべてがこの 1 ファイルを見る。**複製して同一性をテストで担保する案は採らない** — 同じファイルが 1 つしかなければ担保するものが無い。D24 が潰した「判定が 2 つ」の再来を、テストではなく構造で防ぐ。`@himorogy/enclave-env` は廃止した（§6.3） |
+| D26 | イメージへは **named build context** で供給し、ビルドコンテキストは `images/runtime-base` のまま広げない（rev.8） | D25 の帰結。スキャナが `packages/env-guard` へ移ったため、`images/runtime-base` のコンテキストからは見えなくなる。当初はコンテキストをリポジトリルートへ広げる案だったが**却下した** — 除外設定に書かれていない全ファイルが docker デーモンへ転送され、新しい除外設定の網羅性が未確認事項として増える。buildx の named build context なら必要なディレクトリだけを追加供給でき、変更はビルドを行う 2 つの workflow に 1 行ずつで済む。**片方だけに足すともう片方のビルドが `COPY` で落ちる** |
+| D27 | 他 org からの呼び出しは npm 経由でスキャナを取り、**karakuri 自身の CI は作業ツリーのファイルを直接使う**（rev.8。未実装） | reusable workflow が自分の ref を割り出せない問題（§8.2）は、バージョンを workflow ファイル自身に書ける npm 経由なら**問いごと消える**。ただし karakuri 自身まで npm に寄せると、**スキャナを変更する PR が変更前の公開済みスキャナで検査される** — 緑になるがその PR の変更を一度も通していない。作業ツリー検出の分岐は残し、置き換えるのは第二 checkout の側だけにする。npm から取ったものは SHA256 で照合する（`npx` は取得物のハッシュを検証しない。バージョン固定は改竄への対策にならない） |
 
 ---
 
@@ -641,7 +650,31 @@ prod で `dotenvx run` を使うときの必須オプション（rev.5）:
 - `~/.config/<project>/.env.container`
 - 各リポジトリの `.git/hooks/pre-commit`（`core.hooksPath` に置換）
 
-`@himorogy/enclave-env` の扱いは**保留**。検査は dotenvx 純正、配布は `core.hooksPath` に移るため、package として残る中身は hook スクリプト（10 行程度）のみになる。判断軸は「プロジェクト個別設定（monorepo の対象ディレクトリ、`.env.example` 等の許可リスト）を読むロジックが、package という配布層を要求するほど複雑か」。現要件では要求しない見込みで、その場合は `images/runtime-base/hooks/` へ移して package を畳む。なお `.env.keys` の workspace 内不存在チェック（dotenvx の自動フォールバック対策、§4.3）は残す価値があり、hook に統合する。
+`@himorogy/enclave-env` は**廃止した（rev.8）。** 保留にしていた「package という配布層が要るか」という問いには、要るという答えが出た — ただし enclave-env としてではない。
+
+コンテナの中でコミットする限り `core.hooksPath` が効くが、**ホストの GUI git クライアントから
+コミットする経路にはイメージの設定が届かない**。`core.hooksPath` はイメージ内の
+`/etc/gitconfig` に書いてあり、ホストの git はそれを読まない。ここを塞ぐには、ホスト側へ
+スキャナと hook を届ける手段が要る。それが package の役目である。
+
+一方で enclave-env に残すべき中身は無かった。検査は共有スキャナが引き継ぎ、暗号化と復号は
+dotenvx の直接呼び出しで足り、dev/prod 相互排他チェックは bind mount の廃止で不要になり、
+2 層 devcontainer と `prod-shell.sh` は本設計が置き換える対象そのものである。**残るものが
+無い package を版上げして使い続けるより、役割に合った package を新設する方が形に合う。**
+
+`@himorogy/env-guard` を新設し、スキャナと pre-commit hook をそこへ移した
+（`packages/env-guard`）。イメージは named build context 経由でこの 1 ファイルを焼き込む。
+**リポジトリ内にスキャナは 1 ファイルしか存在しない** — 複製して同一性をテストで担保する
+方式は採らない。同じファイルが 1 つしかなければ、担保するものが無い。
+
+enclave-env の廃止で 1 つ実害を持ち越している。公開済みの v0.3.0 が持つ `check` は、
+**ファイル内のどこかに `DOTENV_PUBLIC_KEY` の文字列があれば通す**という判定だった。
+暗号化済みのファイルは必ずその行を先頭に持つので、後から平文の変数を書き足しても検出
+されない。npm の deprecate メッセージには、移行先だけでなくこの欠陥を書く。既存の利用者に
+届く経路がそこしかない。
+
+`.env.keys` の workspace 内不存在チェック（dotenvx の自動フォールバック対策、§4.3）は
+共有スキャナが引き継いでいる。
 
 ---
 
@@ -697,7 +730,7 @@ prod で `dotenvx run` を使うときの必須オプション（rev.5）:
 
 `precommit` が悪いのではなく、**文脈が違う**。hook は staged 差分がある文脈で走るので `git diff HEAD` ベースの検査で正しく、実際に効く（§4.7）。CI はクリーンな checkout であり、見るべきは差分ではなく **tracked なファイルの現在の状態**である。同じ道具を両方に使い回そうとしたのが誤りだった。
 
-**採用: 共有スキャナ 1 本を hook と CI で使い回す（rev.7 / D24）。** `packages/enclave-env/scripts/check.sh` の検査ロジックをリポジトリ内の単一ファイルへ切り出し、**入力を「検査対象ファイルの一覧」だけにする**。dotenvx への依存自体が不要になり、CI のインストール手順も消える。
+**採用: 共有スキャナ 1 本を hook と CI で使い回す（rev.7 / D24）。** 検査ロジックをリポジトリ内の単一ファイルへ切り出し、**入力を「検査対象ファイルの一覧」だけにする**。dotenvx への依存自体が不要になり、CI のインストール手順も消える。
 
 ```
                    ┌─ hook  : git diff --cached --name-only  （staged）
@@ -776,11 +809,18 @@ jobs:
 
 **ただし「常に空」と結論するのは早い。** 測ったのは呼び出し元と呼び出し先が同じリポジトリの場合だけで、GitHub がその条件を内部的にローカル呼び出し扱いしている可能性を排除できていない。**他 org のリポジトリからの呼び出しを一度実行するまで未決**である（検証項目 49 と同じ制約）。
 
-§8 に着手する際の出発点として、判断の材料だけ置いておく。
+#### この詰まりは rev.8 で解ける見込みになった（未実装。D27）
 
-- reusable workflow が自分の ref を割り出せないなら、スキャナを第二 checkout で取る方式は成立しない
-- 代替の方向は二つ。**composite action**（`uses:` された時点で自分のリポジトリが指定 ref で checkout されるので、自分の ref を割り出す必要がそもそも無い。代償は呼び出し側スタブが数行伸びること）か、**スキャナを workflow の中へ複製し、実体との同一性をテストで担保する**（スタブは短いままだが複製が残る）
-- どちらを採るにせよ、**先に他 org からの呼び出しを一度実測する**こと。前提が立っていない状態で配布方式を作り直しかけて戻した経緯がある
+スキャナが npm パッケージ `@himorogy/env-guard` の持ち物になったことで、**問いそのものが不要になる**。reusable workflow は `npx -y @himorogy/env-guard@<完全固定バージョン>` と、バージョンを workflow ファイル自身に直書きできる。workflow は自分の中身を知っているので、自分の ref を知る必要がない。**他 org から一度呼んで測るという前提条件が消える。**
+
+引き換えに 2 つ引き受ける。
+
+- **可用性** — CI がレジストリの可用性に依存する。受容する。取得に失敗したら検査を飛ばさず落ちること（取れなかったので通した、を作らない）
+- **完全性** — こちらは受容しない。レジストリが侵害されれば、他 org の CI で攻撃者の置いたスキャナが走る。しかもそのスキャナは平文を「問題なし」と報告するだけで目的を達する。**バージョンの完全固定は改竄への対策にならない**（`npx` は取得物のハッシュを検証しない）。期待する SHA256 を workflow ファイルに直書きし、照合してから使う。呼び出し側は karakuri の commit sha で workflow を固定するので、信頼の連鎖はそこから繋がる
+
+**karakuri 自身は npm 経由にしない。** 現行の workflow は「呼び出し側の作業ツリーにスキャナがあればそれを使う」分岐を持っており、self-call ではこちらが正しい — タグが指すスキャナではなく、いま検査されている PR のスキャナが走るためである。npm 一本化にすると**スキャナを変更する PR が変更前の公開済みスキャナで検査される**。緑にはなるが、その PR の変更を一度も通していない。置き換えるのは第二 checkout の側だけにする（D27）。
+
+なお採らなかった代替も記録しておく。**composite action**（`uses:` された時点で自分のリポジトリが指定 ref で checkout されるので自分の ref を割り出す必要が無い。代償は呼び出し側スタブが伸びること）と、**スキャナを workflow の中へ複製し同一性をテストで担保する**（スタブは短いままだが複製が残る）。後者は D25 が構造で防いだものを、テストで防ぐ形に戻すことになる。
 
 **許可リストの既定を広げるときの注意**: 検査対象を staged から tracked 全体へ広げたことで、これまで検査を素通りしていた既存の tracked ファイル（典型例は平文のプレースホルダを持つ `.env.example`）が新たに引っかかりうる。既定の許可リストは既存の `check.sh` と揃えて `*.env.container.example` だけにし、それ以上はプロジェクト側が `env-guard.conf` に明示する。**既定を緩める方向の変更は行わない** — 何を許したのかがそのプロジェクトのリポジトリに残らなくなるためである。
 
@@ -818,7 +858,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 | 2   | `images/runtime-base` の切り出し。shim（三値意味論、`env -u NODE_OPTIONS` 込み）/ `prod-entrypoint.sh` / `git-askpass` / `core.hooksPath` + hook を実装               | I3 / I5 / T6      |
 | 3   | `compose.prod.yaml` 一式の導入 — stdin 注入・bind mount 撤去・`read_only` + tmpfs（`/src` 込み・`exec` と `uid=`/`gid=` の明示）・`logging: none`・`ulimits: core: 0`。broker 選定と鍵束のキーチェーン移設を含む。entrypoint が secrets 取込と clone を一体で担うため、この段は分割できない | I1 / I2 / I4 / I7 / T2 / T4 / T5 |
 | 4   | reusable workflow の設置とスタブ配布（precommit の CI 実効性を先に実測 — §8.2）                                                                             | T6 の CI 側         |
-| 5   | prod-shell の廃止、enclave-env の去就判断、~~出荷物からの設計書記号の一括棚卸し（§4.8）~~ ← rev.8 で完了                                                                                                        | —                 |
+| 5   | ~~prod-shell の廃止~~ / ~~enclave-env の去就判断~~ / ~~出荷物からの設計書記号の一括棚卸し（§4.8）~~ ← **rev.8 で完了**                                                                                                        | —                 |
 
 **手順 1〜3 は実装済み**（2026-08-06、ブランチ `feat-new-prodshell`）。docker を要する検証は CI（`runtime-base-verify`）で 10 回実行し、rev.5 の内容はその実測に基づく。結果は `images/runtime-base/verification-record.md` に §10 の全項目の状態として記録してある。
 
@@ -844,7 +884,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] shim: ファイル不在時に素通しになり、dev container で既存の dev 向けトークン注入（env var / ファイルいずれの方式でも）と共存して wrangler / gh / dotenvx が動くこと
 - [ ] dotenvx shim: `DOTENV_PRIVATE_KEY_*` 複数注入時に `-f .env.<name>` へ対応する鍵が選ばれること（`_LOCAL` + `_DEVELOPMENT` 同居の dev 想定）
 - [ ] **dotenvx 2.x で `DOTENV_PRIVATE_KEY_*` の環境変数注入が従来通り効くこと**（2.0.0 は keyring 対応にあわせて `run` / `config` / `get` を `@dotenvx/primitives` 由来の共有 resolver 経由へ付け替えている。本設計の shim はこの経路に全面的に依存するため、実測せずに前提にできない）
-- [ ] **dotenvx 1.x で暗号化した `.env.*` を 2.x が復号できること**（既存 4 repo は enclave-env の peer range `^1.63.0` 下で運用されており、イメージ側だけ 2.x に上げる構成になる）
+- [ ] **dotenvx 1.x で暗号化した `.env.*` を 2.x が復号できること**（既存 4 repo は dotenvx 1.x 系（`^1.63.0`）で運用しており、イメージ側だけ 2.x に上げる構成になる）
 - [ ] prod container: 必要 secret を欠いた状態で下流コマンドが認証失敗として**顕在化**すること（`$HOME` tmpfs により fallback 資格情報が拾われないことを含む）
 - [ ] dev container に `/var/run/docker.sock` がマウントされていないこと（§2.1 の前提。devcontainer 構成変更時の恒常チェック）
 - [ ] `logging: driver: none` でもアタッチ時に stdout が手元に表示されること
@@ -905,8 +945,7 @@ rev.7 で追加した項目:
 ## 11. 未決事項
 
 - **broker の具体選定**: 契約（§4.1）は確定。macOS は `security` CLI が第一候補（Secure Enclave 束縛が Keychain 実装側で既に担保され、「底の亀」問題は OS に委譲して閉じる）。Windows 側と、チーム共有鍵（`DOTENV_PRIVATE_KEY_PROD`）の受け渡しを考えると 1Password / Bitwarden CLI への統一も候補。stdin 注入により broker はコマンド 1 個の差し替えで移行でき、compose・entrypoint 側は無変更で済む。実測して決定する。
-- `@himorogy/enclave-env` **の去就**: §6.3 の判断軸に基づき決定する。ホスト側で案 A（simple-git-hooks 維持）を採る場合、`check.sh` の配布先として package が残る可能性がある。
-- **ホスト側 hook の方式**: §4.7 の A（併用）か B（ホストも `core.hooksPath`）か。Fork の PATH 挙動を実測してから決める。A から始めて B に寄せるのが安全。
+- **ホスト側 hook の導入コマンド**: 方式は A（simple-git-hooks との併用）で確定した（rev.8）— simple-git-hooks が macOS 実機で動作していることが確認できており、動いている仕組みの上に載せる方が速い。残るのは `@himorogy/env-guard` に冪等な導入コマンドを置くこと。**GUI クライアントの PATH でスキャナを見つけられるかは、測って決める問いではない** — 見つからなければ非ゼロで終わるように書けばよく、それはこちらが書くコードの性質である。実測の役割は「意図どおり落ちること」の確認に変わる。
 - **対話 prod shell の要否**: stdin 注入は `run` の TTY と両立しない（§4.1）。運用を非対話コマンドに寄せて廃止するのが第一候補。必要になった場合の選択肢は、(a) **二段構え**: `<broker> | docker compose run -dT --rm prod sleep infinity` で注入・起動し、`docker exec -it <container> bash` で TTY を得る（entrypoint 完了後なので /run/secrets は注入済み。退出後の `docker stop` 忘れが唯一の運用リスク）、(b) secret 不要な素の `run` シェル（shim は不在素通しだが、prod container には fallback 資格情報が無いため secret を使うコマンドだけが失敗する）、(c) Linux ホストへの一本化 + `file:` ソース / `/dev/shm` 代替（§4.1）。
 - **実行ホストの一本化**: Mac / Windows ミニ PC のどちらで prod 実行を行うか。swap 経由の露出（R7）はメモリに余裕のある側に寄せるのが一貫する。Linux ホストに一本化できるなら上記 (c) の選択肢も開ける。**rev.5 でこの判断の重みが増した** — `/src` が tmpfs になったため、repo と `node_modules` と pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G、実測の使用量は karakuri 自身で 131M）。依存の重いプロジェクトを載せるなら実行ホストのメモリ量が直接の制約になる。
 - **署名タグの検証**: rev.6 で `GIT_REF` は完全な commit sha を強制するようにした（D21）。署名タグを使いたい場合は `git tag -v` 相当の検証を entrypoint に入れる必要があり、信頼する公開鍵をどこから持ってくるか（イメージに焼く / broker で渡す）が未決。実装するまでは `PROD_ALLOW_MUTABLE_REF=1` が唯一の逃げ道で、これは検証を伴わないため「危険を理解した上での選択」以上のものにはならない。
