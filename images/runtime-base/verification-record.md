@@ -731,14 +731,43 @@ scanner source: the caller's own checkout (this workflow was called by path)
 karakuri 自身の env-guard は緑になった。ただし**通ったのは self-call 専用の経路**であり、
 **他 org から `@v1` で呼ぶ本来の伝播経路は一度も実行されていない**。
 
-残る未確定は 2 つで、性質が違う。
+### 診断の結果 — コンテキストは生きていて、`job_workflow_ref` だけが空
 
-- **`job_workflow_ref` が `github` コンテキストで常に空なのか**。常に空なら remote 経路は
-  死んだコードであり、他 org からの呼び出しは fail-closed で落ち続ける — 伝播機構として
-  成立していないことになる。診断ステップの出力（`workflow_ref` / `repository` / `ref` 等）を
-  見て判断する
-- **他 org から `@v1` で呼んだときに ref が取れるか**。他 org の repo が無いと測れない
-  （項目 49 と同じ制約）
+```
+job_workflow_ref: <empty>
+workflow_ref:     himorogy/karakuri/.github/workflows/ci.yml@refs/pull/11/merge
+repository:       himorogy/karakuri
+ref:              refs/pull/11/merge
+ref_name:         11/merge
+sha:              7b329d8ece9b6ca3724873f43a208eade63491c8
+event_name:       pull_request
+```
+
+`workflow_ref` は正しく埋まっている（指しているのは**呼び出し側**の `ci.yml`）。つまり
+コンテキストの取得自体は機能していて、`job_workflow_ref` だけが空である。
+
+`workflow_ref` は代用にならない。self-call では呼び出し側が karakuri なのでたまたま使えるが、
+他 org から呼ばれれば**呼び出し側のリポジトリ**を指すため、そこから karakuri のスキャナは
+取れない。「self-call では動くが本番では壊れる」という最悪の形になる。
+
+### 残る二択は、他 org を用意せずに測れる
+
+`job_workflow_ref` が空なのが「ローカルパス呼び出しに限った話」なのか「`github` コンテキスト
+では常に空」なのかは、ローカルパス呼び出しだけを見ていても区別が付かない。
+
+**完全参照形（`owner/repo/path@ref`）で呼べば、同一リポジトリを指していても他 org からの
+呼び出しと同じ経路になる。** 他 org のリポジトリは要らない — 必要なのは呼び出しの**形**が
+同じであることだけである。`ci.yml` に 2 つ目の呼び出し（`env-guard-propagation`）を足した。
+
+これは一時的な計測用ではなく残す前提の呼び出しである。ローカルパス呼び出しは伝播機構を
+一度も動かさず、完全参照だけにすると PR の変更が検査されない。**両方要る。**
+
+ref がブランチ名で固定されているため、**main へマージする前に `@main` へ直すこと**。
+直し忘れれば job は「そのブランチが見つからない」で落ちるので黙って腐りはしないが、落ちる
+場所が本題と無関係なので気付きにくい。
+
+他 org の private リポジトリからの呼び出し可否（項目 49）は、Actions ポリシーの allowlist が
+絡むため依然として別問題として残る。
 
 ### 設計書の記号がそのまま運用の出力に出ている
 

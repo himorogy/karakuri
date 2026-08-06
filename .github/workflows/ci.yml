@@ -27,6 +27,36 @@ jobs:
   env-guard:
     uses: ./.github/workflows/env-guard.yml
 
+  # 他のリポジトリが通る経路を、他 org を用意せずに一度でも通すための呼び出し。
+  #
+  # 上の env-guard はローカルパス参照なので、workflow が「自分がどの
+  # karakuri から来たか」を知る必要がなく、呼び出し側の作業ツリーにある
+  # スキャナをそのまま使う。実際のプロジェクトはそうならない —
+  # `himorogy/karakuri/.github/workflows/env-guard.yml@v1` と書き、workflow は
+  # 自分の ref を割り出して karakuri を第二 checkout する必要がある。
+  #
+  # その ref の割り出しに使う github.job_workflow_ref が、ローカルパス呼び出し
+  # では**空だった**（実測）。空の理由がローカルパス呼び出しに限った話なのか、
+  # github コンテキストでは常に空なのかは、ローカルパス呼び出しだけを見ていても
+  # 区別が付かない。完全参照形（owner/repo/path@ref）で呼べば、同一リポジトリで
+  # あっても他 org からの呼び出しと同じ経路になるので、そこで判定できる。
+  #
+  # ref にブランチ名を使うため、走るのは PR のマージ結果ではなくブランチの
+  # 先端になる。これは実運用の `@v1` と同じ性質（呼び出し側が指定した ref の
+  # 版が走る）なので、この呼び出しに関しては正しい挙動である。PR の変更自体を
+  # 検査するのは上の env-guard の役目。
+  #
+  # 残す前提の呼び出しであって一時的なものではない。他 org のリポジトリを
+  # 用意しない限り、この経路を実行する手段が他に無い。
+  #
+  # ⚠ ref がブランチ名で固定されている。**main へマージする前に @main へ
+  # 直すこと。** 直し忘れた場合は「そのブランチが見つからない」で job が
+  # 落ちるので黙って腐りはしないが、落ちる場所が本題と無関係なので気付き
+  # にくい。いま @main にできないのは、main にまだこの workflow が無く
+  # 「workflow not found」で落ちるためである。
+  env-guard-propagation:
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@feat-new-prodshell
+
   test:
     runs-on: ubuntu-latest
 
