@@ -10,8 +10,8 @@
 ghcr.io/himorogy/devcontainer-base:1
 ```
 
-設計の経緯と判断根拠は [devcontainer-base-handoff.md](./devcontainer-base-handoff.md) にある。
-本 README は運用手順を扱う。
+本 README は運用手順を扱う。個々の判断の根拠は、それが効いている場所（`Dockerfile` の
+コメント、`examples/devcontainer.json` のコメント）に書いてある。
 
 ---
 
