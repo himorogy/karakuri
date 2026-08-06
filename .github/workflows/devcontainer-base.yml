@@ -30,6 +30,15 @@ name: devcontainer-base
 # 前に「invalid reference format」で落ちるので、GHCR の有無とは無関係である。
 # 「赤いのは想定どおり」という但し書きが、別の失敗を見えなくしていた。
 # 落ちたときは、想定していた理由と実際のエラーが一致しているかを毎回見ること。
+# runtime-base が GHCR に無い場合に実際に出るのは、これである:
+#
+#   [linux/arm64 internal] load metadata for ghcr.io/himorogy/runtime-base:1
+#   ERROR: failed to fetch anonymous token: ... 403 Forbidden
+#
+# タグ名まで解決できたうえで、匿名 pull を拒否されている形。403 であって
+# 404 ではない。**タグを push した後もこれが出る場合は、パッケージが private の
+# ままである可能性が高い** (GHCR は初回 push 時に private で作られるのが通常)。
+# images/runtime-base/README.md のリリース節を参照。
 #
 # なお PR の paths に images/runtime-base/** は足していない。runtime-base の
 # 変更は runtime-base 側の workflow (.github/workflows/runtime-base.yml) が

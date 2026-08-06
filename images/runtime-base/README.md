@@ -664,7 +664,27 @@ git tag runtime-base-v1.0.0 && git push origin runtime-base-v1.0.0
 
 **リリース順は runtime-base → devcontainer-base。** devcontainer-base は
 `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` で載るため、runtime-base が
-GHCR に存在しない段階では `FROM` の解決に失敗する。
+GHCR に無い段階では pull に失敗する。実際に出るのは匿名トークン取得の
+**`403 Forbidden`** で、404 ではない。
+
+### 初回リリースの直後に、可視性を確認する
+
+**タグを push しただけでは終わらない。** GHCR のパッケージは初回 push 時に **private** で
+作成されるのが通常で、組織の package creation / visibility ポリシー次第で結果が変わる。
+
+private のままだと、匿名で pull できないため **devcontainer-base のビルドはタグを打った後も
+同じ 403 で落ち続ける**。「タグを打てば通る」ではないので、ここで一度確認する。
+
+```
+GitHub → Packages → runtime-base → Package settings → Change visibility → Public
+```
+
+public にしておくと利用側の `docker pull` に認証が要らなくなる。runtime-base は中立な
+実行基盤と制約だけを収録しており、秘匿情報は一切焼かれていない（secret は起動時に stdin から
+コンテナ内 tmpfs へ入る）ので、公開して問題ない。
+
+初回 push が権限エラーで落ちる場合は、組織設定で Actions からの package creation が
+許可されているかを確認する。ワークフロー側の `packages: write` だけでは足りない。
 
 参照の仕方は用途で分ける。
 
