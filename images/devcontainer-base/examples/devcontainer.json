@@ -44,9 +44,10 @@
 		}
 	},
 
-	// 平文 env がワークスペースに残っていないかを検査する。これはホスト側で走る。
-	// enclave-env を使わないなら消すこと。
-	"initializeCommand": "sh node_modules/@himorogy/enclave-env/scripts/init-check-dev.sh",
+	// 平文 env の検査に initializeCommand は要らない。ベースイメージが core.hooksPath を
+	// 焼き込んでおり、コンテナ内でのコミットは全リポジトリで pre-commit hook に通る。
+	// ホストの GUI git クライアントのようにコンテナの外からコミットする経路には
+	// この設定が届かないので、そちらは @himorogy/env-guard をプロジェクトに入れて塞ぐ。
 
 	// 取得を伴うセットアップはここに置く。firewall の適用後には外から取ってこられない。
 	//

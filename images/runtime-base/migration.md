@@ -29,22 +29,25 @@
 最小の変更で、prod 由来の平文が workspace 経由で dev に逐次流入する経路の大半が落ちる。
 
 `package.json` から `decrypt-env` 系のスクリプトを外し、アプリの実行系を `dotenvx run --` で
-くるむ。
+くるむ。あわせて、暗号化を CLI ラッパー経由で呼んでいる場合は `dotenvx` の直接呼び出しへ
+置き換える（対象ファイルを名前で書けるので、対応表を持つ設定ファイルが要らなくなる）。
 
 ```diff
    "scripts": {
 -    "decrypt-env":      "enclave-env decrypt --env local",
 -    "decrypt-env:prod": "enclave-env decrypt --env prod",
+-    "encrypt-env":      "enclave-env encrypt --env local",
+-    "encrypt-env:prod": "enclave-env encrypt --env prod",
 +    "dev":              "dotenvx run -f .env -- vite",
 +    "deploy":           "dotenvx run -f .env.production -- wrangler deploy",
-     "encrypt-env":      "enclave-env encrypt --env local",
-     "encrypt-env:prod": "enclave-env encrypt --env prod",
++    "encrypt-env":      "dotenvx encrypt -f .env",
++    "encrypt-env:prod": "dotenvx encrypt -f .env.production",
    },
 ```
 
 `decrypt` を禁止はしない。ファイルとしての平文を要求する外部ツールに食わせる用途は残る。
 package.json に置かないのは、置くと in-place 復号が一手で呼べる既定の操作になり、平文ファイルが
-日常的に生まれるため。
+日常的に生まれるため。必要になった時点で `dotenvx decrypt -f <file>` をその場で打つ。
 
 値の確認は `dotenvx get -f .env.production` で、ファイルを作らずに行える。
 
@@ -283,11 +286,24 @@ CI がクリーンな checkout（差分ゼロ）で走ることを踏まえた�
 - 2 層 devcontainer（`prod/devcontainer.json`）を使っていれば削除
 - `~/.config/<project>/.env.container` が残っていないことを再確認
 
-`@himorogy/enclave-env` 自体の去就は保留。ただし判断材料は増えた — 検査ロジックは
-`env-guard-scan` としてイメージ側へ移り、配布は `core.hooksPath` と reusable workflow に
-乗ったので、package として残る中身がほぼ無くなっている。`check.sh` の実質的な後継が
-`env-guard-scan` であり、ホスト側で simple-git-hooks を維持する場合の配布先という用途だけが
-残る。
+### `@himorogy/enclave-env` を外す
+
+**このパッケージは廃止した。** 平文 env の検査は `env-guard-scan` として
+`@himorogy/env-guard` に移り、配布はイメージの `core.hooksPath` と CI の reusable workflow に
+乗った。暗号化と復号は `dotenvx` を直接呼ぶ（「1. `dotenvx run --` に統一する」を参照）。
+dev/prod 相互排他チェックは
+共有 workspace が生んでいた制約で、bind mount を廃止した時点で不要になった。移すべき中身が
+残っていない。
+
+依存している `package.json` から外すこと。**とくに `enclave-env check` を pre-commit hook に
+登録している場合は、外すまで検査が効いていない状態が続く。** 最終版の `enclave-env check` は、
+ファイルの中に `DOTENV_PUBLIC_KEY` という文字列があるかどうかしか見ていない。dotenvx で
+暗号化したファイルは必ずその行を持つので、**一度暗号化したファイルに後から平文の変数を
+書き足すと、そのまま通ってしまう。**
+
+置き換え先は、このイメージが焼き込んでいる pre-commit hook（コンテナの中でコミットする限り
+何も設定しなくても効く）と、コンテナの外からコミットする経路向けの `@himorogy/env-guard`。
+後者の導入手順は [`packages/env-guard/README.md`](../../packages/env-guard/README.md) にある。
 
 ---
 

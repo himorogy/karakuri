@@ -298,9 +298,6 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
 - **雛形の実地検証**。`examples/` の Compose 構成はまだ一度も起動していない。
   このリポジトリでは検証しない方針のため（「判断済み」）、base を利用する
   別のリポジトリで「検証チェックリスト」を通す
-- **`packages/enclave-env/templates/devcontainer/` の移行**。まだ旧構成のまま。
-  ワークスペースが `/workspace`（単数形）で、pnpm の版も固定されていない。
-  手順と注意点は [migration.md](./migration.md)
 - **crit のバージョン検証**。`crit --version` は `dev` を返すため、
   `ARG CRIT_VERSION` で指定した版が実際に入ったかをイメージ側から確認できない。
   ビルダー段で `go version -m /out/crit` を `${CRIT_VERSION}` と突き合わせれば
