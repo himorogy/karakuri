@@ -1,0 +1,170 @@
+name: env-guard
+
+# 平文 env のコミットを CI 側で検知する reusable workflow。呼び出し側
+# リポジトリの .github/workflows/env-guard.yml に 5 行のスタブ
+# (images/runtime-base/templates/env-guard.yml) を置いて使う。
+#
+# 設計: .local/prod-secret-isolation-design.md §8.1 / §8.2
+#
+# ----------------------------------------------------------------------------
+# 判定は 1 本。ここが変えるのはスコープだけ
+#
+# 検査ロジックそのものはこの workflow には無い。karakuri の
+# images/runtime-base/bin/env-guard-scan 1 本に寄せてあり、コミット時の
+# pre-commit hook (イメージが /usr/local/bin へ COPY したもの) が呼ぶのと
+# 同じファイルである。この workflow の仕事は「tracked なファイルの一覧を
+# 作ってスキャナへ流す」ことだけ。
+#
+#   hook … git diff --cached --name-only（staged なもの）
+#   ここ … git ls-files（tracked なもの）
+#
+# 同じ一覧を与えれば判定も出力も完全に一致する。パターンや許可リストを
+# 揃えるだけでは「hook は通るのに CI で落ちる」は消えない — 判定の実装が
+# 2 つある限り必ずずれるため、実装ごと 1 本にしてある。
+#
+# 当初案の `dotenvx precommit` を CI で走らせる形は実測により破棄した
+# (dotenvx 2.19.2)。precommit が見るのは `git diff HEAD` の差分だけで、
+# CI のクリーンな checkout には差分が無い。平文のまま tracked になっている
+# .env を 2 件見つけておきながら「encrypted/gitignored (2)」と表示して
+# rc=0 を返す。単なる no-op ではなく「検査した風の緑」であり、検知装置と
+# しては有害だった。
+# ----------------------------------------------------------------------------
+#
+# 除外したいファイルや検査対象パターンの変更は、呼び出し側リポジトリの
+# ルートに置く env-guard.conf で行う (workflow の input ではない)。
+# hook と CI が同じファイルを同じ規則で読むことが要るため、真実の源を
+# 1 つにしてある。書式は env-guard-scan の冒頭のコメントを参照。
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: >-
+          検査対象を絞りたい場合のディレクトリ。改行区切りで複数指定できる。
+          既定（空）ではリポジトリ全体を検査する。これは「どこまで見るか」
+          だけの指定であって、平文かどうかの判定を変えるものではない
+          （判定は env-guard.conf とスキャナに閉じている）。指定すると
+          CI はコミット時の hook より狭い範囲しか見ないことになる点に注意。
+          なお `.env.keys`（私鍵そのもの）の探索だけはこの絞り込みに関係
+          なくリポジトリ全体に効く。
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  env-guard:
+    runs-on: ubuntu-latest
+
+    # checkout に必要な read だけ。このジョブは何も書かない。
+    permissions:
+      contents: read
+
+    steps:
+      # action pin は既存の workflow (runtime-base-verify.yml 等) と同じ
+      # commit SHA を使い回す。新しい action は増やさない。
+      # reusable workflow の中の checkout は「呼び出し側」のリポジトリを
+      # checkout する。これが検査対象になる。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # スキャナを持ってくるために karakuri を第二 checkout する。
+      #
+      # ref を固定しないと、`@v1` で呼ばれたこの workflow が main の
+      # スキャナを実行することになり、workflow とスキャナの版が食い違う。
+      # github.job_workflow_ref は「今動いている reusable workflow 自身」の
+      # 完全な参照 (owner/repo/path@ref) を持つので、そこから owner/repo と
+      # ref を切り出して同じ commit を取る。呼び出し側が @v1 で呼べば v1 の
+      # スキャナ、commit SHA で呼べばその SHA のスキャナになる。
+      #
+      # (github.workflow_ref の方は呼び出し**側**の workflow を指すので
+      # ここでは使えない。)
+      - name: Resolve the karakuri ref this workflow came from
+        id: src
+        shell: bash
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+        run: |
+          set -u
+          echo "job_workflow_ref: ${JOB_WORKFLOW_REF:-<empty>}"
+
+          # owner/repo/path/to.yml@ref という形。ref は最後の @ より後、
+          # repository は先頭 2 セグメント。
+          ref=${JOB_WORKFLOW_REF##*@}
+          left=${JOB_WORKFLOW_REF%@*}
+          owner=${left%%/*}
+          rest=${left#*/}
+          repo=${rest%%/*}
+
+          # 取れない・形が違うときは黙って main へ倒さない。版が食い違った
+          # まま緑になる方が、動かないより悪い。
+          if [ -z "${ref:-}" ] || [ -z "${owner:-}" ] || [ -z "${repo:-}" ] ||
+            [ "$ref" = "${JOB_WORKFLOW_REF:-}" ] || [ "$owner" = "$rest" ]; then
+            echo "❌ env-guard: could not work out which karakuri commit this workflow came from."
+            echo "   github.job_workflow_ref was: ${JOB_WORKFLOW_REF:-<empty>}"
+            echo "   Refusing to guess a ref: running a different version of the"
+            echo "   scanner than this workflow would make the result meaningless."
+            exit 1
+          fi
+
+          echo "repository=$owner/$repo" >>"$GITHUB_OUTPUT"
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+          echo "scanner source: $owner/$repo@$ref"
+
+      # karakuri は public である前提 (設計上すでに置かれている前提)。
+      # public リポジトリなら既定の GITHUB_TOKEN で読めるため追加の
+      # 資格情報は要らない。checkout 先は呼び出し側の作業ツリーの中に
+      # なってしまうので、スキャナだけ取り出したら消す (検査対象の
+      # ファイル一覧や .env.keys の探索範囲を汚さないため)。
+      - name: Check out the shared scanner from karakuri
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ steps.src.outputs.repository }}
+          ref: ${{ steps.src.outputs.ref }}
+          path: karakuri-env-guard-src
+          persist-credentials: false
+
+      - name: Stage the scanner outside the working tree
+        shell: bash
+        run: |
+          set -u
+          src=karakuri-env-guard-src/images/runtime-base/bin/env-guard-scan
+
+          if [ ! -s "$src" ]; then
+            echo "❌ env-guard: the scanner is missing from the karakuri checkout ($src)."
+            echo "   Nothing was inspected, so this is not a pass."
+            exit 1
+          fi
+
+          cp "$src" "$RUNNER_TEMP/env-guard-scan"
+          chmod +x "$RUNNER_TEMP/env-guard-scan"
+          rm -rf karakuri-env-guard-src
+
+      - name: Scan tracked files for plaintext env values
+        shell: bash
+        env:
+          ENV_GUARD_PATHS: ${{ inputs.paths }}
+        run: |
+          set -u
+          list="$RUNNER_TEMP/env-guard-list"
+          ok=0
+
+          # 一覧の作成に失敗したら通さない (fail-closed)。空の一覧は
+          # 「検査対象が無かった」を意味するが、コマンド自体の失敗も同じ
+          # 「空」に化けるため区別する。
+          if [ -n "${ENV_GUARD_PATHS:-}" ]; then
+            # 改行/空白区切りの複数ディレクトリを受けるため、ここだけは
+            # 意図的に単語分割させる。
+            # shellcheck disable=SC2086
+            set -- $ENV_GUARD_PATHS
+            git ls-files -- "$@" >"$list" || ok=$?
+          else
+            git ls-files >"$list" || ok=$?
+          fi
+
+          if [ "$ok" -ne 0 ]; then
+            echo "❌ env-guard: could not list the tracked files (git ls-files failed)."
+            echo "   Nothing was inspected, so this is not a pass."
+            exit 1
+          fi
+
+          echo "env-guard: $(wc -l <"$list") tracked path(s) to consider."
+          "$RUNNER_TEMP/env-guard-scan" <"$list"

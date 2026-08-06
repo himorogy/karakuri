@@ -89,8 +89,15 @@ ENV PNPM_HOME=/usr/local/share/pnpm \
 # を参照。
 ENV PATH="${PNPM_HOME}/bin:${NPM_CONFIG_PREFIX}/bin:${PATH}"
 
+# chown の対象は ${PNPM_HOME} と ${NPM_CONFIG_PREFIX} の2つだけに絞る。
+# node が書き込む必要があるのはこの2つで、親の /usr/local/share ごと node
+# 所有にすると、下の git hook (/usr/local/share/git-hooks) の親ディレクトリ
+# まで node 所有になる。hook ファイル自体が root:root 0755 でも、親が node
+# 所有なら dev container 内のエージェントがディレクトリごと mv で差し替え
+# られてしまい、「制約は改変されにくい場所に置く」という配置意図 (§4.5) と
+# 食い違う。
 RUN mkdir -p "${PNPM_HOME}/bin" "${NPM_CONFIG_PREFIX}" \
-    && chown -R ${USERNAME}:${USERNAME} /usr/local/share
+    && chown -R ${USERNAME}:${USERNAME} "${PNPM_HOME}" "${NPM_CONFIG_PREFIX}"
 
 USER ${USERNAME}
 
@@ -188,7 +195,7 @@ RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" 
 
 # --- prod entrypoint / git-askpass ---------------------------------------------
 # 秘密鍵 (dotenv 形式) を stdin から受け取り /run/secrets (tmpfs) へ書き出し、
-# 明示された git ref へ /src (named volume) を復元してから "$@" を exec する。
+# 明示された git ref へ /src (tmpfs) を復元してから "$@" を exec する。
 # GH_TOKEN は checkout 直後に破棄するため、git-askpass は clone/fetch の間
 # だけ使われる (設計書 §4.6)。
 COPY bin/prod-entrypoint.sh bin/git-askpass /usr/local/bin/
@@ -209,11 +216,17 @@ RUN chown root:root /usr/local/bin/prod-context \
     && chmod 0755 /usr/local/bin/prod-context \
     && printf '%s\n' '. /usr/local/bin/prod-context' >> /etc/bash.bashrc
 
-# entrypoint が clone/fetch する先。prod-src named volume は初回 root 所有で
-# 作られる可能性があるが、node:24 由来イメージでは docker が volume 初期化時
-# にイメージ内の /src の所有権をそのままコピーする。ここで node 所有にして
-# おかないと、entrypoint (node で実行される) が fetch/checkout の時点で権限
-# エラーになる。
+# entrypoint が clone/fetch する先。/src は named volume ではなく tmpfs で
+# ある (§4.6 / D18。named volume を再利用すると、前回実行のコードが打った
+# ローカル ref が次回の指定 ref として解決される穴と、持ち越された
+# .git/config が entrypoint 自身の git 操作で発火する穴が実測で再現した)。
+#
+# ここで作るのは mount point としてのディレクトリである。中身は起動のたびに
+# tmpfs で覆われるため、イメージ内の /src に何が入っているかは影響しない。
+# 所有権も compose 側の tmpfs オプション (uid=1000,gid=1000,mode=0755) が
+# 決めるが、tmpfs を張らずにこのイメージを起動した場合 (テストや素の
+# docker run) に entrypoint (node で実行される) が fetch/checkout で権限
+# エラーにならないよう、イメージ側でも node 所有にしておく。
 RUN mkdir -p /src && chown ${USERNAME}:${USERNAME} /src
 
 # --- git hook: 平文 .env のコミットを防ぐ (T6 / 緩和策) -------------------------
@@ -222,6 +235,17 @@ RUN mkdir -p /src && chown ${USERNAME}:${USERNAME} /src
 # worktree に自動で効かせる。同時に .husky / .githooks の pre-commit へ
 # チェーンし、他の hook 管理ツールを黙って上書きしない (設計書 §4.7 / D11 /
 # D12。git hook は「制約」なので runtime-base に置く)。
+#
+# 検査の実体は共有スキャナ env-guard-scan に置く。CI 側 (karakuri の
+# reusable workflow .github/workflows/env-guard.yml) が第二 checkout で
+# 取り出して実行するのと同じ 1 本のファイルであり、hook はこれに staged な
+# ファイルの一覧を渡すだけ。判定の実装が 2 つあると、パターンを揃えても
+# 「hook は通るのに CI で落ちる」が必ず残るため、実装ごと 1 本にしてある
+# (設計書 §8.2)。hook は /usr/local/bin/env-guard-scan を絶対パスで解決する。
+COPY bin/env-guard-scan /usr/local/bin/env-guard-scan
+RUN chown root:root /usr/local/bin/env-guard-scan \
+    && chmod 0755 /usr/local/bin/env-guard-scan
+
 COPY hooks/pre-commit /usr/local/share/git-hooks/pre-commit
 RUN chown root:root /usr/local/share/git-hooks/pre-commit \
     && chmod 0755 /usr/local/share/git-hooks/pre-commit \

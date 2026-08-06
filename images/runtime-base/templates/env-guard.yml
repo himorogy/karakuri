@@ -1,0 +1,75 @@
+# env-guard.yml — 平文 env のコミットを CI 側で検知する workflow のスタブ
+#
+# 設計: .local/prod-secret-isolation-design.md §8.1, §8.2
+#
+# 各プロジェクトの `.github/workflows/env-guard.yml` としてこのまま置く。
+# 検査ロジックはこのファイルにも、呼び出す先の workflow にも入っていない。
+# karakuri の images/runtime-base/bin/env-guard-scan という 1 本のスキャナに
+# 集約してあり、workflow はそれを取り出して tracked ファイルの一覧を流す
+# だけである。プロジェクト側に残るのは下の 4 行だけになる。
+#
+# 同じスキャナを dev container の pre-commit hook も呼ぶ。違うのは渡す
+# ファイル一覧だけ（hook は staged、CI は tracked）で、判定は完全に同一に
+# なる。「手元では通ったのに CI で落ちる」（およびその逆）が構造的に起きない
+# ようにするための作りである。
+#
+# 検査の中身: `.env*` / `secret.env.*` に当たるファイルを走査し、コメント
+# でも `DOTENV_PUBLIC_KEY` でもない行が `KEY="encrypted:..."` の形になって
+# いなければ落とす。`.env.keys`（dotenvx の私鍵そのもの）が作業ツリーに
+# あれば無条件で落とす。検出しても値そのものはログに出さない（ファイル・
+# 行番号・変数名まで）。
+#
+# ---------------------------------------------------------------------------
+# プロジェクトごとの調整は env-guard.conf で行う
+#
+# リポジトリのルートに `env-guard.conf` を置くと、検査対象のパターンと
+# 許可リストを上書きできる。workflow の input ではなくこのファイルに寄せて
+# あるのは、hook と CI が同じ設定を読むようにするためである（真実の源が
+# 2 つあると、そこから判定がずれていく）。
+#
+#   # 1 行 1 ディレクティブ。コメントは行頭のみ。
+#   # pattern 行が 1 行でもあれば既定のパターンを「置き換える」。allow も同様。
+#   pattern (^|/)\.env
+#   pattern (^|/)secret\.env\.
+#   pattern (^|/)[^/]*\.env$        … production.env のような名前も拾いたい場合
+#   allow   *.env.container.example
+#   allow   docs/.env.sample
+#
+# 既定（ファイルが無い場合）は pattern が `(^|/)\.env` と
+# `(^|/)secret\.env\.`、allow が `*.env.container.example`。
+# 設定ファイルが壊れている・読めないときは、既定へ倒さずジョブが落ちる。
+# ---------------------------------------------------------------------------
+#
+# ---------------------------------------------------------------------------
+# 呼び出し側 org の設定について
+#
+# org の Actions ポリシーが「選択した actions / reusable workflows のみ
+# 許可」になっている場合、`himorogy/karakuri/*` を allowlist へ明示的に
+# 追加しないとこの workflow は起動できない（Settings → Actions → General
+# → Allow specified actions and reusable workflows）。これはプランによる
+# 制限ではなく設定項目なので、どのプランでも追加すれば通る。
+#
+# 検知はできてもマージのブロックまではできない場合がある。必須ステータス
+# チェックは private リポジトリでは有償プランを要するため、無償プランの
+# private リポジトリでは「赤くなる」検知にとどまる。それを前提にしている。
+# ---------------------------------------------------------------------------
+#
+# `@v1` は karakuri のタグを指す。ここで指定した ref のスキャナが使われる
+# （workflow とスキャナの版は必ず揃う）。追従したくなければ commit SHA へ
+# 差し替えてよい。形式:
+#   uses: himorogy/karakuri/.github/workflows/env-guard.yml@<sha>
+
+on: [push, pull_request]
+
+jobs:
+  env-guard:
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@v1
+    # 大きな monorepo で検査範囲を絞りたい場合だけ指定する。改行区切りで
+    # 複数書ける。これは「どこまで見るか」だけの指定で、平文かどうかの
+    # 判定は変わらない（判定は env-guard.conf 側）。指定すると CI は
+    # コミット時の hook より狭い範囲しか見なくなる点に注意。
+    #
+    # with:
+    #   paths: |
+    #     packages
+    #     services

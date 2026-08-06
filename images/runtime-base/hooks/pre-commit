@@ -8,15 +8,53 @@
 set -e
 root=$(git rev-parse --show-toplevel)
 
-# dotenvx は私鍵 env が無いと .env.keys へ自動フォールバックする。
-# workspace 内に置かれていると暗号化の意味が失われるため、コミット前に
-# 存在自体を弾く (§4.3 末尾 / §6.3)。
-if [ -e "$root/.env.keys" ]; then
-  echo "❌ .env.keys found in workspace: $root/.env.keys" >&2
+# 検査そのものは共有スキャナ env-guard-scan に委ねる。CI 側 (karakuri の
+# reusable workflow env-guard.yml) が実行するのと同じ 1 本のファイルであり、
+# この hook が与えるのは「staged なファイルの一覧」だけである。判定・許可
+# リスト・設定ファイル (リポジトリルートの env-guard.conf) の解釈・
+# .env.keys の再帰探索は全てスキャナ側にある。
+#
+# 以前ここで呼んでいた `dotenvx precommit` は外した。precommit は自前の
+# ファイル名フィルタを持っていて上書きできないため、残すと「CI は通るのに
+# hook だけ落ちる」逆向きの分岐を作る。staged ファイルに対する検査内容は
+# 共有スキャナが同じだけ覆う。
+#
+# スキャナの探し方: まず自分自身の隣 (../bin/) を見て、無ければイメージが
+# 置く /usr/local/bin を見る。イメージ内では hook は
+# /usr/local/share/git-hooks/pre-commit にあり ../bin は存在しないので、
+# 必ず /usr/local/bin/env-guard-scan が使われる。リポジトリの作業ツリーから
+# この hook を直接実行したとき (テスト) だけ、隣にある実物が使われる。
+# 順序が逆だと、dev container に古いイメージ由来のスキャナが入っている場合に
+# 「テストは通るが実際に動くのは別の版」という版の食い違いを起こす。
+hook_dir=$(unset CDPATH && cd -- "$(dirname -- "$0")" && pwd)
+if [ -x "$hook_dir/../bin/env-guard-scan" ]; then
+  scan="$hook_dir/../bin/env-guard-scan"
+elif [ -x /usr/local/bin/env-guard-scan ]; then
+  scan=/usr/local/bin/env-guard-scan
+else
+  echo "❌ env-guard: scanner not found (looked in $hook_dir/../bin and /usr/local/bin)." >&2
+  echo "   Refusing to commit while this check cannot run." >&2
   exit 1
 fi
 
-dotenvx precommit
+# 一覧の作成に失敗したら通さない (fail-closed)。空の一覧は「検査対象が
+# 無かった」を意味するが、コマンド自体の失敗も同じ「空」に化けるため区別
+# する。`if ! ...; then` の形にするのは、set -e で何も言わずに落ちると
+# 踏んだ人間が理由に辿り着けないため。
+staged=$(mktemp)
+if ! git diff --cached --name-only >"$staged"; then
+  rm -f "$staged"
+  echo "❌ env-guard: could not list the staged files (git diff --cached failed)." >&2
+  echo "   Nothing was inspected, so this is not a pass." >&2
+  exit 1
+fi
+
+scan_rc=0
+"$scan" <"$staged" || scan_rc=$?
+rm -f "$staged"
+if [ "$scan_rc" -ne 0 ]; then
+  exit "$scan_rc"
+fi
 
 for h in "$root/.husky/pre-commit" "$root/.githooks/pre-commit"; do
   if [ -x "$h" ]; then "$h"; fi
