@@ -3,7 +3,7 @@
 `prod-shell.sh`（`docker run` + `--env-file` + workspace bind mount + dev/prod 相互排他チェック）
 で運用しているプロジェクトを、runtime-base + `compose.prod.yaml` の構成へ移す手順。
 
-対象は既存の 4 リポジトリ（Radwisp / acregis / biotechgrid / gachapin）。
+対象は既存の 4 リポジトリ。
 
 **分けて進められる。** 1〜2 は prod の運用を変えずに単独で実施でき、3 以降とは独立している。
 まとめてやると失敗したときにどこが原因か切り分けられなくなる。

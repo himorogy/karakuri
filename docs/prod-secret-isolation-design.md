@@ -804,7 +804,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 
 `create-*` 形式のスキャフォールドは「コピーと置換の手間」を解決するが、「改善を全プロジェクトへ伝播させる」を解決しない。一回きりの生成は、生成した瞬間から全プロジェクトが分岐する。
 
-対象は既存リポジトリ（Radwisp / acregis / biotechgrid / gachapin）であり、新規作成を前提とする `create-*` は形が合わない。`npx @himorogy/karakuri init` / `sync` のような、何度でも実行できる注入コマンドが適切である。既存の後付けスクリプトの思想の延長になる。
+対象は既存の 4 リポジトリであり、新規作成を前提とする `create-*` は形が合わない。`npx @himorogy/karakuri init` / `sync` のような、何度でも実行できる注入コマンドが適切である。既存の後付けスクリプトの思想の延長になる。
 
 生成器のソースは `example/` ではなく `templates/` に置き、公開パッケージに同梱してそこから読む。`example/` は「読むもの」、`templates/` は「実行時に読まれるもの」で役割が異なる。リポジトリのツリーを直接参照すると版の固定ができない。
 
@@ -910,11 +910,11 @@ rev.7 で追加した項目:
 - **対話 prod shell の要否**: stdin 注入は `run` の TTY と両立しない（§4.1）。運用を非対話コマンドに寄せて廃止するのが第一候補。必要になった場合の選択肢は、(a) **二段構え**: `<broker> | docker compose run -dT --rm prod sleep infinity` で注入・起動し、`docker exec -it <container> bash` で TTY を得る（entrypoint 完了後なので /run/secrets は注入済み。退出後の `docker stop` 忘れが唯一の運用リスク）、(b) secret 不要な素の `run` シェル（shim は不在素通しだが、prod container には fallback 資格情報が無いため secret を使うコマンドだけが失敗する）、(c) Linux ホストへの一本化 + `file:` ソース / `/dev/shm` 代替（§4.1）。
 - **実行ホストの一本化**: Mac / Windows ミニ PC のどちらで prod 実行を行うか。swap 経由の露出（R7）はメモリに余裕のある側に寄せるのが一貫する。Linux ホストに一本化できるなら上記 (c) の選択肢も開ける。**rev.5 でこの判断の重みが増した** — `/src` が tmpfs になったため、repo と `node_modules` と pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G、実測の使用量は karakuri 自身で 131M）。依存の重いプロジェクトを載せるなら実行ホストのメモリ量が直接の制約になる。
 - **署名タグの検証**: rev.6 で `GIT_REF` は完全な commit sha を強制するようにした（D21）。署名タグを使いたい場合は `git tag -v` 相当の検証を entrypoint に入れる必要があり、信頼する公開鍵をどこから持ってくるか（イメージに焼く / broker で渡す）が未決。実装するまでは `PROD_ALLOW_MUTABLE_REF=1` が唯一の逃げ道で、これは検証を伴わないため「危険を理解した上での選択」以上のものにはならない。
-- **prod container への egress-guard 適用**: 現行の `compose.prod.yaml` には `cap_add: [NET_ADMIN, NET_RAW]` も firewall 起動もなく、**prod は egress 制限なしで走る**。適用するには capability 追加と root での firewall 初期化が必要で、「能力は最小に」（§4.5 の配置規約）と緊張関係にある。prod は信頼境界の内側（§2.1）だが、依存パッケージの supply chain に対する多層防御としての価値はある。エージェント不在の prod で egress 制御に払うコスト（caps + entrypoint の root 化）が見合うか、実装時に判断する。
+- **prod container への egress-guard 適用**: `compose.prod.yaml` は `cap_add: [NET_ADMIN, NET_RAW]` も firewall 起動も持たない。したがって**この構成のままでは prod に egress 制限は掛からない**。適用するには capability 追加と root での firewall 初期化が必要で、「能力は最小に」（§4.5 の配置規約）と緊張関係にある。prod は信頼境界の内側（§2.1）だが、依存パッケージの supply chain に対する多層防御としての価値はある。エージェント不在の prod で egress 制御に払うコスト（caps + entrypoint の root 化）が見合うか、実装時に判断する。
 
   **rev.6 でこの項目の重みが増した。** `--no-armor` をイメージ側で強制しないと決めた（D20）ため、dotenvx 2.x が既定で有効にする Armor（秘密鍵をリモートに置く仕組み）への経路が prod に残る。本設計は秘密鍵を broker → stdin → `/run/secrets` → shim の一本道で運ぶと決めており、リモート解決はその外側にある。フラグを個別に追いかけるより、**egress を面で塞ぐ方が筋がいい** — Armor だけでなく `bw://`（Bitwarden 参照）や将来増える同種の機構もまとめて止まる。
 
-  **ただし現状は「繰延」であって「緩和」ではない（rev.7 で明示）。** 方向が正しいことと、今日の状態が守られていることは別である。フラグも無く面も無い期間、この経路は全開のまま放置されている。この空白を埋めるための暫定措置を以下に置く。
+  **ただしこれは「繰延」であって「緩和」ではない（rev.7 で明示）。** 方向が正しいことと、その方向がまだ実装されていない間の状態が守られていることは、別である。フラグによる個別の抑止も面による遮断も無い構成では、この経路は開いたままになる。その空白を埋めるための暫定措置を以下に置く。
 
   - prod の運用手順書に `dotenvx run` の必須オプションとして `--strict --no-armor` を明記する（§6.2 に記載済み）
   - `--strict` の欠落は shim が警告する（D22）。**`--no-armor` の欠落には対応する警告を置かない** — `--strict` の欠落が「静かに壊れた値で動く」という自分の環境内で完結する事故なのに対し、`--no-armor` の欠落は「外へ出る」事故であり、警告で足りる性質ではないと判断した。面で塞ぐまでは残余リスクとして開いたまま数える（R12）
