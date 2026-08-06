@@ -34,6 +34,12 @@ on:
     paths:
       - "images/runtime-base/**"
       - "!images/runtime-base/**/*.md"
+      # イメージは packages/env-guard のスキャナと hook を named build
+      # context 経由で焼き込む。ここを見ていないと、スキャナだけを変えた
+      # 変更に対してイメージの検証が黙って飛ぶ。*.md だけ外すのは、
+      # 上と同じ理由 (paths を狭めるより広い側へずらす)。
+      - "packages/env-guard/**"
+      - "!packages/env-guard/**/*.md"
       - "!images/runtime-base/templates/**"
       - ".github/workflows/runtime-base.yml"
   workflow_dispatch:
