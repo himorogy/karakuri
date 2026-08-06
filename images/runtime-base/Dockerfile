@@ -242,11 +242,18 @@ RUN mkdir -p /src && chown ${USERNAME}:${USERNAME} /src
 # ファイルの一覧を渡すだけ。判定の実装が 2 つあると、パターンを揃えても
 # 「hook は通るのに CI で落ちる」が必ず残るため、実装ごと 1 本にしてある
 # (設計書 §8.2)。hook は /usr/local/bin/env-guard-scan を絶対パスで解決する。
-COPY bin/env-guard-scan /usr/local/bin/env-guard-scan
+#
+# スキャナと hook の実体は packages/env-guard にある。ビルドコンテキストは
+# images/runtime-base のままなので、そこは named build context `env-guard`
+# として別に供給する。ビルドする側は
+# `--build-context env-guard=packages/env-guard` (GitHub Actions では
+# docker/build-push-action の build-contexts 入力) を渡すこと。渡さなければ
+# 以下の COPY で落ちる。
+COPY --from=env-guard bin/env-guard-scan /usr/local/bin/env-guard-scan
 RUN chown root:root /usr/local/bin/env-guard-scan \
     && chmod 0755 /usr/local/bin/env-guard-scan
 
-COPY hooks/pre-commit /usr/local/share/git-hooks/pre-commit
+COPY --from=env-guard hooks/pre-commit /usr/local/share/git-hooks/pre-commit
 RUN chown root:root /usr/local/share/git-hooks/pre-commit \
     && chmod 0755 /usr/local/share/git-hooks/pre-commit \
     && git config --system core.hooksPath /usr/local/share/git-hooks

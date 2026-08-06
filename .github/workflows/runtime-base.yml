@@ -139,6 +139,14 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ env.CONTEXT }}
+          # スキャナと pre-commit hook の実体は packages/env-guard にあり、
+          # ビルドコンテキストの外にある。コンテキストを広げる代わりに、
+          # 必要なディレクトリだけを named build context として追加で供給する。
+          # Dockerfile 側は `COPY --from=env-guard ...` で受ける。
+          # runtime-base-verify.yml のビルドにも同じ行が要る（片方だけだと
+          # もう片方のビルドが COPY で落ちる）。
+          build-contexts: |
+            env-guard=packages/env-guard
           platforms: linux/amd64,linux/arm64
           push: ${{ steps.cond.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}

@@ -11,21 +11,28 @@
 #
 # 検査の強さは「読者が参照先に到達できるか」で二段に分ける。
 #
-#   strict  … templates/ と README。記号は残せない。README はこのリポジトリ
-#             に留まるので docs/ 配下の文書はパスで参照してよいが、
-#             templates/ は他リポジトリへ丸ごとコピーされるため、そこでは
+#   strict  … 他リポジトリ・他 org へ丸ごと出るもの。記号は残せない。
+#             images/runtime-base の README はこのリポジトリに留まるので
+#             docs/ 配下の文書はパスで参照してよいが、templates/ と
+#             packages/env-guard の README は受け取った側の手元へ渡るため、
 #             docs/ へのパスも解決できない (下の別検査で見る)
 #   lenient … イメージに COPY されるコード (bin / shims / hooks)。コメントは
 #             docs/ の文書をフルパスで参照してよいが、記号を裸で置くことと、
 #             echo/printf で外へ出す文字列に記号を混ぜることは許さない
 #
-# 対象は runtime-base の出荷物に限る。images/devcontainer-base の文書が参照して
-# いるのは docs/secure-publish.md と自分自身の節番号なので、受け取った側が
-# 辿れないという問題が起きない。
+# 対象は runtime-base の出荷物と、そこへ焼き込まれる packages/env-guard の
+# 出荷物である。スキャナと pre-commit hook は packages/env-guard へ移したが、
+# イメージに入るコードであることは変わらないので lenient のままにしてある。
+# packages/env-guard/README.md は npm パッケージとして他 org の手元へ渡るので
+# templates/ と同じ strict 扱いにする。
+#
+# images/devcontainer-base の文書が参照しているのは docs/secure-publish.md と
+# 自分自身の節番号なので、受け取った側が辿れないという問題が起きない。
 #
 set -uo pipefail
 
 IMG_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+GUARD_DIR="$(cd "$IMG_DIR/../../packages/env-guard" && pwd)"
 
 PASS=0
 FAIL=0
@@ -107,9 +114,39 @@ ${hits}
 	fi
 }
 
+# check() は存在しないファイルを黙って飛ばすので、対象の置き場が変わったとき
+# に「1 件も見ずに緑」へ倒れうる。出荷物が移動したらここで止まるように、
+# 一覧を組む段で在ることを確かめる。
+
+die() {
+	printf 'FATAL %s\n' "$1" >&2
+	exit 1
+}
+
+# list_files <ディレクトリ...> — 配下の全ファイルのパスを stdout に出す。
+# ディレクトリが無い、または 1 件も入っていなければ落ちる。
+list_files() {
+	local d found
+	for d in "$@"; do
+		[ -d "$d" ] || die "検査対象のディレクトリが無い: $d"
+		found="$(find "$d" -type f | sort)"
+		[ -n "$found" ] || die "検査対象のディレクトリが空: $d"
+		printf '%s\n' "$found"
+	done
+}
+
+# require_files <ファイル...> — 無ければ落ちる。
+require_files() {
+	local f
+	for f in "$@"; do
+		[ -f "$f" ] || die "検査対象のファイルが無い: $f"
+	done
+}
+
 # --- strict: 他リポジトリ・他 org へ出るもの ---------------------------------------
 
-mapfile -t TEMPLATE_FILES < <(find "$IMG_DIR/templates" -type f | sort)
+TEMPLATE_LIST="$(list_files "$IMG_DIR/templates")" || exit 1
+mapfile -t TEMPLATE_FILES <<<"$TEMPLATE_LIST"
 
 check "templates/ に設計文書内でしか通じない記号が無い" scan_strict "${TEMPLATE_FILES[@]}"
 
@@ -117,14 +154,34 @@ check "templates/ に設計文書内でしか通じない記号が無い" scan_s
 check "templates/ がコピー先で解決できない設計文書のパスを持たない" scan_design_doc \
 	"${TEMPLATE_FILES[@]}"
 
-# README はこのリポジトリに留まるので、docs/ 配下へのリンクは辿れる。
-# 禁じるのは記号だけ。
+# packages/env-guard の README は npm パッケージとして他 org の手元へ渡る。
+# templates と同じ扱いで、記号もこのリポジトリ内のパスも許さない。
+GUARD_README="$GUARD_DIR/README.md"
+require_files "$GUARD_README"
+
+check "env-guard の README に設計文書内でしか通じない記号が無い" scan_strict "$GUARD_README"
+check "env-guard の README が受け取った側で解決できない設計文書のパスを持たない" \
+	scan_design_doc "$GUARD_README"
+
+# runtime-base の README はこのリポジトリに留まるので、docs/ 配下へのリンクは
+# 辿れる。禁じるのは記号だけ。
+require_files "$IMG_DIR/README.md" "$IMG_DIR/migration.md"
+
 check "README に設計文書内でしか通じない記号が無い" scan_strict \
 	"$IMG_DIR/README.md" "$IMG_DIR/migration.md"
 
 # --- lenient: イメージに COPY されるコード -----------------------------------------
+#
+# スキャナと pre-commit hook は packages/env-guard にあるが、named build
+# context 経由でイメージへ焼き込まれるので、runtime-base の bin / shims と
+# 同じ扱いで見る。
 
-mapfile -t BAKED_FILES < <(find "$IMG_DIR/bin" "$IMG_DIR/shims" "$IMG_DIR/hooks" -type f | sort)
+BAKED_LIST="$(list_files \
+	"$IMG_DIR/bin" \
+	"$IMG_DIR/shims" \
+	"$GUARD_DIR/bin" \
+	"$GUARD_DIR/hooks")" || exit 1
+mapfile -t BAKED_FILES <<<"$BAKED_LIST"
 
 check "イメージに入るコードに裸の記号が無い / 出力文字列に記号が無い" scan_lenient "${BAKED_FILES[@]}"
 

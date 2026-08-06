@@ -2,7 +2,7 @@
 #
 # 各プロジェクトの `.github/workflows/env-guard.yml` としてこのまま置く。
 # 検査ロジックはこのファイルにも、呼び出す先の workflow にも入っていない。
-# karakuri の images/runtime-base/bin/env-guard-scan という 1 本のスキャナに
+# karakuri の packages/env-guard/bin/env-guard-scan という 1 本のスキャナに
 # 集約してあり、workflow はそれを取り出して tracked ファイルの一覧を流す
 # だけである。プロジェクト側に残るのは下の 4 行だけになる。
 #

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 共有スキャナ bin/env-guard-scan の検証。
+# 共有スキャナ packages/env-guard/bin/env-guard-scan の検証。
 #
 # 一番大事なのは「平文を実際に検出できること」である。緑になる検査より
 # 先に、赤くなるべき入力で赤くなることを確かめる。このリポジトリでは過去に
@@ -11,10 +11,14 @@
 # 二番目に大事なのが、コミット時の hook と CI が**同じ判定**を返すこと。
 # 以前は hook が `dotenvx precommit`、CI が workflow 内のインライン走査で、
 # 実装が 2 つあった。パターンだけ揃えても判定が別なら「hook は通るのに CI
-# で落ちる」は残る。今は両者とも images/runtime-base/bin/env-guard-scan を
+# で落ちる」は残る。今は両者とも packages/env-guard/bin/env-guard-scan を
 # 呼び、違うのは与えるファイル一覧の作り方（staged か tracked か）だけで
 # ある。同じ fixture を両方の入口から通して、終了コードだけでなく出力まで
 # 一致することを確かめる。
+#
+# スキャナと hook はイメージではなく packages/env-guard の持ち物である
+# （イメージへは named build context 経由で焼き込む）。テストはリポジトリ
+# ルートから辿って、その 1 本を直接叩く。
 #
 # fixture の git リポジトリは `git init` + `git add` だけで作る。
 # 「tracked」= index に載っていることなので commit は不要であり、
@@ -24,9 +28,9 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SCANNER="$SCRIPT_DIR/bin/env-guard-scan"
-HOOK="$SCRIPT_DIR/hooks/pre-commit"
+GUARD_DIR="$(cd "$(dirname "$0")/../../../packages/env-guard" && pwd)"
+SCANNER="$GUARD_DIR/bin/env-guard-scan"
+HOOK="$GUARD_DIR/hooks/pre-commit"
 
 TMPDIR_TEST="$(mktemp -d)"
 trap 'chmod -R u+rwX "$TMPDIR_TEST" 2>/dev/null; rm -rf "$TMPDIR_TEST"' EXIT

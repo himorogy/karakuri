@@ -16,7 +16,7 @@ jobs:
   # いるのは意図的である。タグ参照にすると PR で変更した版ではなく公開
   # 済みの版が走ってしまい、その PR の変更が CI に掛からない。
   #
-  # 検査の実体は images/runtime-base/bin/env-guard-scan（コミット時の
+  # 検査の実体は packages/env-guard/bin/env-guard-scan（コミット時の
   # pre-commit hook が呼ぶのと同じ 1 本）で、workflow はそれを取り出して
   # tracked ファイルの一覧を流すだけである。そのスキャナが平文を実際に
   # 検出できること、および hook と CI が同じ判定を返すことの証明は、この

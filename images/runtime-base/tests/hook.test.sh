@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# hooks/pre-commit の .env.keys 検査を docker なしで検証する。
+# packages/env-guard/hooks/pre-commit の .env.keys 検査を docker なしで
+# 検証する。
 #
 # 本番では core.hooksPath 経由でイメージから効かせる hook だが、ここでは
 # hook スクリプトそのものを、mktemp -d に作ったローカル repo の中で直接
@@ -8,7 +9,8 @@
 # で決めるため、cd した先の repo がそのまま対象になり、パスの書き換え
 # (shim.test.sh 等の sed) は要らない。
 #
-# hook は検査そのものを共有スキャナ (bin/env-guard-scan) へ委ねており、
+# hook は検査そのものを共有スキャナ (packages/env-guard/bin/env-guard-scan)
+# へ委ねており、
 # .env.keys の探索もそちらにある。ここで見るのは「hook 経由でその検査が
 # 効いていること」であり、hook と CI の判定が一致することは
 # env-guard.test.sh が見る。以前ここに置いていたフェイクの dotenvx は、
@@ -16,8 +18,7 @@
 #
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_SRC="$SCRIPT_DIR/hooks/pre-commit"
+HOOK_SRC="$(cd "$(dirname "$0")/../../../packages/env-guard" && pwd)/hooks/pre-commit"
 
 PASS=0
 FAIL=0

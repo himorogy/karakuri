@@ -10,7 +10,7 @@ name: env-guard
 # 判定は 1 本。ここが変えるのはスコープだけ
 #
 # 検査ロジックそのものはこの workflow には無い。karakuri の
-# images/runtime-base/bin/env-guard-scan 1 本に寄せてあり、コミット時の
+# packages/env-guard/bin/env-guard-scan 1 本に寄せてあり、コミット時の
 # pre-commit hook (イメージが /usr/local/bin へ COPY したもの) が呼ぶのと
 # 同じファイルである。この workflow の仕事は「tracked なファイルの一覧を
 # 作ってスキャナへ流す」ことだけ。
@@ -108,7 +108,7 @@ jobs:
           echo
           echo "呼び出し側の作業ツリーにスキャナがあるか (ローカルパス呼び出しなら"
           echo "同じリポジトリなので存在するはず):"
-          ls -l images/runtime-base/bin/env-guard-scan 2>&1 || true
+          ls -l packages/env-guard/bin/env-guard-scan 2>&1 || true
 
       - name: Resolve the karakuri ref this workflow came from
         id: src
@@ -145,12 +145,12 @@ jobs:
           #
           # その状態が成立するのは、呼び出し側が karakuri のツリーを持って
           # いるときだけで、それはまさにローカルパス呼び出しの形である。他 org
-          # のプロジェクトに images/runtime-base/bin/env-guard-scan は無いので、
+          # のプロジェクトに packages/env-guard/bin/env-guard-scan は無いので、
           # 見つからなければ従来どおり落ちる (fail-closed は維持)。
           #
           # self-call ではこちらの方が正しくもある: タグが指すスキャナではなく、
           # いま検査されている PR のスキャナが走る。版の食い違いは起きえない。
-          if [ -s images/runtime-base/bin/env-guard-scan ]; then
+          if [ -s packages/env-guard/bin/env-guard-scan ]; then
             echo "mode=in-tree" >>"$GITHUB_OUTPUT"
             echo "scanner source: the caller's own checkout (this workflow was called by path)"
             exit 0
@@ -184,8 +184,8 @@ jobs:
         run: |
           set -u
           case "$MODE" in
-          remote) src=karakuri-env-guard-src/images/runtime-base/bin/env-guard-scan ;;
-          in-tree) src=images/runtime-base/bin/env-guard-scan ;;
+          remote) src=karakuri-env-guard-src/packages/env-guard/bin/env-guard-scan ;;
+          in-tree) src=packages/env-guard/bin/env-guard-scan ;;
           *)
             echo "❌ env-guard: internal error — unknown scanner source mode '$MODE'."
             exit 1
