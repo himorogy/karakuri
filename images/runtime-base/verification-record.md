@@ -47,6 +47,34 @@ dotenvx run -f .env.test -- printenv FOO  → bar
 
 1.75.1 で暗号化した `.env.legacy` を 2.19.2 が復号できた。既存 4 repo の移行に障害はない。
 
+### shim 経由の鍵注入と鍵の選択 — 正しく動く（2 回目、項目 41b の一部）
+
+```
+/run/secrets/DOTENV_PRIVATE_KEY_TEST 経由の dotenvx get -f .env.test FOO → bar
+ls -la 前後で差分なし（ファイルを作らない）
+_LOCAL と _TEST を同時に置いた状態で
+  -f .env.test  → from-test
+  -f .env.local → from-local
+```
+
+複数鍵が同居してもファイル名規約で正しい鍵が選ばれる。`dotenvx get` はファイルを作らない。
+
+### dotenvx を最上位に置けば内側のローカル dotenvx にも鍵が届く（項目 41b に決着）
+
+```
+ケース A: pnpm deploy を直接    → rc=0、FOO=encrypted:BAZG/... （下記 0.1）
+ケース B: dotenvx run -f .env.test -- pnpm deploy → rc=0、FOO=bar
+```
+
+ケース B では外側の dotenvx が shim に解決され、export された鍵を内側が継承する
+（内側は `injected env (0)` — 既存の環境変数が優先されるため再注入しないだけで、値は正しい）。
+README / migration に反映済みの運用規約は正しい。
+
+### 匿名 volume は `compose run --rm` で削除される（項目 39 の関連）
+
+run 中に作られた匿名 volume を特定し、run 後に消えていることを確認した。
+`/src` は tmpfs にする方針なので直接は使わないが、記録として残す。
+
 ---
 
 ## 0.1 CI 実測で見つかった新しい穴 — dotenvx の復号失敗が rc=0（I6 違反）
@@ -66,8 +94,40 @@ encrypted:BCPs3nYvfTmgwPuAtSPwucWaifAAJet7fw4j3ZN5qI2CVRSxyevY4dyvnMNh3/oET...
 これは I6（secret の欠落が沈黙した成功にならない）に真っ向から反する。「dotenvx を最上位に
 置く」という運用規約では塞げない — 規約を守り損ねたときの失敗が**静か**なままだからである。
 
-対処の候補は測定項目 M8 で測る（`dotenvx run --strict` の有無、鍵なし `get` の rc、注入値の
-`encrypted:` 接頭辞による呼び出し側での検出）。設計は測定結果を見てから決め、rev.5 に入れる。
+**対処は測定で確定した（2 回目、M8）。**
+
+```
+dotenvx run --help  →  --strict   process.exit(1) on any errors (default: false)
+
+鍵なし dotenvx run --strict -f .env.test -- printenv FOO  → rc=1
+鍵なし dotenvx get -f .env.test FOO                       → rc=1（ただし暗号文は stdout に出る）
+注入値の encrypted: 接頭辞を呼び出し側で検査                → rc=1（検出できる）
+```
+
+- **`--strict` が正解。** 存在し、復号失敗で `process.exit(1)` する。**prod で `dotenvx run` を
+  使うときは必須**とし、rev.5 で設計書へ入れる（運用規約ではなく、欠けたら壊れる要件として）。
+- `dotenvx get` は既定で rc=1 を返す。緩いのは `run` だけ。ただし `get` は失敗時も暗号文を
+  stdout に出すので、パイプで受ける側は rc を見ること。
+- `encrypted:` 接頭辞の検査は第二の防波堤として機能する。`--strict` が将来変わった場合の保険。
+
+### 併せて判明: dotenvx 2.x は既定で外部サービスへ手を伸ばす
+
+`dotenvx run --help` に以下がある（いずれも既定で**有効**、無効化フラグの側が用意されている）。
+
+```
+--no-armor        disable Dotenvx Armor features
+--no-native       disable OS secret store features
+--no-1password    disable 1Password secret reference resolution
+--no-bitwarden    disable Bitwarden secret reference resolution
+```
+
+Armor は Dotenvx のホスト型サービスであり、`.env` 内の参照や token の解決でネットワークへ出る
+経路になりうる。prod container は「変わらないこと」と決定性に価値がある層なので、
+**prod では `--no-armor` を付ける**方向で rev.5 に入れる。`--no-native` はコンテナに OS
+キーチェーンが無いので実害はないが、意図を明示する意味で併記を検討する。1Password /
+Bitwarden も同様。設計書 §11 の「prod への egress-guard 適用」とも関係する。
+
+なお 1.x にはこれらのフラグが無い（機能自体が無い）。2.x へ上げたことで新しく増えた面である。
 
 ---
 
@@ -86,6 +146,32 @@ encrypted:BCPs3nYvfTmgwPuAtSPwucWaifAAJet7fw4j3ZN5qI2CVRSxyevY4dyvnMNh3/oET...
 
 いずれも修正済み。ハーネスは前提のセットアップを測定前に検査し、失敗時は `HARNESS ERROR` を
 1 度だけ出して依存ケースを `SKIPPED (harness setup failed)` にするようにした。
+
+## 0.3 CI 2 回目（2026-08-06）— bind mount は効いたが `safe.directory` のスコープで止まった
+
+bind mount は正しく効き、git は bare repo に到達した。次の壁はこれ。
+
+```
+fatal: detected dubious ownership in repository at '/tmp/.../test-bare.git'
+```
+
+`$SCRATCH` はランナーのユーザー所有、コンテナは uid 1000 で走るため必ず踏む。
+
+**`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` による `safe.directory` は効かない。**
+git は `safe.directory` を protected configuration（system / global）からしか読まない。`-c` と
+`GIT_CONFIG_*` はコマンドライン相当のスコープとして扱われ、**意図的に無視される** — そうしないと
+信頼できないリポジトリ自身がこの検査を無効化できてしまうため。
+
+対処は `GIT_CONFIG_GLOBAL` に差し替えた。これは global スコープの config ファイルの場所を
+置き換えるので `safe.directory` が読まれる。修正済み・3 回目で確認する。
+
+この dubious ownership 自体は**ハーネス固有の事情**である。実運用の `GIT_REPO` は https URL で、
+ローカルの所有者検査は関与しない。
+
+2 回目で新たに正しい経路を通ったもの: A7 / A8 / A9（`/run` の tmpfs を uid 形にしたことで、
+entrypoint が `mkdir` で死なずに stdin のパースまで到達するようになった）。
+
+依然として未測定: M1 の compose 経由分、M2 の全項目、M6 の全項目、A5 / A6 / A10 / A16。
 
 ---
 

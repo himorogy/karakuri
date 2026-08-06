@@ -237,14 +237,31 @@ echo "self bare repo: $SELF_BARE_DIR (commit=$SELF_COMMIT)"
 # 加えて、file:// fetch は git-upload-pack をコンテナ内で起動するが、
 # git 2.35+ の safe.directory (CVE-2022-24765 対策) は「実行ユーザーと
 # リポジトリ所有者の uid が一致しない」bare repo を "detected dubious
-# ownership" として拒否することがある。これはこの dev container に docker
-# が無く実機で踏んだことがないため未確認 — 対処として
-# GIT_CONFIG_COUNT=1 / GIT_CONFIG_KEY_0=safe.directory /
-# GIT_CONFIG_VALUE_0=* をコンテナの環境変数へ入れる (docker_prod_run() /
-# 各 compose ファイルの environment: を参照)。chmod と safe.directory の
-# どちらが効いているか (あるいは両方要るか) はこの CI 実行で判明するはず
-# なので、切り分けやすいよう両方とも入れておく。
+# ownership" として拒否する。$SCRATCH はランナーのユーザー所有で、コンテナは
+# uid 1000 で走るため必ず踏む (2026-08-06 の CI 1 回目で実測)。
+#
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 で
+# safe.directory を渡しても**効かない**。git は safe.directory を
+# protected configuration (system / global) からしか読まない。-c や
+# GIT_CONFIG_* はコマンドライン相当のスコープとして扱われ、意図的に無視
+# される — そうしないと、信頼できないリポジトリ自身がこの検査を無効化
+# できてしまうため。CI 1 回目はこれで preflight ごと落ちた。
+#
+# 効くのは GIT_CONFIG_GLOBAL で、これは「global スコープの config ファイル
+# の場所」を差し替えるので safe.directory が読まれる。読み取り専用で
+# マウント済みの $SCRATCH 上に置き、各コンテナへ環境変数で渡す。
+#
+# なお、この dubious ownership 自体はハーネス固有の事情である。実運用の
+# GIT_REPO は https URL であり、ローカルの所有者検査は関与しない。
 chmod -R a+rX "$SCRATCH"
+
+SAFE_GITCONFIG="$SCRATCH/gitconfig-safe"
+cat >"$SAFE_GITCONFIG" <<'EOF'
+[safe]
+	directory = *
+EOF
+chmod a+r "$SAFE_GITCONFIG"
+export SAFE_GITCONFIG
 
 # --- compose ファイル生成 --------------------------------------------------------
 # templates/compose.prod.yaml は変更しない (rev.5 確定後にオーケストレーターが
@@ -266,9 +283,9 @@ chmod -R a+rX "$SCRATCH"
 # バグ1: bare repo (file:// URL) をコンテナ内の git から見えるように
 # $SCRATCH をそのまま (ホスト側パス=コンテナ内パス) 読み取り専用で
 # bind mount する。read_only: true は追加の bind mount を妨げない。
-# GIT_CONFIG_COUNT/KEY_0/VALUE_0 は git の safe.directory を全許可にする
-# (dubious ownership 対策、未確認・推測。詳細は $SCRATCH の chmod 直前の
-# コメント参照)。
+# GIT_CONFIG_GLOBAL は git の safe.directory を全許可にした config を
+# global スコープとして読ませる (dubious ownership 対策。GIT_CONFIG_* 形式
+# では効かない理由は $SCRATCH の chmod 直前のコメント参照)。
 cat >"$SCRATCH/compose-current.yaml" <<'EOS'
 volumes:
   prod-src:
@@ -281,9 +298,7 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF:  ${GIT_REF:?GIT_REF is required}
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: "safe.directory"
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}
     volumes:
       - prod-src:/src
       - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
@@ -318,9 +333,7 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF:  ${GIT_REF:?GIT_REF is required}
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: "safe.directory"
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}
     volumes:
       - prod-src:/src
       - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
@@ -350,9 +363,7 @@ services:
     environment:
       GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
       GIT_REF:  ${GIT_REF:?GIT_REF is required}
-      GIT_CONFIG_COUNT: "1"
-      GIT_CONFIG_KEY_0: "safe.directory"
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}
     volumes:
       - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
     read_only: true
@@ -397,9 +408,10 @@ sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
 # -v "$SCRATCH:$SCRATCH:ro" (バグ1): bare repo を作った先そのままの
 # パスでコンテナへ bind mount する。ホスト側とコンテナ側でパスを分けない
 # ことで、生成済みの GIT_REPO=file://$SCRATCH/... URL をそのまま使い回せる。
-# GIT_CONFIG_* (バグ1): git の safe.directory を全許可にする。$SCRATCH の
-# chmod と合わせて両方入れてある (詳細は $SCRATCH の chmod 直前のコメント
-# 参照、未確認・推測)。
+# GIT_CONFIG_GLOBAL (バグ1): git の safe.directory を全許可にした config を
+# global スコープとして読ませる。GIT_CONFIG_COUNT/KEY_0/VALUE_0 の形式では
+# 効かない (git は safe.directory を protected configuration からしか読ま
+# ない。詳細は $SCRATCH の chmod 直前のコメント参照)。
 docker_prod_run() {
 	local repo="$1" ref="$2" stdin_payload="$3"
 	shift 3
@@ -414,9 +426,7 @@ docker_prod_run() {
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="$repo" -e GIT_REF="$ref" \
-		-e GIT_CONFIG_COUNT=1 \
-		-e GIT_CONFIG_KEY_0=safe.directory \
-		-e GIT_CONFIG_VALUE_0='*' \
+		-e GIT_CONFIG_GLOBAL="$SAFE_GITCONFIG" \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" "$@"
 }
@@ -1150,9 +1160,7 @@ a6_no_secret_in_inspect() {
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
-		-e GIT_CONFIG_COUNT=1 \
-		-e GIT_CONFIG_KEY_0=safe.directory \
-		-e GIT_CONFIG_VALUE_0='*' \
+		-e GIT_CONFIG_GLOBAL="$SAFE_GITCONFIG" \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
 		"$IMG" true)"
 	printf 'FOO=bar\nDOTENV_PRIVATE_KEY_TEST=%s\n' "$marker" | docker start -ai "$cid" >/dev/null 2>&1 || rc=$?
@@ -1281,9 +1289,7 @@ a16_recovers_from_leftover() {
 		--ulimit core=0 \
 		-v "$SCRATCH:$SCRATCH:ro" \
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
-		-e GIT_CONFIG_COUNT=1 \
-		-e GIT_CONFIG_KEY_0=safe.directory \
-		-e GIT_CONFIG_VALUE_0='*' \
+		-e GIT_CONFIG_GLOBAL="$SAFE_GITCONFIG" \
 		--entrypoint sh \
 		"$IMG" -c '
 			mkdir -p /src/leftover-dir &&
