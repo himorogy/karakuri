@@ -132,7 +132,10 @@ assert() {
 # A16 / B1〜B4) を実行せず SKIPPED として記録する。A11 (GIT_REF 未指定) は
 # compose のパース時点で失敗が確定するため fetch の成否と無関係、A17 (broker
 # 失敗の伝播) も broker 自体が secrets を一切渡さず失敗する経路なので
-# fetch の成否と無関係 — この 2 つはゲートの対象に含めない。A19〜A34 (出荷
+# fetch の成否と無関係 — この 2 つはゲートの対象に含めない。A35 (named
+# volume の /src を tmpfs 自己検査が止める) と M11 (/run が tmpfs でない
+# 構成) も、entrypoint が fetch より前の自己検査で終わる経路なので同様に
+# ゲートの対象に含めない。A19〜A34 (出荷
 # compose.prod.yaml の構造検証) は docker (compose config) は使うが bare
 # repo は使わないため、そもそもこのゲートの対象にならない。
 HARNESS_GIT_OK=1
@@ -616,6 +619,94 @@ services:
 EOS
 sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
 
+# compose-run-volume.yaml: M11 用。secret の置き場 (/run) だけを tmpfs から
+# 外し、ホスト側ディレクトリの bind mount に差し替えた構成。/src は tmpfs
+# (exec 付き) のままにする — entrypoint の自己検査は /src を先に見るため、
+# /src も named volume にすると /run 側の検査に到達しない。
+#
+# named volume ではなく bind mount にする理由: named volume は root 所有で
+# 初期化されるため uid 1000 の `mkdir -p /run/secrets` が先に失敗し、自己
+# 検査に到達するかどうか以前の話になる。ホスト側に uid 1000 が書ける
+# ディレクトリを用意して差せば、少なくとも「secrets を書けるが tmpfs では
+# ない」という、この検査が本当に想定している状況に近づけられる。
+mkdir -p "$SCRATCH/run-bind"
+chmod 0777 "$SCRATCH/run-bind"
+cat >"$SCRATCH/compose-run-volume.yaml" <<'EOS'
+services:
+  prod:
+    image: __IMAGE__
+    entrypoint: ["/usr/local/bin/prod-entrypoint.sh"]
+    working_dir: /src
+    environment:
+      GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
+      GIT_REF:  ${GIT_REF:?GIT_REF is required}
+      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}
+    volumes:
+      - ${SCRATCH_DIR}/run-bind:/run
+      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
+    read_only: true
+    user: "1000:1000"
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+      - /out:uid=1000,gid=1000,mode=0755
+      - /home/node:uid=1000,gid=1000,mode=0755
+      - /src:exec,uid=1000,gid=1000,mode=0755
+    ulimits:
+      core: 0
+    logging:
+      driver: "none"
+EOS
+sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-run-volume.yaml"
+
+# --- tmpfs 自己検査を無効化した entrypoint のコピー (M1 の uid= 形 / M6 用) ----
+#
+# prod-entrypoint.sh に「/src と secret の置き場が tmpfs であること」の自己
+# 検査が入った。これは named volume を /src に差したときのドリフト (前回実行
+# が /src/.git/config に書き残した設定が、次回の entrypoint 自身の git 操作
+# で発火する) への防壁で、A35 が実際に止まることを確認する。
+#
+# 一方 M6 は、まさにその「named volume だと N-1 / N-2 が再現する」ことの
+# 実測記録であり、防壁が入って entrypoint が checkout 前に止まると測定自体
+# が成立しなくなる (M6 は防壁の根拠なので記録として残したい)。M1 の uid= 形
+# (/run stat) も compose-current.yaml 経由で /src が named volume なので
+# 同じ理由で止まる。
+#
+# そこでこの 2 つだけは、自己検査の対象パスをどのマウントとも一致しない
+# 番兵パスへ差し替えたコピーを entrypoint として使う (自己検査は「該当行
+# なし」の WARNING を出して続行する)。entrypoint を経由しない形 (git 操作を
+# 手で並べる) は採らない: N-2 が見たいのは「entrypoint 自身の
+# fetch/checkout/reset/clean が fsmonitor を起動させるか」であり、entrypoint
+# を外すと測定の意味が変わってしまうため。
+#
+# コピー元は作業ツリーの bin/ ではなくイメージの中身にする。両者がずれて
+# いても、M1 / M6 が測るのは常に検証対象のイメージ側になる。
+#
+# sed が効かなかった場合 (entrypoint 側の書き方が変わった場合) は黙って
+# 素通りさせず、ここで落とす。素通りすると M6 が「自己検査で止まった rc=1」
+# を N-1 / N-2 の結果として記録してしまい、偽の測定になる。
+ENTRYPOINT_IMAGE_COPY="$SCRIPTS_DIR/prod-entrypoint-image.sh"
+ENTRYPOINT_NO_TMPFS_CHECK="$SCRIPTS_DIR/prod-entrypoint-no-tmpfs-check.sh"
+if ! docker run --rm --entrypoint cat "$IMG" /usr/local/bin/prod-entrypoint.sh >"$ENTRYPOINT_IMAGE_COPY"; then
+	echo "verify-docker: イメージから /usr/local/bin/prod-entrypoint.sh を取り出せなかった。M1 の uid= 形 / M6 の named volume ケースの前提が作れない。" >&2
+	exit 1
+fi
+cp "$ENTRYPOINT_IMAGE_COPY" "$ENTRYPOINT_NO_TMPFS_CHECK"
+sed -i 's#^\([[:space:]]*\)for mnt_target in .*#\1for mnt_target in /verify-tmpfs-self-check-disabled; do#' \
+	"$ENTRYPOINT_NO_TMPFS_CHECK"
+if grep -q 'for mnt_target in' "$ENTRYPOINT_IMAGE_COPY" &&
+	! grep -q '/verify-tmpfs-self-check-disabled' "$ENTRYPOINT_NO_TMPFS_CHECK"; then
+	echo "verify-docker: tmpfs 自己検査の無効化 (sed 置換) が効いていない。このまま進めると M6 が「自己検査で止まった結果」を N-1 / N-2 の測定として記録してしまうため停止する。" >&2
+	exit 1
+fi
+# $SCRATCH への chmod -R a+rX はこのファイルを作る前に済んでいるため、
+# コンテナ (uid 1000) から読める・実行できるよう個別に付け直す
+# ($SAFE_GITCONFIG と同じ理由)。
+chmod a+rx "$ENTRYPOINT_NO_TMPFS_CHECK"
+
+echo
+echo "=== M1 (uid= 形) / M6 (named volume) 用 entrypoint コピーの diff (tmpfs 自己検査の対象パスだけを番兵へ差し替えている) ==="
+diff -u "$ENTRYPOINT_IMAGE_COPY" "$ENTRYPOINT_NO_TMPFS_CHECK" || true
+
 # --- docker run 共通ラッパー (compose.prod.yaml と等価な docker run flags) -----
 # compose を経由しない ASSERT の多く (A5, A7〜A10, A16 等) は、compose の
 # パーサ挙動そのものではなく entrypoint / shim の挙動を見たいだけなので、
@@ -775,7 +866,14 @@ measure_git M1 "docker compose run (素の短縮形) で node が mkdir /run/sec
 
 m1_compose_uid_stat() {
 	local proj="verify-m1-uid-$$"
+	# --entrypoint (bugfix: tmpfs 自己検査の追加に伴う変更): compose-current.yaml
+	# は /src が named volume なので、素の entrypoint だと自己検査が secrets 取込
+	# の直後に exit 1 し、この測定が見たい `stat /run` に到達しない。ここで
+	# 測りたいのは compose が uid=/gid=/mode= 形を受理するかであって自己検査
+	# ではないため、検査対象パスを番兵へ差し替えたコピーを使う (詳細は setup
+	# の ENTRYPOINT_NO_TMPFS_CHECK のコメント)。
 	compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod sh -c 'stat -c "%a %U:%G" /run' <<<"FOO=bar"
 	compose_down "$SCRATCH/compose-current.yaml" "$proj"
 }
@@ -2002,9 +2100,18 @@ echo "=== M6: N-1 / N-2 と tmpfs 化 ==="
 # --- N-1: ref 汚染 --------------------------------------------------------------
 m6_n1_named_volume() {
 	local proj="verify-m6-n1-$$" rc1=0 rc2=0 out2
+	# --entrypoint (bugfix: tmpfs 自己検査の追加に伴う変更): 素の entrypoint は
+	# named volume の /src を検出して checkout 前に exit 1 するため、N-1 の
+	# 再現 (1st run で打ったタグが 2nd run に残っているか) に到達できない。
+	# ここで残したいのは「named volume だと穴が残る」ことの実測記録なので、
+	# 自己検査の対象パスだけを番兵へ差し替えたコピーを entrypoint に使う
+	# (詳細は setup の ENTRYPOINT_NO_TMPFS_CHECK のコメント。防壁自体が
+	# 効くことは A35 が別途 assert する)。
 	compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod sh -c "git tag v9.9.9 $TEST_COMMIT2" <<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
 	out2="$(compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "v9.9.9" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod cat file.txt <<<"FOO=bar" 2>&1)" || rc2=$?
 	compose_down "$SCRATCH/compose-current.yaml" "$proj"
 	echo "1st run (commit1 を checkout 後、ローカルタグ v9.9.9 を commit2 に打つ): rc=$rc1"
@@ -2032,10 +2139,16 @@ measure_git M6 "tmpfs /src: ref 汚染 (N-1) が消えるか" m6_n1_tmpfs
 # --- N-2: .git/config 持続 (core.fsmonitor) --------------------------------------
 m6_n2_named_volume() {
 	local proj="verify-m6-n2-$$" rc1=0 rc2=0 out2
+	# --entrypoint: m6_n1_named_volume と同じ理由 (tmpfs 自己検査の迂回)。
+	# N-2 は「entrypoint 自身の fetch/checkout/reset/clean が仕込まれた
+	# fsmonitor を起動させるか」を見る測定なので、entrypoint を外す形での
+	# 迂回は採れない。
 	compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod git config core.fsmonitor 'sh -c "echo FSMONITOR_RAN >> /tmp/fsmonitor-marker; exit 1"' \
 		<<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
 	out2="$(compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod cat /tmp/fsmonitor-marker <<<"FOO=bar" 2>&1)" || rc2=$?
 	compose_down "$SCRATCH/compose-current.yaml" "$proj"
 	echo "1st run (core.fsmonitor をローカルに仕込む): rc=$rc1"
@@ -2065,10 +2178,13 @@ measure_git M6 "tmpfs /src: core.fsmonitor 持続 (N-2) が消えるか" m6_n2_t
 # そもそも credential.helper を呼ばない可能性が高いという仮説込みで見ること。
 m6_n2_credential_helper() {
 	local proj="verify-m6-n2-cred-$$" rc1=0 rc2=0 out2
+	# --entrypoint: m6_n1_named_volume と同じ理由 (tmpfs 自己検査の迂回)。
 	compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod git config credential.helper '!cat /run/secrets/GH_TOKEN > /src/.stolen-token 2>/dev/null; echo done' \
 		<<<"FOO=bar" >/dev/null 2>&1 || rc1=$?
 	out2="$(compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		--entrypoint "$ENTRYPOINT_NO_TMPFS_CHECK" \
 		-T --rm prod sh -c 'if [ -f /src/.stolen-token ]; then cat /src/.stolen-token; else echo NOT_PRESENT; fi' \
 		<<<"$(printf 'GH_TOKEN=dummy-gh-token\nFOO=bar\n')" 2>&1)" || rc2=$?
 	compose_down "$SCRATCH/compose-current.yaml" "$proj"
@@ -2248,6 +2364,45 @@ m8_caller_detects_prefix() {
 }
 measure M8 "呼び出し側が注入値の encrypted: 接頭辞で復号失敗を検出できるか" m8_caller_detects_prefix
 
+# =============================================================================
+# M11: secret の置き場 (/run) が tmpfs でない構成で何が起きるか
+#
+# entrypoint の tmpfs 自己検査は /src と「secret を書く先の親」の 2 つを見る。
+# /src 側は A35 が ASSERT として押さえられる (named volume を差せば必ず
+# 検査に到達する) が、/run 側は到達するかどうか自体が未確認である:
+#
+#   - `read_only: true` と /run への bind mount / named volume の併用が
+#     docker/compose に受理されるか
+#   - 受理されても、entrypoint の `mkdir -p /run/secrets` や secret の
+#     書き込みが先に失敗しないか (uid/権限)
+#
+# このどちらかで先に落ちるなら「自己検査までは届かない」が観測結果であり、
+# 自己検査が止めたわけではない。docker の無い環境では確認できないため、
+# ここでは ASSERT にせず MEASURE として生の rc と出力を記録する
+# (推測で ASSERT を書くと、実際には別の理由で落ちているものを「防壁が
+# 効いた」と誤読する — この検証記録が二度踏んでいる偽の合格の形そのもの)。
+#
+# 期待する読み方: 出力に "is not a tmpfs" が含まれていれば自己検査が止めた
+# ことの直接証拠になる。その場合はこの測定を ASSERT へ昇格させてよい。
+# 別の失敗 (compose のパース/起動エラー、mkdir の Permission denied 等) で
+# あれば、その旨を記録に残したうえで ASSERT にはしないこと。
+#
+# fetch 依存ではない (自己検査は fetch より前) ため、A11 / A17 と同じく
+# preflight ゲートの対象にしない = measure_git ではなく measure を使う。
+# =============================================================================
+echo
+echo "=== M11: /run が tmpfs でない構成 ==="
+
+m11_run_not_tmpfs() {
+	local proj="verify-m11-$$" rc=0 out
+	out="$(compose_run "$SCRATCH/compose-run-volume.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod true <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-run-volume.yaml" "$proj"
+	echo "rc=$rc"
+	echo "--- 出力 (自己検査が止めたなら 'is not a tmpfs' を含む) ---"
+	echo "$out"
+}
+measure M11 "/run を tmpfs から bind mount に差し替えた構成で entrypoint が何を出して終わるか" m11_run_not_tmpfs
 
 # =============================================================================
 # ASSERT: 設計上確定している性質。落ちたらスクリプトは最後に非ゼロ終了する。
@@ -2731,6 +2886,40 @@ a34_image_has_sha256_digest() {
 }
 assert A34 'services.prod.image が "@sha256:" を含む (digest pin のまま。タグ参照へ退化していない) [docker compose config の解決結果]' a34_image_has_sha256_digest
 
+# A35: tmpfs 自己検査が named volume の /src を実際に止めること。
+#
+# 単体テスト (entrypoint.test.sh) は /src を tmpdir へ書き換えたコピーを
+# 使うため /proc/mounts のどの mountpoint とも一致せず、「該当行なし →
+# WARNING で続行」の経路しか通らない。「実際に named volume を差したら
+# exit 1 する」は docker が無いと測れないので、ここで確認する。構成は
+# compose-current.yaml (/src が named volume) — M6 が N-1 / N-2 の再現に
+# 使っている、まさにその形。
+#
+# 「落ちた」だけでは足りない (A23 の教訓: 失敗が何も言わない検査は結局
+# 二度手間になる)。/src が tmpfs でないことを名指ししたメッセージが出て
+# いることまで見る。どちらの条件で落ちたのかが分かるよう、失敗時には
+# 実際の rc と出力を stderr へ出す。
+#
+# この経路は fetch より前で終わるため bare repo の到達性に依存しない。
+# A11 / A17 と同じ扱いで assert_git ではなく assert を使う (GIT_REPO には
+# TEST_BARE_DIR を渡すが、自己検査が働けば fetch までは進まない)。
+a35_named_volume_src_rejected() {
+	local proj="verify-a35-$$" rc=0 out
+	out="$(compose_run "$SCRATCH/compose-current.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod true <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-current.yaml" "$proj"
+	if [ "$rc" -eq 0 ]; then
+		echo "entrypoint が exit 0 で完走した (named volume の /src が検出されていない)。実際の出力: $out" >&2
+		return 1
+	fi
+	case "$out" in
+		*"/src is not a tmpfs"*) return 0 ;;
+	esac
+	echo "非ゼロ終了 (rc=$rc) はしたが、/src が tmpfs でないことを名指しするメッセージが無い。実際の出力: $out" >&2
+	return 1
+}
+assert A35 "/src が named volume の構成で entrypoint が非ゼロ終了し、/src が tmpfs でないことを名指しする [compose-current.yaml。自己検査は fetch より前なので harness preflight とは無関係]" a35_named_volume_src_rejected
+
 # =============================================================================
 # B1〜B4: 出荷 templates/compose.prod.yaml からの最小派生の実挙動 (docker が要る)
 #
@@ -2739,6 +2928,13 @@ assert A34 'services.prod.image が "@sha256:" を含む (digest pin のまま�
 # 追加の 3 点だけ (diff は setup ログに出力済み)。bare repo は TEST_BARE_DIR
 # で足りる (pnpm install 等は絡まないので SELF_BARE_DIR は不要)。preflight
 # (bare repo がコンテナから見えるか) に依存するので assert_git() を使う。
+#
+# tmpfs 自己検査の誤検知 (正しい構成なのに落とす) は、この B シリーズが
+# そのまま検出器になっている: B1〜B5 はいずれも出荷ファイル由来の
+# 全 tmpfs 構成 (/src /run /tmp /out /home/node) で素の entrypoint を
+# 完走させる ASSERT なので、自己検査が誤って落とせば B1〜B5 が軒並み
+# FAIL する。同じ理由で docker_prod_run 経由の A5 / A10 / A16 も
+# 検出器として働く。誤検知のための専用 ASSERT は足していない。
 # =============================================================================
 b1_entrypoint_secrets_mode() {
 	local proj="verify-b1-$$" rc=0
