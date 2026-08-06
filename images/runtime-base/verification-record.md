@@ -1022,7 +1022,7 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 | 46 | `node_modules` が named volume か bind mount か | ⛔ | ホスト側 hook のパス解決に影響する |
 | 47 | ホスト側 hook が依存バイナリを解決できない場合に非ゼロ終了する | ⛔ | |
 | 48 | CI（クリーン checkout・差分ゼロ）で `dotenvx precommit` が検出能力を持つか | ✅ | **持たない**ことが確定（下記 §0.8）。設計書は当初案を破棄し、tracked ファイルの直接走査へ差し替えた（D23） |
-| 49 | 他 org の private リポジトリから karakuri の reusable workflow が呼び出せる | ⛔ | 他 org の repo が要る。呼び出し側 org の Actions ポリシーが「選択した actions / reusable workflows のみ許可」の場合に allowlist 追加が要ることは文書化済み（プラン制限ではなく設定項目） |
+| 49 | 他 org の private リポジトリから karakuri の reusable workflow が呼び出せる | ⛔ | 他 org の repo が要る。呼び出し側 org の Actions ポリシーが「選択した actions / reusable workflows のみ許可」の場合に allowlist 追加が要ることは文書化済み（プラン制限ではなく設定項目）。**2026-08-06 以降、これは配布方式を決めるための前提条件ではなくなった** — 項目 63 のとおり、workflow が自分の ref を知る必要が無くなったため。実際に届くかの確認としては残る |
 
 ### rev.7 で追加した項目
 
@@ -1036,11 +1036,13 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 | 56 | dotenvx shim が prod 鍵注入時の `--strict` 欠落だけを警告する | ✅ | `tests/shim.test.sh`（警告の有無で引数と rc が変わらないことを含む） |
 | 57 | prod-context が空の `/run/secrets` で zsh でも完走する | ✅ | `tests/prod-context.test.sh`（zsh 実行込み。旧実装が実際に落ちることも確認済み） |
 | 58 | pre-commit hook がサブディレクトリの `.env.keys` を検出する | ✅ | `tests/hook.test.sh`（`node_modules` 除外、`find` 自体の失敗時の fail-closed を含む） |
-| 59 | env-guard が平文の tracked `.env` を実際に検出する | ✅ | `tests/env-guard.test.sh`。**GitHub Actions 上での実行だけが未実施**（push はユーザーが行う）。下記 §0.11 の否定対照を参照 |
+| 59 | env-guard が平文の tracked `.env` を実際に検出する | ✅ | `tests/env-guard.test.sh`。**GitHub Actions 上でも実行した**（2026-08-06、`ci` の env-guard job が緑。呼び出し側の作業ツリーのスキャナを使う経路）。下記 §0.11 の否定対照を参照 |
 | 60 | hook と CI が同一 fixture に対して同一の判定を返す | ✅ | `tests/env-guard.test.sh`（終了コードだけでなく**出力がバイト単位で同一**であることまで見る）。D24 の本題 |
 | 61 | `env-guard.conf` による上書きが hook と CI の両方に効く | ✅ | 同上（`pattern` / `allow` の双方） |
 | 62 | 設定ファイルが `source` / `eval` されない | ✅ | スキャナは行単位のパースのみで、値をパターン文字列としてしか使わない |
-| 63 | CI が使うスキャナが reusable workflow と同じ版である | ⛔ | **`github.job_workflow_ref` は空だった**（§0.12）。ローカルパス呼び出しでも、同一リポジトリを指す完全参照呼び出しでも空。設計どおり fail-closed で止まる。karakuri 自身（ローカルパス呼び出し）は、呼び出し側の作業ツリーのスキャナを使う経路で通っている。**他 org からの cross-repo 呼び出しで埋まるかどうかは測れていない** — 同一リポジトリを指す呼び出しが内部でローカル扱いされている可能性を排除できないため。**設計書 §8 の範囲**（項目 49 と同じ制約） |
+| 63 | CI が使うスキャナが reusable workflow と同じ版である | ✅ | **問いの立て方を変えて解いた**（2026-08-06）。`github.job_workflow_ref` は実測で空であり（§0.12）、そこから karakuri の ref を割り出す方式は成立しなかった。スキャナを npm パッケージにしたことで、**版を workflow ファイル自身に書ける**ようになり、自分の ref を知る必要が消えた。取得物は SHA256 で照合してから実行する（版の固定だけでは改竄に対して無力。`npm pack` は取得物を検証しない）。karakuri 自身は npm 経由にせず作業ツリーのスキャナを使う — そうしないと、スキャナを変更する PR が変更前の公開済みスキャナで検査される |
+| 65 | イメージが named build context 経由でスキャナと hook を焼き込める | ✅ | 2026-08-06、`runtime-base` と `runtime-base-verify` の**両方**のビルドが通った。`build-contexts: env-guard=packages/env-guard` + `COPY --from=env-guard`。ビルドコンテキストは `images/runtime-base` のまま広げていない。**片方の workflow にだけ足すともう片方が `COPY` で落ちる**ので、両方で通ったことに意味がある |
+| 66 | npm から取得したスキャナの SHA256 照合が改竄を検知する | ⬜ | GitHub Actions 上では未実施（他リポジトリから呼ばれるまで走らない）。**照合ロジック自体は手元で否定対照を取ってある** — 正しいハッシュで通り、期待値を 1 文字変えると非ゼロ、取得物を 1 バイト書き換えても非ゼロ。いずれの失敗でも実行可能なファイルが残らない（照合前に `chmod +x` へ到達しない） |
 | 64 | 検出時の出力に平文の値が含まれない | ✅ | `tests/env-guard.test.sh`（`=` を含まない行では鍵名すら出さない経路を含む） |
 
 ---
