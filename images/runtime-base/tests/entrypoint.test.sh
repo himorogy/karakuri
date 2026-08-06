@@ -192,6 +192,45 @@ else
 fi
 rm -rf "$t"
 
+# --- 4d. GIT_REPO に資格情報を埋めた URL -> 非ゼロ終了、トークンは出力しない ----
+#     URL に埋めた資格情報は remote set-url により .git/config へ残り、
+#     exec 後の信頼しないコードから `git config remote.origin.url` で読める。
+#     この拒否は remote 設定より前 (git 操作より前) に置いているため、git の
+#     有無に関わらず検証できる。
+t="$(mktemp -d)"
+make_entrypoint "$t"
+token_marker="ghp_TOKENMARKER_$$"
+out="$(printf 'FOO=bar\n' |
+	env GIT_REPO="https://user:$token_marker@example.invalid/owner/repo.git" GIT_REF=unused \
+		"$t/entrypoint.sh" true 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ] &&
+	printf '%s\n' "$out" | grep -q "must not embed credentials" &&
+	! printf '%s\n' "$out" | grep -q "$token_marker"; then
+	ok "GIT_REPO への資格情報埋め込み -> 非ゼロ終了、stderr にトークンが出ない"
+else
+	ng "GIT_REPO への資格情報埋め込み -> 非ゼロ終了、stderr にトークンが出ない (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# --- 4e. ssh 形式の GIT_REPO は資格情報チェックに引っかからない -----------------
+#     git@github.com:owner/repo.git は "://" を含まないため *://*@* に一致
+#     しない。ここでは fetch できない URL なので最終的には失敗するが、その
+#     失敗が「資格情報が埋まっている」ではないことだけを確認する。
+#     GIT_SSH_COMMAND=/bin/false を渡して、テストが実際に ssh (名前解決や
+#     ホスト鍵の確認) を試みないようにする。
+t="$(mktemp -d)"
+make_entrypoint "$t"
+out="$(printf 'FOO=bar\n' |
+	env GIT_REPO="git@example.invalid:owner/repo.git" GIT_REF=unused GIT_SSH_COMMAND=/bin/false \
+		"$t/entrypoint.sh" true 2>&1)"
+if ! printf '%s\n' "$out" | grep -q "must not embed credentials"; then
+	ok "ssh 形式の GIT_REPO は資格情報チェックで拒否されない"
+else
+	ng "ssh 形式の GIT_REPO は資格情報チェックで拒否されない (out=$out)"
+fi
+rm -rf "$t"
+
 # --- 5. 引数なし -> 非ゼロ終了 (git 操作を伴わずに検証可能な範囲だけ確認) -------
 #     GIT_REPO/GIT_REF が実在しないとこのテストは git fetch の段で失敗して
 #     しまい「引数なし」の検証にならないため、bare repo が使えるときだけ
@@ -442,7 +481,10 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 		env GIT_REPO="$BARE_REPO" GIT_REF="origin/main" PROD_ALLOW_MUTABLE_REF=1 \
 			"$t/entrypoint.sh" true 2>&1)"
 	rc=$?
-	if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "WARNING"; then
+	# grep 対象を "WARNING: GIT_REF" に限定する: tmpfs 自己検査も
+	# WARNING を出しうる (テスト環境では /proc/mounts に該当行が無いため
+	# 必ず出る) ので、単なる "WARNING" では可変 ref の警告を検証できない。
+	if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "WARNING: GIT_REF"; then
 		ok "PROD_ALLOW_MUTABLE_REF=1 -> 警告付きで続行する (exit 0)"
 	else
 		ng "PROD_ALLOW_MUTABLE_REF=1 -> 警告付きで続行する (exit 0) (rc=$rc out=$out)"
@@ -451,13 +493,15 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 
 	# 17. 40 桁 hex の GIT_REF は脱出口 (PROD_ALLOW_MUTABLE_REF) なしで通る。
 	#     既存の正常系 (6 番) は同じ COMMIT_SHA を使っているが、ここでは
-	#     「警告メッセージが一切出ない」ことまで明示的に確認する。
+	#     「可変 ref の警告が出ない」ことまで明示的に確認する
+	#     (tmpfs 自己検査の WARNING とは別物なので、16 と同様に
+	#     "WARNING: GIT_REF" に限定して見る)。
 	t="$(mktemp -d)"
 	make_entrypoint "$t"
 	out="$(printf 'FOO=bar\n' |
 		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true 2>&1)"
 	rc=$?
-	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$out" | grep -q "WARNING"; then
+	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$out" | grep -q "WARNING: GIT_REF"; then
 		ok "40 桁 hex の GIT_REF は脱出口なしで通る (警告なし)"
 	else
 		ng "40 桁 hex の GIT_REF は脱出口なしで通る (警告なし) (rc=$rc out=$out)"
@@ -503,6 +547,88 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 		ng "stderr に 'resolved to <sha>' が出る (out=$out)"
 	fi
 	rm -rf "$t"
+
+	# 19. 40 桁 hex を「名前」とする ref があっても、それが sha として実行
+	#     されない。dev (信頼しない側) は 40 桁 hex を名前とするブランチ/
+	#     タグを push でき、その hex に対応するオブジェクトは存在しない、
+	#     という状態を作れる。書式検査は通る (mutable=0) ので、もし
+	#     rev-parse が ref 側へフォールバックして解決すると、可変 ref の
+	#     内容が immutable として実行され /run/prod-ref にも MUTABLE_REF=0
+	#     と記録されてしまう。
+	#
+	#     git 2.39 では 40 桁 hex の refname は rev-parse 側が無視する
+	#     ("refname ... is ambiguous" の警告付きで解決失敗) ため、この
+	#     入力は entrypoint 側の一致検査ではなく "does not resolve" で
+	#     落ちる。どちらの経路で落ちるかは git の版に依存するので、ここで
+	#     固定するのは「非ゼロ終了し、記録も残らない」ことにする。
+	HEX_ROOT="$(mktemp -d)"
+	HEX_REPO="$HEX_ROOT/upstream.git"
+	HEX_REF="0123456789abcdef0123456789abcdef01234567"
+	if git init -q --bare "$HEX_REPO" &&
+		printf 'second\n' >"$WORK_ROOT/file.txt" &&
+		git -C "$WORK_ROOT" commit -q -am second &&
+		git -C "$WORK_ROOT" push -q "$HEX_REPO" HEAD~1:refs/heads/main &&
+		git -C "$WORK_ROOT" push -q "$HEX_REPO" "HEAD:refs/heads/$HEX_REF" &&
+		git -C "$WORK_ROOT" push -q "$HEX_REPO" "HEAD:refs/tags/$HEX_REF"; then
+		t="$(mktemp -d)"
+		make_entrypoint "$t"
+		out="$(printf 'FOO=bar\n' |
+			env GIT_REPO="$HEX_REPO" GIT_REF="$HEX_REF" "$t/entrypoint.sh" true 2>&1)"
+		rc=$?
+		if [ "$rc" -ne 0 ] && [ ! -e "$t/prod-ref" ]; then
+			ok "40 桁 hex を名前とする ref -> 非ゼロ終了し /run/prod-ref も書かれない"
+		else
+			ng "40 桁 hex を名前とする ref -> 非ゼロ終了し /run/prod-ref も書かれない (rc=$rc out=$out)"
+		fi
+		rm -rf "$t"
+	else
+		ng "40 桁 hex を名前とする ref のテスト用 repo を準備できなかった"
+	fi
+	rm -rf "$HEX_ROOT"
+
+	# 20. 大文字混じりの完全 commit sha が誤って拒否されない。書式検査は
+	#     [0-9a-fA-F] を許すため大文字の sha が渡されうる一方、git が返す
+	#     sha は常に小文字であり、19 で入れた一致検査を素朴に書くとここで
+	#     偽陽性になる (小文字へ畳んでから比較している)。
+	UPPER_SHA="$(printf '%s' "$COMMIT_SHA" | tr 'a-f' 'A-F')"
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="$UPPER_SHA" "$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$out" | grep -q "resolved to a different object"; then
+		ok "大文字の完全 commit sha でも通る (sha 一致検査が小文字へ畳んで比較している)"
+	else
+		ng "大文字の完全 commit sha でも通る (rc=$rc out=$out)"
+	fi
+	rm -rf "$t"
+
+	# 21. tmpfs 自己検査: /proc/mounts に該当行が無い状況 (テスト環境その
+	#     もの。entrypoint のコピーは /src を tmpdir 配下へ書き換えてある
+	#     ため、どんなホストでも mountpoint には一致しない) で、WARNING を
+	#     出しつつ続行すること。黙ってスキップしないことがこの検査の要件。
+	#
+	#     secret 側の検査対象が "/run" 直書きではなく secret の置き場
+	#     (sed 置換対象) の親として導出されていることも、ここで一緒に
+	#     押さえる: 直書きに戻ると、/run が非 tmpfs の mountpoint として
+	#     現れるホストでこのテストが実行環境依存で落ちる。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -eq 0 ] &&
+		printf '%s\n' "$out" | grep -q "WARNING: cannot verify that $t/src is a tmpfs"; then
+		ok "tmpfs 自己検査: mount 情報が見つからないときは WARNING を出して続行する"
+	else
+		ng "tmpfs 自己検査: mount 情報が見つからないときは WARNING を出して続行する (rc=$rc out=$out)"
+	fi
+	if printf '%s\n' "$out" | grep -q "WARNING: cannot verify that $t is a tmpfs"; then
+		ok "tmpfs 自己検査: secret 側の対象が secret の置き場の親として導出されている (/run 直書きではない)"
+	else
+		ng "tmpfs 自己検査: secret 側の対象が secret の置き場の親として導出されている (/run 直書きではない) (out=$out)"
+	fi
+	rm -rf "$t"
 else
 	skip "正常系 (secret 保存 / mode 600 / GH_TOKEN 削除 / checkout 復元): git 不在のため未検証"
 	skip "値に '=' を含む行が壊れない: git 不在のため未検証 (checkout まで到達できない)"
@@ -517,6 +643,9 @@ else
 	skip "PROD_ALLOW_MUTABLE_REF=1 で警告付き続行: git 不在のため未検証"
 	skip "40 桁 hex の GIT_REF は脱出口なしで通る: git 不在のため未検証"
 	skip "/run/prod-ref の記録 (GIT_COMMIT / mode 644 / resolved to <sha>): git 不在のため未検証"
+	skip "40 桁 hex を名前とする ref が sha として実行されない: git 不在のため未検証"
+	skip "大文字の完全 commit sha でも通る: git 不在のため未検証"
+	skip "tmpfs 自己検査の WARNING と続行: git 不在のため未検証 (完走まで到達できない)"
 fi
 
 # --- 後始末 ----------------------------------------------------------------------
