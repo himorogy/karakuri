@@ -789,8 +789,13 @@ git ls-files から (^|/)\.env と (^|/)secret\.env\. に一致するものを�
 on: [push, pull_request]
 jobs:
   env-guard:
-    uses: himorogy/karakuri/.github/workflows/env-guard.yml@v1
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@<karakuri の commit SHA>
 ```
+
+**ref は commit SHA で固定する（rev.8）。** スキャナの取得が npm 経由になり、期待する SHA256 が
+workflow ファイル自身に書かれるようになった（D27 / G）。したがってこの `@` より後ろが信頼の
+起点になる — 指した ref にある workflow の中の期待ハッシュが、実際に走るスキャナを決める。
+タグ参照では指す先が動き、期待ハッシュも一緒に動くので、固定した意味が無くなる。
 
 **karakuri 自身もこのスタブで自分を呼ぶ。** 自分で使っていない伝播機構は、壊れていても気付けない。ただし呼び方はローカルパス参照（`./.github/workflows/env-guard.yml`）にする — タグ参照にすると PR で変更した版ではなく公開済みの版が走り、その PR の変更が CI に掛からない。
 

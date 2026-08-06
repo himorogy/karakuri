@@ -34,6 +34,55 @@ name: env-guard
 # ルートに置く env-guard.conf で行う (workflow の input ではない)。
 # hook と CI が同じファイルを同じ規則で読むことが要るため、真実の源を
 # 1 つにしてある。書式は env-guard-scan の冒頭のコメントを参照。
+#
+# ----------------------------------------------------------------------------
+# スキャナをどこから取るか
+#
+# 検査対象は呼び出し側のリポジトリだが、スキャナ本体は karakuri の持ち物
+# なので、どこかから取ってくる必要がある。経路は 2 つだけである。
+#
+#   in-tree … 呼び出し側の作業ツリーに packages/env-guard/bin/env-guard-scan
+#             が在る場合。これは karakuri が自分を呼んだときにしか起きない。
+#             **この分岐は消してはいけない** — 消して npm 一本にすると、
+#             スキャナを変更する PR が「変更前の公開済みスキャナ」で検査
+#             される。緑にはなるが、その PR が持ち込んだ変更を一度も
+#             通していない
+#   npm     … それ以外 (他リポジトリからの呼び出し)。下の ENV_GUARD_VERSION
+#             を npm pack で取得し、ENV_GUARD_SCAN_SHA256 と照合してから使う
+#
+# 以前はここで `github.job_workflow_ref` を parse して「自分がどの版の
+# karakuri から来たか」を割り出し、karakuri を第二 checkout していた。
+# **その値は実測で空だった** (ローカルパス呼び出しでも、同一リポジトリを
+# 指す完全参照呼び出しでも) ため、他 org からの呼び出しが成立するかが未決の
+# まま止まっていた。npm 経由なら版を workflow ファイル自身に直書きできる —
+# workflow は自分の中身を知っているので、自分の ref を知る必要がない。
+# 経緯は images/runtime-base/verification-record.md の項目 63 に残してある。
+#
+# **なぜ版の固定だけでは足りないか。** `npm pack` は取得物のハッシュを検証
+# しない。レジストリが侵害されれば、他 org の CI で攻撃者の置いたスキャナが
+# 走る。しかもそのスキャナは、平文の env を「問題なし」と報告するだけで
+# 目的を達する — 落ちないので誰も気付かない。だから取得したファイルの
+# SHA256 を、この workflow ファイルに直書きした期待値と照合する。
+# **照合するまで一度も実行しない**（`npx -y ... env-guard-scan` のように
+# 取得してすぐ実行する形にすると、照合の意味が無くなる）。
+#
+# **信頼の連鎖。** 呼び出し側は
+#   uses: himorogy/karakuri/.github/workflows/env-guard.yml@<commit sha>
+# の形で karakuri の commit を固定する。期待するハッシュはその commit の
+# この workflow ファイルの中にあるので、連鎖は呼び出し側が固定した sha から
+# 途切れずに繋がる。可変な ref (タグ) で呼ぶと、この起点が動く。
+# ----------------------------------------------------------------------------
+
+# 他リポジトリ向けのスキャナ取得経路で使う、版と期待ハッシュ。
+# 上げるときは 2 つ一緒に上げる。ハッシュは
+#   npm pack @himorogy/env-guard@<version>
+#   tar -xzf himorogy-env-guard-<version>.tgz package/bin/env-guard-scan
+#   sha256sum package/bin/env-guard-scan
+# で取れる (リポジトリ内の packages/env-guard/bin/env-guard-scan と
+# byte 単位で一致することも確かめる)。
+env:
+  ENV_GUARD_VERSION: 0.1.0
+  ENV_GUARD_SCAN_SHA256: ed8189fd3b6cd31b24b41334e69a9becc278f5eec50546466e4afb9607c2535b
 
 on:
   workflow_call:
@@ -66,116 +115,101 @@ jobs:
       # checkout する。これが検査対象になる。
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # スキャナを持ってくるために karakuri を第二 checkout する。
+      # スキャナをどちらの経路で取るかを決めるだけのステップ。判定条件は
+      # 「呼び出し側の作業ツリーにスキャナが在るか」1 つである。
       #
-      # ref を固定しないと、`@v1` で呼ばれたこの workflow が main の
-      # スキャナを実行することになり、workflow とスキャナの版が食い違う。
-      # github.job_workflow_ref は「今動いている reusable workflow 自身」の
-      # 完全な参照 (owner/repo/path@ref) を持つので、そこから owner/repo と
-      # ref を切り出して同じ commit を取る。呼び出し側が @v1 で呼べば v1 の
-      # スキャナ、commit SHA で呼べばその SHA のスキャナになる。
+      # 在るのは、呼び出し側が karakuri のツリーを持っているとき —
+      # つまりローカルパス呼び出し (karakuri の自己検査) のときだけである。
+      # 他 org のプロジェクトに packages/env-guard/bin/env-guard-scan は
+      # 無いので、誤って in-tree 側へ倒れることはない。
       #
-      # (github.workflow_ref の方は呼び出し**側**の workflow を指すので
-      # ここでは使えない。)
-      # 実測 (2026-08-06、karakuri 自身からのローカルパス呼び出し):
-      # github.job_workflow_ref は**空だった**。ドキュメント上は reusable
-      # workflow のジョブで使えることになっているが、少なくともこの経路では
-      # 値が来ない。他 org からの `owner/repo/...@ref` 形式の呼び出しでも同じ
-      # なのかは未確認 — ローカルパス呼び出しに限った話である可能性がある。
-      #
-      # 推測で片方に倒さず、実際に何が来るのかを一度出す。ここで出した値を
-      # 見てから ref の取り方を決める (この設計は「推測で対処を入れず実測して
-      # から決める」で進めてきた)。この診断ステップは決着したら消す。
-      - name: What the runner actually gives us (diagnostic)
-        shell: bash
-        env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-          REPOSITORY: ${{ github.repository }}
-          REF: ${{ github.ref }}
-          REF_NAME: ${{ github.ref_name }}
-          SHA: ${{ github.sha }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          set -u
-          echo "job_workflow_ref: ${JOB_WORKFLOW_REF:-<empty>}"
-          echo "workflow_ref:     ${WORKFLOW_REF:-<empty>}"
-          echo "repository:       ${REPOSITORY:-<empty>}"
-          echo "ref:              ${REF:-<empty>}"
-          echo "ref_name:         ${REF_NAME:-<empty>}"
-          echo "sha:              ${SHA:-<empty>}"
-          echo "event_name:       ${EVENT_NAME:-<empty>}"
-          echo
-          echo "呼び出し側の作業ツリーにスキャナがあるか (ローカルパス呼び出しなら"
-          echo "同じリポジトリなので存在するはず):"
-          ls -l packages/env-guard/bin/env-guard-scan 2>&1 || true
-
-      - name: Resolve the karakuri ref this workflow came from
+      # self-call では in-tree の方が正しい: タグが指すスキャナではなく、
+      # いま検査されている PR のスキャナが走る。版の食い違いが起きえないうえ、
+      # スキャナを変更する PR がその変更を通ることになる。
+      - name: Decide where the scanner comes from
         id: src
         shell: bash
-        env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
         run: |
           set -u
-          echo "job_workflow_ref: ${JOB_WORKFLOW_REF:-<empty>}"
-
-          # owner/repo/path/to.yml@ref という形。ref は最後の @ より後、
-          # repository は先頭 2 セグメント。
-          ref=${JOB_WORKFLOW_REF##*@}
-          left=${JOB_WORKFLOW_REF%@*}
-          owner=${left%%/*}
-          rest=${left#*/}
-          repo=${rest%%/*}
-
-          # ref が読み取れたなら、その commit の karakuri を第二 checkout する
-          # (下記)。読み取れないときの扱いは、その下の in-tree 判定に委ねる。
-          if [ -n "${ref:-}" ] && [ -n "${owner:-}" ] && [ -n "${repo:-}" ] &&
-            [ "$ref" != "${JOB_WORKFLOW_REF:-}" ] && [ "$owner" != "$rest" ]; then
-            echo "mode=remote" >>"$GITHUB_OUTPUT"
-            echo "repository=$owner/$repo" >>"$GITHUB_OUTPUT"
-            echo "ref=$ref" >>"$GITHUB_OUTPUT"
-            echo "scanner source: $owner/$repo@$ref"
-            exit 0
-          fi
-
-          # ref が読み取れないとき (実測: ローカルパス呼び出しでは
-          # github.job_workflow_ref が空)。ここで main へ倒すのは論外だが、
-          # 一つだけ推測でない道がある — **呼び出し側の作業ツリーに
-          # スキャナ自体が入っている**場合である。
-          #
-          # その状態が成立するのは、呼び出し側が karakuri のツリーを持って
-          # いるときだけで、それはまさにローカルパス呼び出しの形である。他 org
-          # のプロジェクトに packages/env-guard/bin/env-guard-scan は無いので、
-          # 見つからなければ従来どおり落ちる (fail-closed は維持)。
-          #
-          # self-call ではこちらの方が正しくもある: タグが指すスキャナではなく、
-          # いま検査されている PR のスキャナが走る。版の食い違いは起きえない。
           if [ -s packages/env-guard/bin/env-guard-scan ]; then
             echo "mode=in-tree" >>"$GITHUB_OUTPUT"
-            echo "scanner source: the caller's own checkout (this workflow was called by path)"
-            exit 0
+            echo "scanner source: the caller's own checkout (self-check)"
+          else
+            echo "mode=npm" >>"$GITHUB_OUTPUT"
+            echo "scanner source: npm, @himorogy/env-guard@${ENV_GUARD_VERSION}"
           fi
 
-          echo "❌ env-guard: could not work out which karakuri commit this workflow came from,"
-          echo "   and the caller's checkout does not contain the scanner either."
-          echo "   github.job_workflow_ref was: ${JOB_WORKFLOW_REF:-<empty>}"
-          echo "   Refusing to guess a ref: running a different version of the"
-          echo "   scanner than this workflow would make the result meaningless."
-          exit 1
+      # 他リポジトリからの呼び出し。npm から取り、**照合してから**使う。
+      #
+      # 順序が要点である。取得 → 展開 → SHA256 照合 → (一致した場合だけ)
+      # chmod +x。照合前に一度でも実行したら照合の意味が無いので、
+      # `npx -y ... env-guard-scan` のような「取得してすぐ実行」する形には
+      # しない。
+      #
+      # npm pack は $RUNNER_TEMP の下で走らせる。呼び出し側リポジトリの作業
+      # ディレクトリで走らせると、相手の package.json や .npmrc を読ませる
+      # ことになる (検査される側の設定が、検査する道具の取得に影響しうる)。
+      #
+      # node / npm は ubuntu-latest に最初から入っているので setup-node は
+      # 要らない。npm のバージョンはランナー任せだが、取得物の同一性は
+      # ハッシュ照合が見るので、ここは問題にならない。
+      - name: Fetch the shared scanner from npm and verify its checksum
+        if: steps.src.outputs.mode == 'npm'
+        shell: bash
+        run: |
+          set -u
 
-      # karakuri は public である前提 (設計上すでに置かれている前提)。
-      # public リポジトリなら既定の GITHUB_TOKEN で読めるため追加の
-      # 資格情報は要らない。checkout 先は呼び出し側の作業ツリーの中に
-      # なってしまうので、スキャナだけ取り出したら消す (検査対象の
-      # ファイル一覧や .env.keys の探索範囲を汚さないため)。
-      - name: Check out the shared scanner from karakuri
-        if: steps.src.outputs.mode == 'remote'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: ${{ steps.src.outputs.repository }}
-          ref: ${{ steps.src.outputs.ref }}
-          path: karakuri-env-guard-src
-          persist-credentials: false
+          work="$RUNNER_TEMP/env-guard-npm"
+          rm -rf "$work"
+          mkdir -p "$work"
+          cd "$work" || {
+            echo "❌ env-guard: could not use $work as a scratch directory."
+            exit 1
+          }
+
+          if ! npm pack "@himorogy/env-guard@${ENV_GUARD_VERSION}"; then
+            echo "❌ env-guard: could not fetch @himorogy/env-guard@${ENV_GUARD_VERSION} from npm."
+            echo "   Nothing was inspected, so this is not a pass."
+            exit 1
+          fi
+
+          # 標準出力を parse せず、置かれた物を数える。0 個でも 2 個以上でも
+          # 「想定と違う」なので落とす。
+          set -- ./*.tgz
+          if [ "$#" -ne 1 ] || [ ! -s "$1" ]; then
+            echo "❌ env-guard: npm pack did not leave exactly one tarball behind (got $#)."
+            exit 1
+          fi
+          tarball="$1"
+
+          if ! tar -xzf "$tarball" package/bin/env-guard-scan; then
+            echo "❌ env-guard: the tarball does not contain package/bin/env-guard-scan."
+            exit 1
+          fi
+
+          candidate="$work/package/bin/env-guard-scan"
+          if [ ! -s "$candidate" ]; then
+            echo "❌ env-guard: the extracted scanner is empty or missing."
+            exit 1
+          fi
+
+          actual="$(sha256sum "$candidate" | cut -d' ' -f1)"
+          if [ "$actual" != "$ENV_GUARD_SCAN_SHA256" ]; then
+            echo "❌ env-guard: the scanner fetched from npm is not the one this workflow expects."
+            echo "   expected: $ENV_GUARD_SCAN_SHA256"
+            echo "   actual:   $actual"
+            echo "   package:  @himorogy/env-guard@${ENV_GUARD_VERSION}"
+            echo "   Version pinning alone does not protect against a tampered registry,"
+            echo "   which is why this is checked. Refusing to run it."
+            echo "   Nothing was inspected, so this is not a pass."
+            exit 1
+          fi
+
+          # ここまで来て初めて実行可能にする。
+          cp "$candidate" "$RUNNER_TEMP/env-guard-scan"
+          chmod +x "$RUNNER_TEMP/env-guard-scan"
+          cd "$RUNNER_TEMP" && rm -rf "$work"
+          echo "env-guard: scanner verified (sha256 $actual)."
 
       - name: Stage the scanner outside the working tree
         shell: bash
@@ -183,28 +217,42 @@ jobs:
           MODE: ${{ steps.src.outputs.mode }}
         run: |
           set -u
+          staged="$RUNNER_TEMP/env-guard-scan"
+
           case "$MODE" in
-          remote) src=karakuri-env-guard-src/packages/env-guard/bin/env-guard-scan ;;
-          in-tree) src=packages/env-guard/bin/env-guard-scan ;;
+          in-tree)
+            src=packages/env-guard/bin/env-guard-scan
+            if [ ! -s "$src" ]; then
+              echo "❌ env-guard: the scanner is missing ($src)."
+              echo "   Nothing was inspected, so this is not a pass."
+              exit 1
+            fi
+            # 作業ツリーの外へ出してから使う。スキャナが検査対象のファイル
+            # 一覧や .env.keys の探索範囲に混ざらないようにするため
+            # (取得方法が変わっても、外へ出す理由は変わらない)。
+            cp "$src" "$staged"
+            chmod +x "$staged"
+            ;;
+          npm)
+            # 前のステップが照合済みのものを置いている。置かれていなければ
+            # 照合を通っていないということなので、ここで落とす (前のステップが
+            # 何かの理由で走らなかった場合に、黙って先へ進ませない)。
+            if [ ! -s "$staged" ]; then
+              echo "❌ env-guard: no verified scanner was staged at $staged."
+              echo "   Nothing was inspected, so this is not a pass."
+              exit 1
+            fi
+            ;;
           *)
             echo "❌ env-guard: internal error — unknown scanner source mode '$MODE'."
             exit 1
             ;;
           esac
 
-          if [ ! -s "$src" ]; then
-            echo "❌ env-guard: the scanner is missing ($src)."
-            echo "   Nothing was inspected, so this is not a pass."
+          if [ ! -x "$staged" ]; then
+            echo "❌ env-guard: the staged scanner is not executable ($staged)."
             exit 1
           fi
-
-          # 作業ツリーの外へ出してから使う。第二 checkout の残骸が検査対象の
-          # ファイル一覧や .env.keys の探索範囲に混ざらないようにするため
-          # (in-tree の場合は元から作業ツリーの中にあるが、スキャナ自身は
-          # tracked な env ファイルではないので検査結果には影響しない)。
-          cp "$src" "$RUNNER_TEMP/env-guard-scan"
-          chmod +x "$RUNNER_TEMP/env-guard-scan"
-          rm -rf karakuri-env-guard-src
 
       - name: Scan tracked files for plaintext env values
         shell: bash

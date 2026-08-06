@@ -252,8 +252,12 @@ deploy まで通す場合、`clean -xdff` が `node_modules` も消すため依�
 on: [push, pull_request]
 jobs:
   env-guard:
-    uses: himorogy/karakuri/.github/workflows/env-guard.yml@v1
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@<karakuri の commit SHA>
 ```
+
+**ref は commit SHA で固定する。** 呼び出された workflow は、スキャナの版と期待する SHA256 を
+自分の中に持っている。この 1 行で指した ref が、実際に走るスキャナを決める。タグは指す先を
+後から変えられるので、固定したつもりのものが固定されない。SHA は karakuri のコミット履歴から取る。
 
 雛形は `images/runtime-base/templates/env-guard.yml`。
 

@@ -447,8 +447,14 @@ git ls-files | grep -E '\.env'
 on: [push, pull_request]
 jobs:
   env-guard:
-    uses: himorogy/karakuri/.github/workflows/env-guard.yml@v1
+    uses: himorogy/karakuri/.github/workflows/env-guard.yml@<karakuri の commit SHA>
 ```
+
+**ref は commit SHA で固定することを勧める。** この 1 行が検査全体の信頼の起点になる —
+呼び出された workflow は、スキャナの版と期待する SHA256 を自分の中に持っており、npm から
+取ったものをその期待値と照合してから実行する。つまり「どの ref を指すか」を決めた時点で、
+実際に走るスキャナまでが決まる。タグは指す先を後から変えられるので、固定したつもりのものが
+固定されない。
 
 雛形は `images/runtime-base/templates/env-guard.yml`。呼び出し側 org の Actions ポリシーが
 「選択した actions / reusable workflows のみ許可」なら、`himorogy/karakuri/...` を allowlist へ

@@ -12,9 +12,11 @@ jobs:
   #
   # 呼び出し方がプロジェクト側のスタブ
   # (images/runtime-base/templates/env-guard.yml) と違い、`himorogy/karakuri/
-  # .github/workflows/env-guard.yml@v1` ではなくローカルパス参照になって
-  # いるのは意図的である。タグ参照にすると PR で変更した版ではなく公開
-  # 済みの版が走ってしまい、その PR の変更が CI に掛からない。
+  # .github/workflows/env-guard.yml@<commit sha>` ではなくローカルパス参照に
+  # なっているのは意図的である。他リポジトリを指す形にすると、PR で変更した
+  # 版ではなく公開済みの版が走ってしまい、その PR の変更が CI に掛からない。
+  # ローカルパス参照だと、呼ばれた workflow は作業ツリーのスキャナを見つけて
+  # そちらを使う (npm から取りにいかない)。self-call ではそれが正しい。
   #
   # 検査の実体は packages/env-guard/bin/env-guard-scan（コミット時の
   # pre-commit hook が呼ぶのと同じ 1 本）で、workflow はそれを取り出して
