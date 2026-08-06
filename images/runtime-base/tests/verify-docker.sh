@@ -129,10 +129,12 @@ assert() {
 # できるか」の前提が生きているかを表すグローバルフラグ。preflight (M1
 # セクション開始前) で一度だけ実測して確定させ、0 なら以降の bare repo
 # fetch 依存ケース (M1 の compose 経由分 / M2 / M6 / A5 / A6 / A10 /
-# A16) を実行せず SKIPPED として記録する。A11 (GIT_REF 未指定) は compose
-# のパース時点で失敗が確定するため fetch の成否と無関係、A17 (broker
+# A16 / B1〜B4) を実行せず SKIPPED として記録する。A11 (GIT_REF 未指定) は
+# compose のパース時点で失敗が確定するため fetch の成否と無関係、A17 (broker
 # 失敗の伝播) も broker 自体が secrets を一切渡さず失敗する経路なので
-# fetch の成否と無関係 — この 2 つはゲートの対象に含めない。
+# fetch の成否と無関係 — この 2 つはゲートの対象に含めない。A19〜A34 (出荷
+# compose.prod.yaml の構造検証) は docker (compose config) は使うが bare
+# repo は使わないため、そもそもこのゲートの対象にならない。
 HARNESS_GIT_OK=1
 
 # measure_git <id> <label> <fn> [args...]
@@ -299,6 +301,151 @@ export SAFE_GITCONFIG
 # たい ${...} 構文が含まれる。unquoted heredoc だとこのスクリプト自身の
 # シェルがその場で展開しようとし、GIT_REPO 未設定なら `:?` でこのスクリプト
 # 自体が即座に落ちてしまう。
+
+# --- A: 出荷 templates/compose.prod.yaml の構造検証 (docker が要る、jq を使う) --
+#
+# 下の compose-current.yaml 等は全て自前生成物であり、実際に配布する
+# templates/compose.prod.yaml 自身は一度も検証されていなかった。自前生成物
+# とのずれ (tmpfs のオプション、read_only、user、ulimits、logging 等) が
+# 入り込んでも検出できない。
+#
+# 最初の実装は js-yaml で YAML テキストをパースしていたが、js-yaml はこの
+# リポジトリの直接依存ではなく node_modules/.pnpm 配下の transitive
+# dependency でしかない。このスクリプトを実際に実行する CI
+# (runtime-base-verify.yml) は docker イメージのビルドと検証だけを目的と
+# しており `pnpm install` を一切行わないため node_modules 自体が存在せず、
+# A19〜A34 相当のケースが「js-yaml が見つからない」で恒常的に FAIL する
+# ことが分かった (この dev container で node_modules/.pnpm を使って実際に
+# 確認済み。CI では未確認だが、CI が pnpm install をしないこと自体は
+# runtime-base-verify.yml を読んで確認済み)。
+#
+# 依存を増やす (CI に pnpm install を足す) のではなく無くす方向で直す:
+# `docker compose -f <file> config --format json` + `jq` に置き換える。
+# このスクリプトは元から docker 前提であり (冒頭で docker / docker compose
+# の存在を必須にしている)、jq は ubuntu-latest ランナーに標準で入って
+# いる。加えて `docker compose config` は「compose が実際にどう解釈するか」
+# を返すため、YAML のテキストを見るより強い検査になる — ファイルを消費する
+# 当のパーサで検証できる。
+#
+# `config` は `${GIT_REPO:?…}` / `${GIT_REF:?…}` を実際に補間するため、
+# 実行のたびにダミー値を GIT_REPO / GIT_REF として渡す (下の
+# compose_prod_config()。compose_run() と同じ「コマンドの前置きで環境変数
+# を渡す」形)。ダミー値は明らかにダミーだと分かる文字列にして、万一出力に
+# 紛れ込んでも実在のリポジトリと誤認しないようにする。
+#
+# A19〜A34 は docker さえあれば動き、bare repo は要らない。preflight
+# (bare repo の到達性、この下の「harness preflight」参照) の成否には
+# 一切依存させない — 常に assert() を使い、assert_git() は使わない。
+if ! command -v jq >/dev/null 2>&1; then
+	echo "verify-docker: jq が見つからない。A19〜A34 (出荷 compose.prod.yaml の構造 ASSERT) は jq が前提。" >&2
+	exit 1
+fi
+
+COMPOSE_PROD_YAML="$REPO_ROOT/images/runtime-base/templates/compose.prod.yaml"
+
+# compose_prod_config
+# 出荷ファイルを `docker compose config --format json` で解決した JSON を
+# 標準出力へ返す。GIT_REPO/GIT_REF はダミー値 (`:?` の補間さえ通ればよく、
+# config はパースと変数展開だけを行い、コンテナは起動しないので実際に
+# fetch できる値である必要はない)。
+compose_prod_config() {
+	GIT_REPO="verify-dummy-git-repo-do-not-use" GIT_REF="verify-dummy-git-ref-do-not-use" \
+		docker compose -f "$COMPOSE_PROD_YAML" config --format json
+}
+
+# tmpfs_entries_or_fail
+# services.prod.tmpfs を `docker compose config` の JSON から取り出し、
+# 想定した「文字列の配列 (短縮記法 "<path>:<opts>" のまま)」であることを
+# 確認してから、その JSON 配列 (compact 1 行) を標準出力へ返す。
+#
+# 未確認: `docker compose config --format json` が tmpfs エントリを
+# object 形 (例: {target: "/src", tmpfs: {size: ...}}) へ正規化する
+# 可能性を、docker の無いこの環境では実行して確認できていない。
+# compose-spec のドキュメント上、`tmpfs:` はサービスの短縮記法であって
+# `volumes:` のような長形式スキーマ (type/source/target/...) を持たない
+# ため文字列のまま残る可能性が高いと考えているが未確認のままにしている。
+# 仮に object 形へ正規化されていた場合、uid=/gid=/exec のような
+# compose-spec の tmpfs 長形式に存在しないオプションがどこに (あるいは
+# 消えて) 現れるかは全くの未知数なので、それを推測でパースして「たまたま
+# 一致したことにする」よりも、想定と違う形が来た時点でここで明確な
+# メッセージ付きで失敗させる方が安全と判断した。
+tmpfs_entries_or_fail() {
+	local json entries
+	json="$(compose_prod_config)" || return 1
+	entries="$(printf '%s' "$json" | jq -c '.services.prod.tmpfs // []')"
+	if ! printf '%s' "$entries" | jq -e '[.[] | type] | all(. == "string")' >/dev/null 2>&1; then
+		echo "services.prod.tmpfs が想定した文字列配列 (短縮記法) でない (docker compose config が object 形へ正規化した可能性。要確認・要更新): $entries" >&2
+		return 1
+	fi
+	printf '%s\n' "$entries"
+}
+
+# --- B: 出荷 templates/compose.prod.yaml からの最小派生 (docker が要る) --------
+#
+# A が構造の表明 (静的パース) であるのに対し、B は実際にコンテナを起動して
+# entrypoint が完走することを見る。「派生」であって「書き直し」ではない —
+# 出荷ファイルそのものを cp して sed で書き換える。加えてよい変更は次の
+# 3 点だけ (タスク指示のとおり):
+#   1. image: を実イメージ参照 ($IMG) へ差し替える (プレースホルダ digest は
+#      実在しないため pull できない)。
+#   2. bare repo (file:// URL) を読むための bind mount を volumes: として
+#      追加する ($SCRATCH を読み取り専用で)。
+#   3. GIT_CONFIG_GLOBAL を environment: に追加する (safe.directory 対策。
+#      compose-current.yaml 等、他の compose ファイルと同じ値)。
+# 他は一切変えない。sed 置換のたびに「置換が実際に効いたか」を grep で検証
+# してから先へ進む — 効かないまま素通りすると、B が「出荷ファイルを検証して
+# いる」つもりで実は壊れた/変化していないファイルを検証してしまう。
+COMPOSE_SHIPPED="$SCRATCH/compose-shipped.yaml"
+cp "$COMPOSE_PROD_YAML" "$COMPOSE_SHIPPED"
+
+# 変更 1/3: image:
+# 出荷ファイルの image: 行は単独行 (`    image: ghcr.io/...`) なので行全体を
+# 置換する。$IMG 自体は展開させたいので二重引用符の sed スクリプトを使う。
+sed -i "s#^\(    image:\).*#\1 $IMG#" "$COMPOSE_SHIPPED"
+if grep -q 'REPLACE_WITH_ACTUAL_DIGEST' "$COMPOSE_SHIPPED"; then
+	echo "verify-docker: compose-shipped.yaml の image: 置換が効いていない (プレースホルダが残っている)。B の派生セットアップが壊れている。" >&2
+	exit 1
+fi
+if ! grep -qF "    image: $IMG" "$COMPOSE_SHIPPED"; then
+	echo "verify-docker: compose-shipped.yaml の image: が期待どおりに書き換わっていない。B の派生セットアップが壊れている。" >&2
+	exit 1
+fi
+
+# 変更 2/3: GIT_CONFIG_GLOBAL を environment: に追加。
+# `GIT_REF: ...` の行は出荷ファイルに一箇所しか無い (services.prod.environment
+# 直下) ので、その直後に 1 行差し込む。単引用符で丸ごと囲み、${SAFE_GITCONFIG}
+# はこのスクリプトのシェルに展開させず、docker compose 自身の展開に委ねる
+# (他の compose-*.yaml と同じ書き方)。sed の s/// 置換テキスト中で改行を
+# 挿入するには、埋め込む改行の直前にバックスラッシュを置く古典的な書き方が
+# 要る (GNU/BSD どちらの sed でも動く移植性のためのイディオム)。
+# SC2016: 単引用符は意図的。${SAFE_GITCONFIG} はこのスクリプトのシェルではなく
+# docker compose に展開させたい。
+# shellcheck disable=SC2016
+sed -i 's/^\(      GIT_REF: .*\)$/\1\
+      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}/' "$COMPOSE_SHIPPED"
+# shellcheck disable=SC2016
+if ! grep -qF '      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}' "$COMPOSE_SHIPPED"; then
+	echo "verify-docker: compose-shipped.yaml への GIT_CONFIG_GLOBAL 追加が効いていない。B の派生セットアップが壊れている。" >&2
+	exit 1
+fi
+
+# 変更 3/3: bare repo 用の bind mount を volumes: として追加。
+# `    read_only: true` の直前に差し込む (services.prod 直下、他のトップ
+# レベルキーと同じ 4-space インデント)。${SCRATCH_DIR} も同様に展開させない。
+# SC2016: 単引用符は意図的 (上と同じ理由)。
+# shellcheck disable=SC2016
+sed -i 's/^\(    read_only: true\)$/    volumes:\
+      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro\
+\1/' "$COMPOSE_SHIPPED"
+# shellcheck disable=SC2016
+if ! grep -qF '      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro' "$COMPOSE_SHIPPED"; then
+	echo "verify-docker: compose-shipped.yaml への bind mount 追加が効いていない。B の派生セットアップが壊れている。" >&2
+	exit 1
+fi
+
+echo
+echo "=== B: 出荷 compose.prod.yaml からの派生 diff (許される変更は image: / bind mount 追加 / GIT_CONFIG_GLOBAL 追加の 3 点のみ) ==="
+diff -u "$COMPOSE_PROD_YAML" "$COMPOSE_SHIPPED" || true
 
 # compose-current.yaml: templates/compose.prod.yaml と同一の tmpfs 記法
 # (uid=1000,gid=1000,mode=...) + /src は named volume。M1 (compose 経由の
@@ -527,7 +674,7 @@ if preflight_out="$(docker_prod_run "file://$TEST_BARE_DIR" "$TEST_COMMIT" "FOO=
 	echo "ok: bare repo ($TEST_BARE_DIR) をコンテナ内 (docker_prod_run) から fetch/checkout できた"
 else
 	HARNESS_GIT_OK=0
-	echo "HARNESS ERROR: bare repo ($TEST_BARE_DIR) がコンテナから読めない (docker_prod_run 経由)。以降の bare repo fetch 依存ケース (M1 の compose 経由分 / M2 / M6 と ASSERT A5, A6, A10, A16) は SKIPPED (harness setup failed) として記録し、個別には実行しない。"
+	echo "HARNESS ERROR: bare repo ($TEST_BARE_DIR) がコンテナから読めない (docker_prod_run 経由)。以降の bare repo fetch 依存ケース (M1 の compose 経由分 / M2 / M6 と ASSERT A5, A6, A10, A16, B1, B2, B3, B4) は SKIPPED (harness setup failed) として記録し、個別には実行しない。"
 	echo "--- preflight の生出力 ---"
 	echo "$preflight_out"
 fi
@@ -2327,6 +2474,246 @@ a18_home_empty_no_fallback() {
 assert A18 '$HOME が tmpfs で空であり、fallback 資格情報 (~/.config/gh 等) が存在しない' a18_home_empty_no_fallback
 
 # =============================================================================
+# A19〜A34: 出荷 templates/compose.prod.yaml の構造検証 (docker が要る、jq を使う)
+#
+# compose_prod_config() / tmpfs_entries_or_fail() は「compose ファイル生成」
+# 節 (上、$SCRATCH セットアップの一部) で定義済み。ここでは 1 検査 1 assert()
+# で並べる。docker (docker compose config) は使うが bare repo は使わないので
+# preflight (HARNESS_GIT_OK) には依存させず、常に assert() を使う
+# (assert_git() ではない)。
+# =============================================================================
+a19_read_only_true() {
+	compose_prod_config | jq -e '.services.prod.read_only == true' >/dev/null
+}
+assert A19 "services.prod.read_only が true [docker compose config の解決結果]" a19_read_only_true
+
+a20_user_1000_1000() {
+	compose_prod_config | jq -e '.services.prod.user == "1000:1000"' >/dev/null
+}
+assert A20 'services.prod.user が "1000:1000" [docker compose config の解決結果]' a20_user_1000_1000
+
+a21_working_dir_src() {
+	compose_prod_config | jq -e '.services.prod.working_dir == "/src"' >/dev/null
+}
+assert A21 "services.prod.working_dir が /src [docker compose config の解決結果]" a21_working_dir_src
+
+a22_entrypoint_exact() {
+	compose_prod_config | jq -e '.services.prod.entrypoint == ["/usr/local/bin/prod-entrypoint.sh"]' >/dev/null
+}
+assert A22 'services.prod.entrypoint が ["/usr/local/bin/prod-entrypoint.sh"] [docker compose config の解決結果]' a22_entrypoint_exact
+
+# 未確認: ulimits の短縮記法 (`core: 0`) を docker compose config が単一の
+# 整数のまま返すのか、{soft, hard} のオブジェクトへ正規化するのかは docker
+# の無いこの環境では確認できていない。両方の形に耐えるように書く。
+a23_ulimits_core_zero() {
+	compose_prod_config | jq -e '
+		.services.prod.ulimits.core as $c
+		| ($c == 0) or (($c | type) == "object" and $c.soft == 0 and $c.hard == 0)
+	' >/dev/null
+}
+assert A23 "services.prod.ulimits.core が 0 (単一値/{soft,hard} 両形式を許容。正規化形は未確認) [docker compose config の解決結果]" a23_ulimits_core_zero
+
+a24_logging_driver_none() {
+	compose_prod_config | jq -e '.services.prod.logging.driver == "none"' >/dev/null
+}
+assert A24 'services.prod.logging.driver が "none" [docker compose config の解決結果]' a24_logging_driver_none
+
+# A25〜A27: 「キーが存在しない」ではなく「実質的に空である」を見る。
+# docker compose config はコンテナへ流し込む正規化 JSON であり、
+# 宣言していないキーにも既定の空コンテナ (例: トップレベル volumes: {}) を
+# 補って出力する可能性がある — その場合 `has("volumes")` は常に true に
+# なり検査として意味を失う。`(.volumes // {} | length) == 0` の形なら
+# 「キー自体が無い」「キーはあるが空」のどちらでも 0 になり、実際に
+# prod-src 等が復活した場合 (length > 0) だけを正しく検出できる。
+a25_no_top_level_volumes() {
+	local n
+	n="$(compose_prod_config | jq '.volumes // {} | length')" || return 1
+	[ "$n" = "0" ]
+}
+assert A25 "トップレベル volumes: が実質的に空 (rev.5/D18 で削除済み。config が既定の空コンテナを補う場合に備え has() ではなく length で見る) [docker compose config の解決結果]" a25_no_top_level_volumes
+
+a26_no_service_volumes() {
+	local n
+	n="$(compose_prod_config | jq '.services.prod.volumes // [] | length')" || return 1
+	[ "$n" = "0" ]
+}
+assert A26 "services.prod.volumes が実質的に空 [docker compose config の解決結果]" a26_no_service_volumes
+
+a27_no_secrets_anywhere() {
+	local json svc_n top_n
+	json="$(compose_prod_config)" || return 1
+	svc_n="$(printf '%s' "$json" | jq '.services.prod.secrets // [] | length')"
+	top_n="$(printf '%s' "$json" | jq '.secrets // {} | length')"
+	[ "$svc_n" = "0" ] && [ "$top_n" = "0" ]
+}
+assert A27 "services.prod.secrets もトップレベル secrets: も実質的に空 (D1 で却下済み、read_only と併用不可) [docker compose config の解決結果]" a27_no_secrets_anywhere
+
+a28_tmpfs_five_mounts() {
+	local entries paths
+	entries="$(tmpfs_entries_or_fail)" || return 1
+	paths="$(printf '%s' "$entries" | jq -c '[.[] | split(":")[0]] | sort')"
+	[ "$paths" = '["/home/node","/out","/run","/src","/tmp"]' ]
+}
+assert A28 "services.prod.tmpfs に /src /run /tmp /out /home/node の 5 つが過不足なく揃っている [docker compose config の解決結果]" a28_tmpfs_five_mounts
+
+# SC2016: 単引用符は意図的。$opts はこのスクリプトのシェルではなく jq の
+# 文字列内挿で展開させる。
+# shellcheck disable=SC2016
+a29_tmpfs_src_has_exec() {
+	local entries opts
+	entries="$(tmpfs_entries_or_fail)" || return 1
+	opts="$(printf '%s' "$entries" | jq -r '.[] | select(split(":")[0] == "/src") | (split(":")[1] // "")')"
+	if [ -z "$opts" ]; then
+		echo "/src の tmpfs エントリが見つからない: $entries" >&2
+		return 1
+	fi
+	case ",$opts," in
+	*,exec,*) return 0 ;;
+	esac
+	echo "/src の tmpfs オプションに exec が無い: $opts" >&2
+	return 1
+}
+assert A29 "/src の tmpfs エントリに exec が含まれる (node_modules/.bin を動かすため) [docker compose config の解決結果]" a29_tmpfs_src_has_exec
+
+a30_tmpfs_run_out_no_exec() {
+	local entries run_opts out_opts
+	entries="$(tmpfs_entries_or_fail)" || return 1
+	run_opts="$(printf '%s' "$entries" | jq -r '.[] | select(split(":")[0] == "/run") | (split(":")[1] // "")')"
+	out_opts="$(printf '%s' "$entries" | jq -r '.[] | select(split(":")[0] == "/out") | (split(":")[1] // "")')"
+	if [ -z "$run_opts" ]; then
+		echo "/run の tmpfs エントリが見つからない: $entries" >&2
+		return 1
+	fi
+	if [ -z "$out_opts" ]; then
+		echo "/out の tmpfs エントリが見つからない: $entries" >&2
+		return 1
+	fi
+	case ",$run_opts," in
+	*,exec,*)
+		echo "/run の tmpfs オプションに exec が含まれる (noexec のままであるべき): $run_opts" >&2
+		return 1
+		;;
+	esac
+	case ",$out_opts," in
+	*,exec,*)
+		echo "/out の tmpfs オプションに exec が含まれる (noexec のままであるべき): $out_opts" >&2
+		return 1
+		;;
+	esac
+	return 0
+}
+assert A30 "/run と /out の tmpfs エントリに exec が含まれない (noexec のまま) [docker compose config の解決結果]" a30_tmpfs_run_out_no_exec
+
+a31_tmpfs_all_uid_gid_1000() {
+	local entries bad
+	entries="$(tmpfs_entries_or_fail)" || return 1
+	bad="$(printf '%s' "$entries" | jq -r '
+		.[]
+		| . as $e
+		| ($e | split(":")[1] // "") as $opts
+		| select((",\($opts)," | contains(",uid=1000,") | not) or (",\($opts)," | contains(",gid=1000,") | not))
+		| $e
+	')"
+	if [ -n "$bad" ]; then
+		echo "uid=1000/gid=1000 のいずれかを欠くエントリ: $bad" >&2
+		return 1
+	fi
+	return 0
+}
+assert A31 "全 tmpfs エントリに uid=1000 と gid=1000 が含まれる [docker compose config の解決結果]" a31_tmpfs_all_uid_gid_1000
+
+# A32/A33: `${VAR:?...}` は config が補間した後の JSON には現れない
+# (補間済みの値になってしまうため、grep 的な文字列一致では検査できない)。
+# 代わりに「その変数を与えずに docker compose config を実行すると失敗する
+# こと」を見る — これは `:?` が付いていることの直接の証拠になる (grep より
+# 強い)。A11 (compose-current.yaml に対する同種のケース) と同じ
+# `env -u VAR ... docker compose ... config` の形。
+a32_missing_git_repo_fails() {
+	local rc=0
+	env -u GIT_REPO GIT_REF="verify-dummy-git-ref-do-not-use" \
+		docker compose -f "$COMPOSE_PROD_YAML" config --format json >/dev/null 2>&1 || rc=$?
+	[ "$rc" -ne 0 ]
+}
+assert A32 "GIT_REPO 未指定で docker compose config が失敗する (\${GIT_REPO:?...} の直接証拠)" a32_missing_git_repo_fails
+
+a33_missing_git_ref_fails() {
+	local rc=0
+	env GIT_REPO="verify-dummy-git-repo-do-not-use" -u GIT_REF \
+		docker compose -f "$COMPOSE_PROD_YAML" config --format json >/dev/null 2>&1 || rc=$?
+	[ "$rc" -ne 0 ]
+}
+assert A33 "GIT_REF 未指定で docker compose config が失敗する (\${GIT_REF:?...} の直接証拠)" a33_missing_git_ref_fails
+
+# A34: 補間の影響を受けないフィールドなので、A19〜A24 と同じく config の
+# 出力をそのまま見る。
+a34_image_has_sha256_digest() {
+	compose_prod_config | jq -e '(.services.prod.image | type) == "string" and (.services.prod.image | contains("@sha256:"))' >/dev/null
+}
+assert A34 'services.prod.image が "@sha256:" を含む (digest pin のまま。タグ参照へ退化していない) [docker compose config の解決結果]' a34_image_has_sha256_digest
+
+# =============================================================================
+# B1〜B4: 出荷 templates/compose.prod.yaml からの最小派生の実挙動 (docker が要る)
+#
+# compose-shipped.yaml (上、$SCRATCH セットアップの一部) は出荷ファイルその
+# ものへの sed 派生で、加えた変更は image: / bind mount 追加 / GIT_CONFIG_GLOBAL
+# 追加の 3 点だけ (diff は setup ログに出力済み)。bare repo は TEST_BARE_DIR
+# で足りる (pnpm install 等は絡まないので SELF_BARE_DIR は不要)。preflight
+# (bare repo がコンテナから見えるか) に依存するので assert_git() を使う。
+# =============================================================================
+b1_entrypoint_secrets_mode() {
+	local proj="verify-b1-$$" rc=0
+	# SC2016: 単引用符は意図的。$(...) はコンテナ内の sh に評価させる。
+	# shellcheck disable=SC2016
+	compose_run "$SCRATCH/compose-shipped.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '[ "$(stat -c %a /run/secrets/FOO)" = "600" ]' <<<"FOO=bar" || rc=$?
+	compose_down "$SCRATCH/compose-shipped.yaml" "$proj"
+	return "$rc"
+}
+assert_git B1 "entrypoint 完走後、/run/secrets/FOO が mode 600 で作られる [出荷 compose.prod.yaml からの最小派生]" b1_entrypoint_secrets_mode
+
+b2_mount_noexec() {
+	local proj="verify-b2-$$" rc=0
+	# SC2016: 単引用符は意図的。$(...) はコンテナ内の sh に評価させる。
+	# shellcheck disable=SC2016
+	compose_run "$SCRATCH/compose-shipped.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '
+			src_line="$(mount | grep " /src ")" || exit 1
+			run_line="$(mount | grep " /run ")" || exit 1
+			case "$src_line" in *noexec*) exit 1 ;; esac
+			case "$run_line" in *noexec*) : ;; *) exit 1 ;; esac
+		' <<<"FOO=bar" || rc=$?
+	compose_down "$SCRATCH/compose-shipped.yaml" "$proj"
+	return "$rc"
+}
+assert_git B2 "mount 出力: /src に noexec が無く、/run に noexec がある [出荷 compose.prod.yaml からの最小派生]" b2_mount_noexec
+
+b3_src_exec_runs() {
+	local proj="verify-b3-$$" rc=0
+	# SC2016: 単引用符は意図的。コンテナ内の sh に評価させる。
+	# shellcheck disable=SC2016
+	compose_run "$SCRATCH/compose-shipped.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '
+			printf "#!/bin/sh\necho EXEC_OK\n" > /src/t.sh
+			chmod +x /src/t.sh
+			[ "$(/src/t.sh)" = "EXEC_OK" ]
+		' <<<"FOO=bar" || rc=$?
+	compose_down "$SCRATCH/compose-shipped.yaml" "$proj"
+	return "$rc"
+}
+assert_git B3 "/src に置いた実行ファイルが動く (exec が効いている直接確認) [出荷 compose.prod.yaml からの最小派生]" b3_src_exec_runs
+
+b4_run_owner_node() {
+	local proj="verify-b4-$$" rc=0
+	# SC2016: 単引用符は意図的。コンテナ内の sh に評価させる。
+	# shellcheck disable=SC2016
+	compose_run "$SCRATCH/compose-shipped.yaml" "$proj" "file://$TEST_BARE_DIR" "$TEST_COMMIT" \
+		-T --rm prod sh -c '[ "$(stat -c "%U:%G" /run)" = "node:node" ]' <<<"FOO=bar" || rc=$?
+	compose_down "$SCRATCH/compose-shipped.yaml" "$proj"
+	return "$rc"
+}
+assert_git B4 "stat -c '%U:%G' /run が node:node を返す [出荷 compose.prod.yaml からの最小派生]" b4_run_owner_node
+
+# =============================================================================
 # summary
 # =============================================================================
 echo
@@ -2341,7 +2728,7 @@ done
 printf '\n%s measurements recorded, %s assertions passed, %s failed\n' \
 	"${#MEAS_LOG[@]}" "$ASSERT_PASS" "$ASSERT_FAIL"
 if [ "$HARNESS_GIT_OK" -eq 0 ]; then
-	echo "HARNESS ERROR: bare repo がコンテナから読めなかったため、SKIP と記録したケース (M1 の compose 経由分 / M2 / M6 / A5 / A6 / A10 / A16) は測定・検証できていない。上の preflight のログを見ること。"
+	echo "HARNESS ERROR: bare repo がコンテナから読めなかったため、SKIP と記録したケース (M1 の compose 経由分 / M2 / M6 / A5 / A6 / A10 / A16 / B1 / B2 / B3 / B4) は測定・検証できていない。上の preflight のログを見ること。"
 fi
 
 # 明示的な `exit N` ではなく、この判定式自身の終了コードをスクリプトの
