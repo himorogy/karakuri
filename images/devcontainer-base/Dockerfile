@@ -103,9 +103,9 @@ RUN mkdir -p /commandhistory \
 # source されているが、zsh は devcontainer-base 側にしかない (prod
 # container に zsh は無い) ため、ここで zshrc にも同じ source 行を足す。
 # zsh は POSIX 互換モードで prod-context を解釈でき (対話判定の
-# `case $- in *i*)`、glob 不一致時の `[ -e "$f" ] || continue` によるガード
-# は zsh の nullglob 既定 off にも対応済み)、bash 用に書き分ける必要はない
-# (設計書 §4.3 rev.6)。
+# `case $- in *i*)` は zsh でも効き、/run/secrets の列挙は glob ではなく
+# `ls -A` で行うため zsh の nomatch 既定でも落ちない)、bash 用に書き分ける
+# 必要はない (設計書 §4.3 rev.6)。
 RUN printf '%s\n' \
       'autoload -Uz compinit && compinit' \
       'HISTFILE=/commandhistory/.zsh_history' \

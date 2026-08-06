@@ -143,6 +143,40 @@ else
 fi
 rm -rf "$t"
 
+# --- 3b. /run/secrets が「存在して空」でも glob エラーで途中終了しない ------------
+#     以前は `for f in "$secrets_dir"/*` で列挙していた。ディレクトリが存在
+#     して中身がゼロのとき、zsh の既定 (nomatch) ではループ本体へ入る前の
+#     単語展開の時点で "no matches found" となり、サブシェルごと非ゼロ終了
+#     する (ループ本体の `[ -e "$f" ] || continue` は展開後の話なので防御に
+#     ならない)。外側の `|| true` があるため rc は 0 のままだが、stderr に
+#     エラーが出て、以降の /run/prod-ref 行が失われる。エラーが出ないこと
+#     と、後続の出力まで到達することの両方を見る。
+for sh_bin in bash zsh; do
+	if [ "$sh_bin" = zsh ] && [ "$HAVE_ZSH" -eq 0 ]; then
+		printf '  skip %s\n' "/run/secrets が存在して空でも glob エラーにならない (zsh): zsh 不在のため未検証"
+		continue
+	fi
+	t="$(mktemp -d)"
+	make_prod_context "$t"
+	# secrets ディレクトリは作るが中身は置かない (mkdir は make_prod_context 済み)
+	printf 'GIT_REF=main\nGIT_COMMIT=4f3a9c2b00112233445566778899aabbccddeeff\nMUTABLE_REF=0\n' >"$t/prod-ref"
+	err_file="$t/stderr.log"
+	out="$("$sh_bin" -i -c ". $t/prod-context" 2>"$err_file")"
+	rc=$?
+	err="$(cat "$err_file")"
+	if [ "$rc" -eq 0 ] && ! printf '%s\n' "$err" | grep -qi "no matches found"; then
+		ok "/run/secrets が存在して空でも glob エラーが出ない ($sh_bin -i)"
+	else
+		ng "/run/secrets が存在して空でも glob エラーが出ない ($sh_bin -i) (rc=$rc err=$err)"
+	fi
+	if printf '%s\n' "$out" | grep -qi "無い" && printf '%s\n' "$out" | grep -q "GIT_REF=main"; then
+		ok "/run/secrets が存在して空でも後続の /run/prod-ref 行まで到達する ($sh_bin -i)"
+	else
+		ng "/run/secrets が存在して空でも後続の /run/prod-ref 行まで到達する ($sh_bin -i) (out=$out)"
+	fi
+	rm -rf "$t"
+done
+
 # --- 4. /run/prod-ref があれば内容が出る -----------------------------------------
 t="$(mktemp -d)"
 make_prod_context "$t"

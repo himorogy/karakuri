@@ -49,15 +49,27 @@ esac
 	secrets_dir=/run/secrets
 	names=""
 	if [ -d "$secrets_dir" ]; then
-		for f in "$secrets_dir"/*; do
-			# glob が一つも一致しないと、展開されない生パターン文字列
-			# (例: "/run/secrets/*") がそのまま $f に来る。bash はこれを
-			# 黙って通すが、zsh は既定 (nullglob 未設定) だと
-			# "no matches found" でこのサブシェルごと非ゼロ終了する。
-			# どちらの場合も -e で弾いて「ファイルが実在するときだけ」
-			# 処理する。
-			[ -e "$f" ] || continue
-			names="$names ${f##*/}"
+		# ここで glob (`for f in "$secrets_dir"/*`) は使えない。
+		# ディレクトリが存在して中身がゼロのとき、bash は展開されない
+		# 生パターン文字列をそのまま渡してくるので `[ -e "$f" ] ||
+		# continue` で弾けるが、zsh は既定 (nomatch) だとループ本体へ
+		# 入る前の「単語展開の時点」で "no matches found" となり、この
+		# サブシェルごと非ゼロ終了する。ループ本体のガードは展開後の
+		# 話なので防御にならない (以前ここに「-e で zsh の nullglob 既定
+		# off にも対応済み」と書いてあったのは誤りだった)。実害を
+		# 抑えているのは外側の `|| true` だけになっていた。prod は bash
+		# なので影響は dev 側に限られるが、そもそも展開で落ちない形に
+		# する。
+		#
+		# ls の出力をパースするのは一般には避けるべきだが、ここに並ぶ
+		# のは entrypoint が鍵名検査 ([A-Za-z0-9_] のみ) を通した名前で
+		# 作ったファイルであり (設計書 §4.6)、空白・改行・glob 文字を
+		# 含む名前は来ない。
+		# shellcheck disable=SC2045 # 上記のとおり鍵名は [A-Za-z0-9_]
+		# のみで、ls 出力のパースが壊れる余地が無い。glob は zsh の
+		# nomatch で落ちるため使えない。
+		for name in $(ls -A "$secrets_dir" 2>/dev/null); do
+			names="$names $name"
 		done
 	fi
 
