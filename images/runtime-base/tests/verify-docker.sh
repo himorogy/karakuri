@@ -405,6 +405,38 @@ services:
 EOS
 sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs.yaml"
 
+# compose-src-tmpfs-exec.yaml: M9-e 用。compose-src-tmpfs.yaml と全く同じだが
+# /src の tmpfs オプションに `exec` を明示している点だけが違う。CI 5 回目で
+# M9-a / M9-b がともに rc=126 (tsup: Permission denied) で落ちた件 (M9 参照) の
+# 原因を「/src の tmpfs に既定で付く noexec」と疑っており、M9-d でその実測を
+# 取ったうえで、この compose ファイルで M9-b (案B) を exec 付きで測り直す。
+cat >"$SCRATCH/compose-src-tmpfs-exec.yaml" <<'EOS'
+services:
+  prod:
+    image: __IMAGE__
+    entrypoint: ["/usr/local/bin/prod-entrypoint.sh"]
+    working_dir: /src
+    environment:
+      GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
+      GIT_REF:  ${GIT_REF:?GIT_REF is required}
+      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}
+    volumes:
+      - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro
+    read_only: true
+    user: "1000:1000"
+    tmpfs:
+      - /run:uid=1000,gid=1000,mode=0755
+      - /tmp:uid=1000,gid=1000,mode=1777
+      - /out:uid=1000,gid=1000,mode=0755
+      - /home/node:uid=1000,gid=1000,mode=0755
+      - /src:exec,uid=1000,gid=1000,mode=0755
+    ulimits:
+      core: 0
+    logging:
+      driver: "none"
+EOS
+sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs-exec.yaml"
+
 # compose-anon.yaml: M7 (匿名 volume の削除) 用の最小構成。GIT_REPO / GIT_REF
 # も entrypoint も不要 (entrypoint を上書きして prod-entrypoint.sh を経由
 # させない)。匿名 volume がひとつ増える設定だけがあればよい。
@@ -704,9 +736,36 @@ measure_git M2 "/src + /out 合計 RAM 使用量 (du -sh、pnpm install 後)" m2
 # 与えるだけで store-dir が変わるかを見る (M9-c、pnpm install は走らせない
 # ので GIT_REPO 不要)。
 #
+# CI 5 回目の追記: M9-a / M9-b とも「依存の解決とリンクは成功 (added 174,
+# done) したが、後続の prepare スクリプト (packages/enclave-env の
+# `tsup` 実行) が `sh: 1: tsup: Permission denied` / rc=126 で落ちる」と
+# いう同一の症状で終わった。store の場所 (案A/案B) と無関係に同じ症状が
+# 出ていることから、原因は「/src の tmpfs マウントに既定で付く noexec」が
+# 濃厚 (docker の tmpfs は既定で rw,nosuid,nodev,noexec)。noexec マウント
+# 上の実行ファイルを exec すると EACCES になり、シェルは "Permission
+# denied" と報告する — 症状と一致する。M2 で git 操作が通ったのは git が
+# /usr/bin (イメージのルート fs、noexec の影響を受けない) にあるためで、
+# 影響を受けるのは node_modules/.bin のように tmpfs 上に置かれた実行
+# ファイルだけ、という仮説を立てている。
+#
+# この仮説を推測のまま対処するのではなく、M9-d で直接確認する:
+#   - exec オプションを明示しない現状の /src tmpfs (compose-src-tmpfs.yaml
+#     と同じ uid=,gid=,mode= 形) で mount 出力に noexec が実際に付くか、
+#     自作の実行ファイルが動くか
+#   - `exec` を明示した /src tmpfs (compose-src-tmpfs-exec.yaml) で同じ
+#     2 点がどう変わるか
+#   - /run /tmp /out /home/node の mount 出力も併せて出し、noexec の
+#     付き方を横並びで見る
+# そのうえで M9-e が、採用済みの案 B (store-dir=/src/.pnpm-store) を
+# exec 付き tmpfs で測り直し、`pnpm install --frozen-lockfile` が
+# prepare スクリプト (tsup build) まで完走するかを見る。M9-b はそのまま
+# 残す (exec を付ける前後の比較のため)。M9-a は RAM が倍という結論が
+# 既に出ているため exec 付きでは測り直さない。
+#
 # 全て MEASURE。pass/fail 判定はしない。1 ケースあたり pnpm install が
-# 走るため、M9-a / M9-b の 2 ケースに絞る (M9-c は store path の確認のみ
-# で pnpm install を走らせない)。
+# 走るため、M9-a / M9-b / M9-e の 3 ケースに絞る (M9-c は store path の
+# 確認のみ、M9-d は mount と自作スクリプトの実行確認のみで、どちらも
+# pnpm install を走らせない)。
 #
 # 推測 (docker が無い環境のため未実行・未確認):
 #   - `pnpm store path --store-dir <dir>` のようにサブコマンドの後ろに
@@ -715,9 +774,82 @@ measure_git M2 "/src + /out 合計 RAM 使用量 (du -sh、pnpm install 後)" m2
 #   - マウントを跨ぐハードリンク失敗時に pnpm が warn/info を出すという
 #     前提で、pnpm install の出力から cross-device/EXDEV/hardlink を含む
 #     行を拾っている。実際にそのような行が出るかは未確認。
+#   - docker run/compose の `--tmpfs path:opts` / `tmpfs: [path:opts]` は
+#     size= や mode= と同様に `exec` / `noexec` もカーネルの tmpfs マウント
+#     オプションとしてそのまま透過するはず、という前提で M9-d /
+#     compose-src-tmpfs-exec.yaml を書いている。ただし「ユーザーが
+#     uid=/gid=/mode= だけを指定したとき、docker 既定の noexec がそのまま
+#     残るのか、何らかの理由で置き換わるのか」は未確認 — これが M9-d で
+#     直接確認したい点そのものであり、確認できるまでは仮説にとどまる。
+#   - `pnpm config set store-dir <dir> --global` が書き込むファイルの
+#     場所を `pnpm config list` / `--location` でどこまで表示できるかは
+#     pnpm 側のフラグ対応を未確認のまま書いている (M9-c の追加測定)。
+#     read_only 下では書き込み自体が失敗する可能性が高く、その場合は
+#     エラー出力をそのまま記録する。
 # =============================================================================
 echo
 echo "=== M9: pnpm store の置き場所 ==="
+
+# M9-d: CI 5 回目の rc=126 (tsup: Permission denied) が「/src の tmpfs に
+# 既定で付く noexec」によるものかを直接確認する。pnpm install は走らせず
+# (docker run と mount / 自作スクリプトの実行確認だけなので軽い)、bare
+# repo も使わないので measure_git ではなく measure を使う。
+#
+# 2 つの docker run を 1 つの measure() 呼び出しにまとめて出す (m1_home_
+# worldwritable と同じスタイル)。前段の docker run が何らかの理由で
+# 非ゼロ終了しても後段が実行されるよう、それぞれを `|| true` で個別に
+# 保護する — 呼び出し元の測定表示 (MEAS_LOG) に片方だけ載って比較不能に
+# なるのを避けるため。ただし通常は両方とも docker run 自体は 0 終了する
+# はず: 内側の sh -c は `set -e` を使わず、自作スクリプトの実行が失敗
+# (permission denied) しても最後の `echo "rc=$?"` まで到達してそこで
+# 正常終了するため (m9a/m9b と同じ考え方)。
+#
+# SC2016: sh -c '...' 内の $ は意図的に単引用符でエスケープしている。
+# コンテナ内の sh に渡して評価させたい文字列であって、このスクリプト
+# 自身のシェルで展開させたいものではないため。
+m9d_tmpfs_exec_diagnosis() {
+	echo "=== (1) 現状形: /src:uid=1000,gid=1000,mode=0755 (exec 明示なし。compose-src-tmpfs.yaml と同じ形) ==="
+	# shellcheck disable=SC2016
+	docker run --rm --read-only --user 1000:1000 \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /tmp:uid=1000,gid=1000,mode=1777 \
+		--tmpfs /out:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /home/node:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /src:uid=1000,gid=1000,mode=0755 \
+		--ulimit core=0 \
+		"$IMG" sh -c '
+			echo "--- mount | grep <path> (/src /run /tmp /out /home/node) ---"
+			for p in /src /run /tmp /out /home/node; do
+				echo "[$p]"
+				mount | grep " $p " || echo "(mount 行が見つからない: $p)"
+			done
+			echo "--- /src に自作の実行ファイルを置いて実行 (exec オプション明示なし) ---"
+			printf "#!/bin/sh\necho EXEC_OK\n" > /src/t.sh
+			chmod +x /src/t.sh
+			/src/t.sh
+			echo "rc=$?"
+		' 2>&1 || true
+	echo
+	echo "=== (2) exec 明示形: /src:exec,uid=1000,gid=1000,mode=0755 ==="
+	# shellcheck disable=SC2016
+	docker run --rm --read-only --user 1000:1000 \
+		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /tmp:uid=1000,gid=1000,mode=1777 \
+		--tmpfs /out:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /home/node:uid=1000,gid=1000,mode=0755 \
+		--tmpfs /src:exec,uid=1000,gid=1000,mode=0755 \
+		--ulimit core=0 \
+		"$IMG" sh -c '
+			echo "--- mount | grep /src ---"
+			mount | grep " /src " || echo "(mount 行が見つからない: /src)"
+			echo "--- /src に自作の実行ファイルを置いて実行 (exec オプション明示あり) ---"
+			printf "#!/bin/sh\necho EXEC_OK\n" > /src/t.sh
+			chmod +x /src/t.sh
+			/src/t.sh
+			echo "rc=$?"
+		' 2>&1 || true
+}
+measure M9 "M9-d: /src tmpfs の noexec 実測 (mount 出力 + 自作実行ファイル。exec 明示なし vs あり)" m9d_tmpfs_exec_diagnosis
 
 # m9a_pnpm_case / m9b_pnpm_case は意図的にほぼ同じ内容 (STORE_DIR と
 # それに伴う注記だけが違う)。M9-a と M9-b の出力を同じ形式で比較できる
@@ -863,34 +995,155 @@ m9b_pnpm_case() {
 }
 measure_git M9 "M9-b 案B: store-dir=/src/.pnpm-store (/src と同一 tmpfs マウント)" m9b_pnpm_case
 
+# M9-e: 採用済みの案 B (store-dir=/src/.pnpm-store) を、/src の tmpfs に
+# `exec` を明示した compose-src-tmpfs-exec.yaml で測り直す。M9-b の内容を
+# ほぼそのまま踏襲しつつ (STORE_DIR は同じ /src/.pnpm-store)、追加で
+# 「prepare スクリプト (tsup build) が実際に走ったか」を
+# packages/enclave-env/dist/cli.js の有無で確認する。dist/ は
+# .gitignore 対象 (このリポジトリの .gitignore 参照) なので、bare repo
+# から checkout した直後の working tree には存在しない — install の
+# prepare フックで tsup が完走して初めて現れる。noexec が原因なら
+# ここで rc=0 かつ dist/cli.js が現れるはず、という当てをそのまま測定に
+# する。
+#
+# SC2016: sh -c '...' 内の $ は意図的に単引用符でエスケープしている。
+m9e_pnpm_case_exec() {
+	local proj="verify-m9-e-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+		-T --rm prod sh -c '
+			STORE_DIR="/src/.pnpm-store"
+			human_kb() {
+				n="$1"
+				if [ "$n" -ge 1048576 ]; then printf "%sG" "$((n / 1048576))"
+				elif [ "$n" -ge 1024 ]; then printf "%sM" "$((n / 1024))"
+				else printf "%sK" "$n"
+				fi
+			}
+			t0=$(date +%s)
+			pnpm install --frozen-lockfile --store-dir "$STORE_DIR" >/tmp/m9-install.log 2>&1
+			rc=$?
+			t1=$(date +%s)
+			echo "rc=$rc"
+			echo "--- pnpm install 出力の末尾 (トラブル時の手がかり用) ---"
+			tail -20 /tmp/m9-install.log
+			echo "--- pnpm store path --store-dir $STORE_DIR ---"
+			pnpm store path --store-dir "$STORE_DIR" 2>&1
+			echo "--- du -sh (store 単体) ---"
+			du -sh "$STORE_DIR" 2>&1 || echo "du failed (store may not exist)"
+			store_kb=$(du -sk "$STORE_DIR" 2>/dev/null | cut -f1)
+			echo "--- du -sh /src (node_modules + store 込み。store は /src の中にあるので二重計上に注意) ---"
+			du -sh /src 2>&1
+			src_kb=$(du -sk /src 2>/dev/null | cut -f1)
+			mkdir -p /out
+			echo dummy-build-artifact > /out/dummy
+			echo "--- du -sh /out ---"
+			du -sh /out 2>&1
+			out_kb=$(du -sk /out 2>/dev/null | cut -f1)
+			total_kb=$(( ${src_kb:-0} + ${out_kb:-0} ))
+			echo "--- 合計 (/src + /out。store は既に /src の値に含まれているので別途は足さない): ${total_kb:-0}K = $(human_kb "${total_kb:-0}") ---"
+			echo "--- df -h /src ---"
+			df -h /src 2>&1
+			echo "--- df -h /home/node ---"
+			df -h /home/node 2>&1
+			echo "--- hardlink 判定: node_modules 内、リンク数 2 以上 (links+1) のファイル数 / 全ファイル数 ---"
+			linked=$(find node_modules -type f -links +1 2>/dev/null | wc -l)
+			totalf=$(find node_modules -type f 2>/dev/null | wc -l)
+			echo "links+1=$linked total=$totalf"
+			echo "--- pnpm install 出力中の cross-device / hardlink 関連行 ---"
+			grep -iE "cross-device|exdev|hardlink" /tmp/m9-install.log || echo "(該当行なし)"
+			echo "--- prepare スクリプト (packages/enclave-env: tsup build) が実際に走ったか ---"
+			echo "--- 判定材料: packages/enclave-env/dist/cli.js の有無 (dist は .gitignore 対象なので checkout 直後には存在しない) ---"
+			if [ -f packages/enclave-env/dist/cli.js ]; then
+				ls -la packages/enclave-env/dist 2>&1
+				echo "M9_E_BUILD_RAN=YES (dist/cli.js が存在する = prepare の tsup build が完走した)"
+			else
+				echo "M9_E_BUILD_RAN=NO (dist/cli.js が無い = prepare/build が実行されていないか失敗した)"
+			fi
+			echo "--- pnpm install 出力中の tsup / Permission denied 関連行 (CI 5 回目の症状の再現有無) ---"
+			grep -iE "tsup|permission denied" /tmp/m9-install.log || echo "(該当行なし)"
+			echo "--- 所要時間 ---"
+			echo "${t1}s - ${t0}s = $((t1 - t0))s"
+			echo "M9_RC=$rc"
+			echo "M9_STORE_KB=${store_kb:-0}"
+			echo "M9_SRC_KB=${src_kb:-0}"
+			echo "M9_OUT_KB=${out_kb:-0}"
+			echo "M9_LINKED=$linked"
+			echo "M9_TOTALF=$totalf"
+			echo "M9_ELAPSED=$((t1 - t0))"
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs-exec.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s。pnpm install 個別の rc は本文中の rc= 行を見ること)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out"
+}
+measure_git M9 "M9-e 案B + exec 明示: store-dir=/src/.pnpm-store、/src tmpfs に exec を付けた場合 (build 完走確認込み)" m9e_pnpm_case_exec
+
 # M9-c: store-dir をイメージに焼く方法の確認。pnpm install は走らせない
 # (store path の確認だけで十分、とのタスク指示のとおり)。GIT_REPO/GIT_REF
 # も bare repo fetch も使わないので、bare repo 到達性 (HARNESS_GIT_OK) と
 # 無関係 — measure_git ではなく measure を使う。
+#
+# CI 5 回目の不具合: 元の実装は cwd を変えないまま `pnpm store path` を
+# 実行しており、cwd は docker のデフォルト (イメージの WORKDIR 未設定=
+# ルート `/`。root:root 755 で uid 1000 からは書けない) のままだった。
+# `pnpm store path` は cwd にテンポラリファイルを作って書き込み可否を
+# 確かめる実装になっており、これが EACCES で落ちて `M9_C_CHANGED=YES` が
+# 誤判定されていた (両方エラーなのに文字列比較で「変わった」と誤認)。
+# `-w /tmp` で cwd を書ける場所 (このコンテナは --read-only を付けず
+# 素のまま起動しているため、イメージ既定の /tmp は通常 1777 で書ける) に
+# 変え、両方の実行が実際にエラーなく完走したことを確認したうえで比較する。
+# 片方でもエラーが残っていれば UNKNOWN として記録し、YES/NO のどちらとも
+# 誤って報告しない。
 m9c_store_dir_env() {
 	local out
 	# shellcheck disable=SC2016
-	out="$(docker run --rm --user 1000:1000 "$IMG" sh -c '
-			echo "--- 素の pnpm store path (環境変数なし。既定は \$PNPM_HOME/store のはず) ---"
+	out="$(docker run --rm --user 1000:1000 -w /tmp "$IMG" sh -c '
+			echo "--- 素の pnpm store path (環境変数なし。既定は \$PNPM_HOME/store のはず。cwd=/tmp に変更して書き込み不可による EACCES を避けている) ---"
 			default_path=$(pnpm store path 2>&1)
+			default_rc=$?
 			echo "$default_path"
 			echo "--- 素の pnpm config get store-dir ---"
 			pnpm config get store-dir 2>&1
 			echo "--- npm_config_store_dir=/home/node/.local/share/pnpm/store を与えた場合の pnpm store path ---"
 			env_path=$(npm_config_store_dir=/home/node/.local/share/pnpm/store pnpm store path 2>&1)
+			env_rc=$?
 			echo "$env_path"
 			echo "--- 同条件での pnpm config get store-dir ---"
 			npm_config_store_dir=/home/node/.local/share/pnpm/store pnpm config get store-dir 2>&1
-			if [ "$default_path" != "$env_path" ]; then
+			echo "--- default_rc=$default_rc env_rc=$env_rc (両方 0 でなければ比較は判定不能) ---"
+			if [ "$default_rc" -ne 0 ] || [ "$env_rc" -ne 0 ]; then
+				echo "M9_C_CHANGED=UNKNOWN (エラーのため判定不能: default_rc=$default_rc env_rc=$env_rc)"
+			elif [ "$default_path" != "$env_path" ]; then
 				echo "M9_C_CHANGED=YES"
 			else
 				echo "M9_C_CHANGED=NO"
 			fi
+			echo
+			echo "--- 追加測定: PNPM_HOME を変えず、pnpm config set store-dir --global の書き込み先 ---"
+			echo "--- (read_only ではないコンテナだが、PNPM_HOME=/usr/local/share/pnpm はイメージのルート fs 上にあり、コンテナ起動時に書き込み権限が広げられていなければ失敗しうる。設定ファイルの実際の置き場所は pnpm のバージョン依存のため、ここではコマンドの成否と出力をそのまま記録するにとどめる) ---"
+			# 推測: pnpm config set/list の --global / --location まわりの
+			# 挙動は pnpm 9.x 系のドキュメントを基に書いているが、この
+			# イメージに入っている pnpm の実バージョンでの挙動は docker が
+			# 無いこの環境では確認できていない。
+			if set_out=$(pnpm config set store-dir /home/node/.local/share/pnpm/store --global 2>&1); then
+				echo "$set_out"
+				echo "--- pnpm config list --global (設定がどこに反映されたか) ---"
+				pnpm config list --global 2>&1
+				echo "M9_C_GLOBAL_SET=OK"
+			else
+				set_rc=$?
+				echo "$set_out"
+				echo "M9_C_GLOBAL_SET=FAILED (rc=$set_rc)"
+			fi
+			echo
+			echo "--- /usr/local/etc/npmrc (npm のグローバル設定ファイル) に store-dir= を書いた場合に効くかは、イメージ側の変更が要るためこの測定では確認していない (未確認・未実施) ---"
 		' 2>&1)"
 	printf '%s\n' "$out" >"$SCRATCH/m9c-output.txt"
 	printf '%s\n' "$out"
 }
-measure M9 "M9-c: 環境変数 npm_config_store_dir だけで pnpm store path / config get store-dir が変わるか (pnpm install は走らせない)" m9c_store_dir_env
+measure M9 "M9-c: 環境変数 npm_config_store_dir だけで pnpm store path / config get store-dir が変わるか (cwd=/tmp に修正。pnpm install は走らせない)" m9c_store_dir_env
 
 # M9 まとめ: M9-a / M9-b / M9-c の出力ファイル ($SCRATCH/m9{a,b,c}-output.txt。
 # 上の 3 関数が pnpm install を再実行せず書き出したもの) を読み、一目で
@@ -898,6 +1151,12 @@ measure M9 "M9-c: 環境変数 npm_config_store_dir だけで pnpm store path / 
 # 案 A は store が /src とは別マウントなので store+/src+/out を単純合算、
 # 案 B は store が /src の中にあり /src の du に既に含まれているので
 # /src+/out だけを合算する (store の値自体は比較用に別途表示する)。
+#
+# M9-d (mount/自作スクリプトの実行確認) と M9-e (exec 付き案B) はこの
+# まとめには含めない — d は pnpm install を伴わず a/b/e と同じ形式の
+# フィールドを持たないため、e は「exec を付けた後」を一つ増やすと
+# a/b の 2 行比較という元の設計が崩れるため。d/e はそれぞれの
+# measure() 呼び出しの出力をそのまま参照する。
 m9_summary() {
 	to_int() { case "$1" in '' | *[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }
 	kb_to_human() {
@@ -953,6 +1212,8 @@ m9_summary() {
 			c_line="c: npm_config_store_dir で store path が変わる=YES"
 		elif grep -q '^M9_C_CHANGED=NO$' "$c_file"; then
 			c_line="c: npm_config_store_dir で store path が変わる=NO"
+		elif grep -q '^M9_C_CHANGED=UNKNOWN' "$c_file"; then
+			c_line="c: 判定不能 (default/env のいずれかがエラー終了。$c_file の M9_C_CHANGED=UNKNOWN 行を参照)"
 		else
 			c_line="c: 判定不能 (出力形式が想定と異なる。$c_file を直接参照)"
 		fi

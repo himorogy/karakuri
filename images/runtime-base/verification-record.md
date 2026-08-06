@@ -236,6 +236,67 @@ M2  pnpm install --frozen-lockfile : FAILED (rc=254)
 **測定項目 M9 として両方を測る**（RAM 合計・ハードリンクの成否・所要時間、および
 `npm_config_store_dir` でイメージに焼けるかの確認）。
 
+## 0.65 CI 5 回目（2026-08-06）— pnpm store は案 B で決定。tmpfs の `noexec` を検出
+
+### store の置き場所 — 案 B（`/src` 配下）が RAM ちょうど半分
+
+```
+A（別 tmpfs、store=/home/node/...）  store 130M + /src 132M = 合計 260M   hardlink 0/3546
+B（同 tmpfs、store=/src/.pnpm-store）合計 131M（store は /src の内数）    hardlink 3491/3546
+```
+
+pnpm 自身が出力で機構を明言している。
+
+```
+A: Packages are copied      from the content-addressable store to the virtual store.
+B: Packages are hard linked from the content-addressable store to the virtual store.
+```
+
+ハードリンクはマウントを跨げないため、案 A は全パッケージを RAM に二重に持つ。
+これは karakuri 自身（依存 174、130M）での数字で、実プロジェクトなら差は 1G 級になる。
+**案 B を採る。** `/src` は毎回 `git clean -xdff` の後に `pnpm install` するので、
+store が working tree の中にあっても同一 run 内では消えない。
+
+`--store-dir` フラグが効くことは確認できた。**イメージへ焼く方法は未確定**（M9-c は下記の
+理由で測定失敗）。
+
+### tmpfs の `noexec` で node_modules のバイナリが動かない（新しい欠陥）
+
+M9-a / M9-b とも `rc=126`。依存の解決とリンクは成功（`added 174, done`）していて、
+落ちたのはその後である。
+
+```
+packages/enclave-env prepare$ pnpm run build
+packages/enclave-env prepare: $ tsup
+packages/enclave-env prepare: sh: 1: tsup: Permission denied
+[ELIFECYCLE] Command failed with exit code 126.
+```
+
+store の場所と無関係に両ケースで同一の症状。docker の tmpfs マウントは既定で
+`rw,nosuid,nodev,noexec` が付き、noexec マウント上の実行ファイルを exec すると EACCES に
+なってシェルは "Permission denied" と報告する。症状が一致する。
+
+**影響は致命的で、`node_modules/.bin` の実行ファイルが一切動かない。** `pnpm run build` も
+deploy も成立しない。M2 で git 操作が通ったのは git が `/usr/bin`（noexec でない）にあるため。
+
+`/src` は信頼しないコードを**実行するための場所**なので、そこを noexec にする意味は元々ない。
+`/run`（secrets）と `/out`（成果物）は noexec のままでよい。tmpfs に `exec` を明示する形で
+M9-d（`mount` の直接確認と自作スクリプトの実行）と M9-e（`exec` 付きでの `pnpm install` 再測定）
+を追加した。**ユーザーがオプションを渡したとき docker の既定 `noexec` が残るか置き換わるかは
+未確認**なので、M9-d で直接測る。
+
+### M9-c は測定失敗
+
+```
+素の pnpm store path              → [EACCES] permission denied, open '/_tmp_8_...'
+npm_config_store_dir を与えた場合 → 同じ EACCES
+M9_C_CHANGED=YES   ← 両方エラーなので誤判定
+```
+
+`pnpm store path` が cwd（`read_only` の `/`）にプローブ用の一時ファイルを作ろうとして落ちた。
+`-w /tmp` を付け、両方の rc が 0 のときだけ比較する形へ直した（片方でもエラーなら
+`UNKNOWN` と出す）。
+
 ## 0.7 原理上この方法では測れないもの
 
 - **`credential.helper` 経由の `GH_TOKEN` 窃取。** `file://` はホスト上のパスへの直接アクセスで
