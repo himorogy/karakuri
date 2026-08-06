@@ -224,8 +224,32 @@ SELF_BARE_DIR="$SCRATCH/self-bare.git"
 git clone -q --bare --no-hardlinks "$REPO_ROOT" "$SELF_BARE_DIR"
 SELF_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
+# バグ1: GitHub Actions の actions/checkout は detached HEAD で checkout
+# する。REPO_ROOT が detached HEAD の場合、そこから作った bare clone は
+# refs/heads/* を一切持たない (detached HEAD 自体は clone 先の HEAD には
+# なるが、どの refs/heads/* にも属さない)。prod-entrypoint.sh の
+# `git fetch --tags --prune origin` は既定 refspec
+# (+refs/heads/*:refs/remotes/origin/*) なので、ブランチ ref が無ければ
+# 何も fetch されず、コンテナ内の repo に SELF_COMMIT が存在しないまま
+# `checkout --detach` が `fatal: reference is not a tree` で落ちる
+# (M2 全滅の原因)。SELF_COMMIT を指すブランチ ref を明示的に作って
+# fetch 対象にする。test bare repo (TEST_BARE_DIR) が影響を受けないのは
+# push 時に明示的に refs/heads/main を作っているため。
+#
+# `git branch -f` ではなく `update-ref` を使う: bare repo に対する
+# ref 操作そのもの (HEAD やカレントブランチの状態に依存しない、単なる
+# refs/heads/main の作成/更新) であることを明確にするため。
+git --git-dir="$SELF_BARE_DIR" update-ref refs/heads/main "$SELF_COMMIT"
+
 echo "test bare repo: $TEST_BARE_DIR (commit1=$TEST_COMMIT commit2=$TEST_COMMIT2)"
 echo "self bare repo: $SELF_BARE_DIR (commit=$SELF_COMMIT)"
+
+# バグ1: 次に同じ問題 (bare repo にブランチ ref が無くて fetch が全滅する)
+# が起きたら、この show-ref の出力を見れば一目で分かるようにしておく。
+echo "test bare repo refs (git --git-dir=$TEST_BARE_DIR show-ref):"
+git --git-dir="$TEST_BARE_DIR" show-ref || echo "(show-ref: refs が無い)"
+echo "self bare repo refs (git --git-dir=$SELF_BARE_DIR show-ref):"
+git --git-dir="$SELF_BARE_DIR" show-ref || echo "(show-ref: refs が無い)"
 
 # --- コンテナ (uid 1000) から $SCRATCH 配下を読めるようにする -------------------
 # バグ1: $SCRATCH はランナーのユーザー (ubuntu-latest では通常 uid 1001 の
@@ -950,12 +974,28 @@ measure_git M6 "named volume 再利用: credential.helper 経由の GH_TOKEN 窃
 
 # --- git 設定優先順位 ------------------------------------------------------------
 m6_hookspath_precedence() {
+	# バグ2: 元のコマンドは cwd を指定せずに `git config` を呼んでいた。
+	# docker_prod_run (docker run) は compose の working_dir: /src を経由
+	# しないため、exec された "$@" のカレントディレクトリはイメージの
+	# 既定 WORKDIR のままで /src ではなく、そこは git repo ではないので
+	# `fatal: not in a git directory` になっていた。`git -C /src` で
+	# 対象リポジトリを明示する。
+	#
+	# 測りたいのは「/src/.git/config (local スコープ) に core.hooksPath を
+	# 書いたとき、イメージの /etc/gitconfig (system スコープ、A3 が
+	# /usr/local/share/git-hooks と確定させている) の値を上書きするか」。
+	# 実効値 (--get) と、どのスコープの値が並んでいるか (--show-origin
+	# --get-all) の両方を出力する。
+	#
 	# SC2016: 単引用符は意図的。この $(...) はこのスクリプトのシェルではなく
 	# コンテナ内の sh に評価させる (docker_prod_run の第 4 引数以降はコンテナ
 	# 内で実行されるコマンド)。
 	# shellcheck disable=SC2016
 	docker_prod_run "file://$TEST_BARE_DIR" "$TEST_COMMIT" "FOO=bar" \
-		sh -c 'git config core.hooksPath /tmp/local-hooks && echo "local: $(git config --get core.hooksPath)" && echo "system: $(git config --system --get core.hooksPath)"'
+		sh -c 'git -C /src config core.hooksPath /tmp/local-hooks &&
+			echo "effective (git -C /src config --get core.hooksPath): $(git -C /src config --get core.hooksPath)" &&
+			echo "--- git -C /src config --show-origin --get-all core.hooksPath ---" &&
+			git -C /src config --show-origin --get-all core.hooksPath'
 }
 measure_git M6 "/src/.git/config の core.hooksPath がシステム設定 (/etc/gitconfig) を上書きするか" m6_hookspath_precedence
 
@@ -1148,10 +1188,21 @@ assert_git A5 "entrypoint 実行後、/run/secrets/<VAR> が mode 600 で tmpfs 
 # 移植性の制約)。--rm を使わず docker create/start/inspect/rm を手動で行う
 # のは、コンテナ終了後に inspect する必要があるため (--rm だと消えてしまう)。
 a6_no_secret_in_inspect() {
-	local cid marker inspect_out rc=0
+	local cid marker create_out create_rc=0 start_out start_rc=0 \
+		inspect_out inspect_rc=0 rm_out rm_rc=0
 	marker="A6MARKERVALUE_$$"
-	cid="$(docker create \
-		--read-only --user 1000:1000 \
+
+	# バグ3 で特定した原因: 元のコードは `docker create` に -i/--interactive
+	# を付けていなかった。コンテナの STDIN が「開いているかどうか」は
+	# create (もしくは run) 時点で固定され、後段の `docker start -ai` の
+	# -i は「開いている STDIN に attach する」だけの意味しか持たない。
+	# create 時点で閉じていれば、start 側で -i を付けても pipe した
+	# secrets はコンテナに届かず即 EOF になり、entrypoint は 1 行も読めずに
+	# "no secrets received on stdin" で exit 1 する — これが rc=1 の
+	# 実際の原因だった (メッセージが空に見えたのは、下の元コードが
+	# `docker start` の出力を /dev/null に捨てていたため)。
+	create_out="$(docker create \
+		--read-only --user 1000:1000 --interactive \
 		--tmpfs /run:uid=1000,gid=1000,mode=0755 \
 		--tmpfs /tmp:uid=1000,gid=1000,mode=1777 \
 		--tmpfs /out:uid=1000,gid=1000,mode=0755 \
@@ -1162,12 +1213,43 @@ a6_no_secret_in_inspect() {
 		-e GIT_REPO="file://$TEST_BARE_DIR" -e GIT_REF="$TEST_COMMIT" \
 		-e GIT_CONFIG_GLOBAL="$SAFE_GITCONFIG" \
 		--entrypoint /usr/local/bin/prod-entrypoint.sh \
-		"$IMG" true)"
-	printf 'FOO=bar\nDOTENV_PRIVATE_KEY_TEST=%s\n' "$marker" | docker start -ai "$cid" >/dev/null 2>&1 || rc=$?
-	inspect_out="$(docker inspect "$cid" 2>&1)"
-	docker rm -f "$cid" >/dev/null 2>&1 || true
-	[ "$rc" -eq 0 ] || return 1
-	! printf '%s' "$inspect_out" | grep -qF "$marker"
+		"$IMG" true 2>&1)" || create_rc=$?
+	if [ "$create_rc" -ne 0 ]; then
+		echo "docker create failed (rc=$create_rc): $create_out" >&2
+		return 1
+	fi
+	cid="$create_out"
+
+	# `docker start -ai` は attach + interactive で、プロセスの終了まで
+	# 同期的にブロックする (docker wait を別途挟む必要はない)。よって
+	# ここでの inspect は entrypoint の完走を待たずに行われる、という
+	# タイミング問題は無い。ただし start の出力は握りつぶさず、失敗時に
+	# 何が起きたかを残す。
+	start_out="$(printf 'FOO=bar\nDOTENV_PRIVATE_KEY_TEST=%s\n' "$marker" | docker start -ai "$cid" 2>&1)" || start_rc=$?
+
+	inspect_out="$(docker inspect "$cid" 2>&1)" || inspect_rc=$?
+	rm_out="$(docker rm -f "$cid" 2>&1)" || rm_rc=$?
+
+	if [ "$start_rc" -ne 0 ]; then
+		echo "docker start -ai failed (rc=$start_rc): $start_out" >&2
+		return 1
+	fi
+	if [ "$inspect_rc" -ne 0 ]; then
+		echo "docker inspect failed (rc=$inspect_rc): $inspect_out" >&2
+		return 1
+	fi
+	if [ "$rm_rc" -ne 0 ]; then
+		echo "docker rm -f failed (rc=$rm_rc): $rm_out (secrets check was still performed)" >&2
+	fi
+
+	if printf '%s' "$inspect_out" | grep -qF "$marker"; then
+		# secret 値そのものは出力しない。何行目に現れたかだけ示す。
+		local hit_line
+		hit_line="$(printf '%s' "$inspect_out" | grep -nF "$marker" | head -1 | cut -d: -f1)"
+		echo "secret marker found in 'docker inspect' output at line $hit_line (value withheld)" >&2
+		return 1
+	fi
+	return 0
 }
 assert_git A6 "docker inspect の Config.Env / Mounts に secret 値が一切現れない [docker create: --read-only --tmpfs uid= 形、手動 start/inspect/rm]" a6_no_secret_in_inspect
 

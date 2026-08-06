@@ -175,6 +175,87 @@ entrypoint が `mkdir` で死なずに stdin のパースまで到達するよ�
 
 ---
 
+## 0.4 CI 3 回目（2026-08-06）— N-1 / N-2 が実証され、`/src` の tmpfs 化に裏付けがついた
+
+preflight を通過し、M6 が取れた。**この設計変更の根拠が推論から実測になった。**
+
+### N-1 ref 汚染 — named volume で再現する
+
+```
+1st run  commit1 を checkout 後、ローカルタグ v9.9.9 を commit2 に打つ  → rc=0
+2nd run  同じ volume、GIT_REF=v9.9.9                                   → rc=0
+         HEAD is now at fe2ef9c commit2
+         file.txt = world          ← commit2（攻撃者が指した先）の内容
+```
+
+前回実行の（信頼しない）コードが打ったローカルタグが解決され、**指定したはずのものとは別の
+commit が checkout された**。`git fetch --tags` は既存ローカルタグを clobber せず、ローカル
+branch は fetch の対象外。rev.4 で足した `reset --hard` は tracked file の改変には効くが、
+**ref そのものが汚染されている場合は「汚染された ref へ正しく復元する」だけ**で I7 を守らない。
+
+tmpfs 側では 2nd run が rc=128 で失敗した。毎回まっさらなので `v9.9.9` が存在せず、
+汚染 ref を拾いようがない（fail-closed）。
+
+### N-2 `.git/config` 持続 — named volume で再現する
+
+```
+1st run  core.fsmonitor に目印コマンドを仕込む  → rc=0
+2nd run  同じ volume、同じ GIT_REF              → rc=0
+         FSMONITOR_RAN が 8 回
+```
+
+仕込んだコマンドが **entrypoint 自身の fetch / checkout / reset / clean で 8 回実行された**。
+git の設計優先順位は local > system なので、イメージの `/etc/gitconfig` は repo の
+`.git/config` に上書きされる。しかも実行位置は `rm -f /run/secrets/GH_TOKEN` の**前**であり、
+**トークンがまだ存在する状態で任意コードが走る**。機密性の穴である。
+
+tmpfs 側では `0 / 0 (fresh .git/config)`。仕込みが残らない。
+
+`credential.helper` 経由の窃取は `NOT_PRESENT` で再現しなかった。`file://` は認証を要求せず
+git がヘルパを呼ばないため。**https でないと測れないので未確定のまま残る**（原理上は
+`core.fsmonitor` と同じ経路が成立するため、対処は同じ）。
+
+### tmpfs 化で両方が構造的に消える
+
+named volume を捨てて `/src` を tmpfs にすれば、毎回まっさらな repo から始まるため
+N-1 も N-2 も成立しない。R6（prod のコードが `/src` へ書いた復号値やトークンが Docker VM の
+ディスクに残る）も同時に消える。設計書 D8 / §4.6 を rev.5 で差し替える。
+
+### tmpfs の所有権 — compose 側でも確定（項目 32 完了）
+
+```
+compose 素の短縮形 tmpfs: ["/run"]        → Permission denied
+compose uid=1000,gid=1000,mode=0755 形    → fetch/checkout 成功、755 node:node
+```
+
+`docker run` と `docker compose` で挙動が一致した。実装が正しい。
+
+### ASSERT は 17/18
+
+A5 / A10 / A16 が通った。A6 のみ FAIL だったが、原因は**ハーネスの不具合**である
+（`docker create` に `-i` が無く、コンテナの STDIN が開かれないまま作られていたため、
+stdin 経由の secret が entrypoint に届かず `no secrets received on stdin` で落ちていた。
+`docker start -ai` の `-i` は既に開いている STDIN への attach を意味するだけで、create 時点で
+閉じていれば効かない）。修正済み・4 回目で確認する。
+
+### 実装側に見つかった改善点 — 存在しない ref のエラーが読み取れない
+
+M6 の tmpfs ケースで観測:
+
+```
+fatal: git checkout: --detach does not take a path argument 'v9.9.9'
+```
+
+fail-closed ではあるので安全側だが、**「その ref は存在しない」ではなく「パス引数は取れない」**
+と言う。git が ref 解決に失敗した結果、引数をパス名と解釈しているため。運用でこれを踏んだ人間は
+原因に辿り着けない。I6（前提の欠落が読み取れる失敗になること）の趣旨に反する。
+
+`fetch` の後・`checkout` の前に `git rev-parse --verify --quiet "${GIT_REF}^{commit}"` を入れ、
+解決できなければ明示的なメッセージで落とすようにした（回帰テスト追加済み）。
+`GIT_REF` は秘匿情報ではないのでメッセージに含めてよい。設計書 §4.6 へ rev.5 で反映する。
+
+---
+
 ## 1. 自動テストで恒常的に確認しているもの
 
 `pnpm test` が回帰として毎回検証する。テストは docker 不要で、shim / entrypoint を一時

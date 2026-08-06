@@ -98,6 +98,28 @@ fi
 # コードが実行されてしまい I7 (「明示された ref から復元される」) が
 # 破れる (設計書 §4.6)。
 git -C /src fetch --tags --prune origin
+
+# バグ4: GIT_REF が fetch 後の repo で commit として解決できない場合、
+# 後続の `git checkout --detach --force "$GIT_REF"` は git の「ref として
+# 解決できなければパス名として解釈する」挙動により
+# "fatal: git checkout: --detach does not take a path argument '<ref>'"
+# という、原因 (指定された ref が存在しない) を読み取れないメッセージで
+# 落ちる。ここで先に ref 解決だけを検証し、読み取れる失敗にする
+# (設計の不変条件 I6: secret / 前提の欠落が読み取れる失敗になること)。
+# $GIT_REF は秘匿情報ではない (GIT_REPO / GIT_REF は stdin 経由の secret
+# とは別に、通常の環境変数として渡す設計) ので、メッセージに含めてよい。
+#
+# `git checkout --detach --force -- "$GIT_REF"` のように `--` で ref と
+# パスの曖昧さを断つことも検討したが採らない: `--` を付けると git は
+# それ以降の引数を無条件にパスとして扱うため、正しい ref を渡した場合
+# でも checkout がパス引数として解釈してしまい壊れる。ここで断ちたいのは
+# 「ref 解決に失敗した後にパスへフォールバックする」あいまいさであって
+# checkout の引数解釈そのものではないため、事前の `rev-parse --verify` に
+# よる検証だけで十分。
+git -C /src rev-parse --verify --quiet "${GIT_REF}^{commit}" >/dev/null || {
+  echo "GIT_REF does not resolve to a commit in the fetched repository: $GIT_REF" >&2
+  exit 1
+}
 git -C /src checkout --detach --force "$GIT_REF"
 git -C /src reset --hard "$GIT_REF"
 git -C /src clean -xdff

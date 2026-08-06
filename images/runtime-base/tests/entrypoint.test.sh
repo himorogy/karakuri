@@ -323,6 +323,29 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 		ng "named volume 再利用時に tracked file の改変が復元される (rc=$rc content=$(cat "$t/src/file.txt" 2>/dev/null) out=$out)"
 	fi
 	rm -rf "$t"
+
+	# 13. 存在しない ref -> 非ゼロ終了、かつ原因の読み取れるメッセージが出る
+	#     (regression: バグ4)。修正前は GIT_REF が commit として解決
+	#     できないとき、`git checkout --detach --force "$GIT_REF"` が
+	#     ref 解決に失敗した結果 $GIT_REF をパス引数と解釈し、
+	#     "fatal: git checkout: --detach does not take a path argument
+	#     '<ref>'" という、原因 (指定 ref が存在しない) の読み取れない
+	#     メッセージで落ちていた。fetch 直後に `rev-parse --verify` で
+	#     解決可能性を検証し、"does not resolve" という明示的なメッセージ
+	#     で落ちるようにした。
+	t="$(mktemp -d)"
+	make_entrypoint "$t"
+	out="$(printf 'FOO=bar\n' |
+		env GIT_REPO="$BARE_REPO" GIT_REF="v9.9.9-does-not-exist" "$t/entrypoint.sh" true 2>&1)"
+	rc=$?
+	if [ "$rc" -ne 0 ] &&
+		printf '%s\n' "$out" | grep -q "does not resolve" &&
+		! printf '%s\n' "$out" | grep -q -- "--detach does not take a path argument"; then
+		ok "存在しない ref -> 'does not resolve' で非ゼロ終了 (--detach のパス引数エラーではない)"
+	else
+		ng "存在しない ref -> 'does not resolve' で非ゼロ終了 (--detach のパス引数エラーではない) (rc=$rc out=$out)"
+	fi
+	rm -rf "$t"
 else
 	skip "正常系 (secret 保存 / mode 600 / GH_TOKEN 削除 / checkout 復元): git 不在のため未検証"
 	skip "値に '=' を含む行が壊れない: git 不在のため未検証 (checkout まで到達できない)"
@@ -331,6 +354,7 @@ else
 	skip "/src 残骸からの復帰: git 不在のため未検証"
 	skip "remote 冪等性: git 不在のため未検証"
 	skip "named volume 再利用時に tracked file の改変が復元される: git 不在のため未検証"
+	skip "存在しない ref -> 明示的なエラーメッセージ: git 不在のため未検証"
 fi
 
 # --- 後始末 ----------------------------------------------------------------------
