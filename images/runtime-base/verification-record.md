@@ -731,7 +731,7 @@ scanner source: the caller's own checkout (this workflow was called by path)
 karakuri 自身の env-guard は緑になった。ただし**通ったのは self-call 専用の経路**であり、
 **他 org から `@v1` で呼ぶ本来の伝播経路は一度も実行されていない**。
 
-### 診断の結果 — コンテキストは生きていて、`job_workflow_ref` だけが空
+### 診断の全項目（CI 12〜13 回目）
 
 ```
 job_workflow_ref: <empty>
@@ -739,76 +739,45 @@ workflow_ref:     himorogy/karakuri/.github/workflows/ci.yml@refs/pull/11/merge
 repository:       himorogy/karakuri
 ref:              refs/pull/11/merge
 ref_name:         11/merge
-sha:              7b329d8ece9b6ca3724873f43a208eade63491c8
+sha:              ...
 event_name:       pull_request
 ```
 
-`workflow_ref` は正しく埋まっている（指しているのは**呼び出し側**の `ci.yml`）。つまり
-コンテキストの取得自体は機能していて、`job_workflow_ref` だけが空である。
+`workflow_ref` は正しく埋まっている（指しているのは**呼び出し側**の `ci.yml`）。コンテキストの
+取得自体は機能していて、`job_workflow_ref` だけが空である。
 
-`workflow_ref` は代用にならない。self-call では呼び出し側が karakuri なのでたまたま使えるが、
-他 org から呼ばれれば**呼び出し側のリポジトリ**を指すため、そこから karakuri のスキャナは
-取れない。「self-call では動くが本番では壊れる」という最悪の形になる。
-
-### 残る二択は、他 org を用意せずに測れる
-
-`job_workflow_ref` が空なのが「ローカルパス呼び出しに限った話」なのか「`github` コンテキスト
-では常に空」なのかは、ローカルパス呼び出しだけを見ていても区別が付かない。
-
-**完全参照形（`owner/repo/path@ref`）で呼べば、同一リポジトリを指していても他 org からの
-呼び出しと同じ経路になる。** 他 org のリポジトリは要らない — 必要なのは呼び出しの**形**が
-同じであることだけである。`ci.yml` に 2 つ目の呼び出し（`env-guard-propagation`）を足した。
-
-これは一時的な計測用ではなく残す前提の呼び出しである。ローカルパス呼び出しは伝播機構を
-一度も動かさず、完全参照だけにすると PR の変更が検査されない。**両方要る。**
-
-ref がブランチ名で固定されているため、**main へマージする前に `@main` へ直すこと**。
-直し忘れれば job は「そのブランチが見つからない」で落ちるので黙って腐りはしないが、落ちる
-場所が本題と無関係なので気付きにくい。
-
-他 org の private リポジトリからの呼び出し可否（項目 49）は、Actions ポリシーの allowlist が
-絡むため依然として別問題として残る。
-
-### 決着（CI 13 回目）— reusable workflow では成立しない
-
-完全参照形での呼び出しでも `job_workflow_ref` は**空だった**。
-
-```
-job_workflow_ref: <empty>
-workflow_ref:     himorogy/karakuri/.github/workflows/ci.yml@refs/pull/11/merge
-```
-
-ローカルパス呼び出しに限った話ではなく、**`github` コンテキストでは常に空**である。同じ
-コンテキストの `workflow_ref` は両方の呼び出し方で正しく埋まっているので、コンテキストの
-取得自体が壊れているのではない。
-
-したがって **reusable workflow 版の remote 経路は死んだコードである。** 他 org からの
-呼び出しは fail-closed で落ち続ける。propagation ジョブが緑になったのは、呼び出し側が
-karakuri 自身で in-tree 経路に落ちたためで、外部のリポジトリにスキャナは無い。
-
-`workflow_ref` を代用にはできない。指しているのは**呼び出し側**の workflow なので、他 org から
-呼ばれれば他 org のリポジトリを指す。**karakuri が自分を呼ぶときだけ動いて他所では壊れる**、
+**`workflow_ref` は代用にならない。** 指すのは呼び出し側の workflow なので、他 org から
+呼ばれれば他 org のリポジトリを指す。karakuri が自分を呼ぶときだけ動いて他所では壊れる、
 という使える中で最悪の形になる。
 
-### 移行先: composite action
+同一リポジトリを指す**完全参照形**（`himorogy/karakuri/.github/workflows/env-guard.yml@<branch>`）
+でも `job_workflow_ref` は空だった。参照自体は解決している（その呼び出しの診断出力が取れている）
+ので、「デフォルトブランチに無いと参照できない」という話ではない。
 
-`uses:` された時点で action のリポジトリが**指定された ref で checkout される**ため、
-`github.action_path` から自分のファイルへ到達できる。**自分の ref を割り出す必要がそもそも
-無い** — reusable workflow で詰まった一点が発生しない。呼び出し側が `@v1` と書けば v1 の
-スキャナが走る。
+### ここまでで言えること・言えないこと（重要）
 
-`.github/actions/env-guard/action.yml` を追加し、`ci.yml` から他 org と同じ完全参照形で呼ぶ
-ジョブ（`env-guard-action`）を並走させた。
+- **言える**: ローカルパス呼び出しでも、同一リポジトリを指す完全参照呼び出しでも、
+  `job_workflow_ref` は空である
+- **言えない**: 「`github` コンテキストでは常に空」。測ったのは**呼び出し元と呼び出し先が
+  同じリポジトリ**の場合だけで、GitHub がその条件を内部的にローカル呼び出し扱いして値を
+  埋めない可能性を排除できていない。**他 org からの本当の cross-repo 呼び出しでは埋まる
+  かもしれない**
 
-- スキャナは `images/runtime-base/bin/env-guard-scan` のまま動かさない。runtime-base の
-  docker build コンテキストが `images/runtime-base` であり、そこから出た場所のファイルを
-  `COPY` できないため。action からは action 自身の位置の相対で引く
-- **未確認**: action のリポジトリが**丸ごと** checkout されるのか、action ディレクトリだけ
-  なのか。丸ごとでなければ相対パスが外れる。その場合は存在検査で落ち、`GITHUB_ACTION_PATH` と
-  実際にそこに在るものを出す（推測で別のものを走らせない）
-- 代償は呼び出し側スタブが数行伸びること（`runs-on` と `actions/checkout` を呼び出し側が
-  書く）。ref を割り出せない以上、選択肢は「呼び出し側が数行書く」か「スキャナを workflow の
-  中へ複製して同一性をテストで担保する」かで、**複製しない方を採る**
+したがって「reusable workflow による伝播は成立しない」と結論するのは早い。**他 org の
+リポジトリからの呼び出しを一度実行するまで、この点は未決**である（項目 49 と同じ制約）。
+
+### この先は §8 の範囲であって手順 4 ではない
+
+手順 4 は「reusable workflow の設置とスタブ配布（precommit の CI 実効性を先に実測）」であり、
+karakuri 自身が検査を通していること（ローカルパス呼び出しで緑）まででその範囲は満たしている。
+
+一方、**他 org へどう届けるか**は設計書 §8 の範囲で、§8 自身が「本節は方向性の記録であり、
+詳細設計は §4 の実装完了後に別途行う」「当面の 4 repo への展開は手動コピーで開始してよい」と
+明記している。上記の未決はそちらで扱う。
+
+**未確認の可能性への先回りで配布方式を作り直しかけたが、戻した。** 実測で言えることと言えない
+ことの線を引き直した結果、作り直しの前提そのものが立っていなかった。§8 に着手するときの
+出発点として、ここまでの実測と未決を記録に残すに留める。
 
 ### 設計書の記号がそのまま運用の出力に出ている
 
@@ -1030,7 +999,7 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 | 60 | hook と CI が同一 fixture に対して同一の判定を返す | ✅ | `tests/env-guard.test.sh`（終了コードだけでなく**出力がバイト単位で同一**であることまで見る）。D24 の本題 |
 | 61 | `env-guard.conf` による上書きが hook と CI の両方に効く | ✅ | 同上（`pattern` / `allow` の双方） |
 | 62 | 設定ファイルが `source` / `eval` されない | ✅ | スキャナは行単位のパースのみで、値をパターン文字列としてしか使わない |
-| 63 | CI が使うスキャナが reusable workflow と同じ版である | ⬜ | **`github.job_workflow_ref` は空だった**（CI 11 回目。§0.12）。設計どおり fail-closed で止まった。ローカルパス呼び出し限定の話か、`github` コンテキストでは常に空なのかは未区別 — 次回の診断ステップで判定する。ローカルパス呼び出しについては、呼び出し側の作業ツリーのスキャナを使う経路を追加済み（推測ではなく、スキャナが在ること自体が karakuri のツリーである証拠）。**他 org から `@v1` で呼んだ場合は未実測**（項目 49 と同じ制約） |
+| 63 | CI が使うスキャナが reusable workflow と同じ版である | ⛔ | **`github.job_workflow_ref` は空だった**（§0.12）。ローカルパス呼び出しでも、同一リポジトリを指す完全参照呼び出しでも空。設計どおり fail-closed で止まる。karakuri 自身（ローカルパス呼び出し）は、呼び出し側の作業ツリーのスキャナを使う経路で通っている。**他 org からの cross-repo 呼び出しで埋まるかどうかは測れていない** — 同一リポジトリを指す呼び出しが内部でローカル扱いされている可能性を排除できないため。**設計書 §8 の範囲**（項目 49 と同じ制約） |
 | 64 | 検出時の出力に平文の値が含まれない | ✅ | `tests/env-guard.test.sh`（`=` を含まない行では鍵名すら出さない経路を含む） |
 
 ---
