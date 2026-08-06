@@ -676,6 +676,299 @@ measure_git M2 "/src + /out 合計 RAM 使用量 (du -sh、pnpm install 後)" m2
 
 
 # =============================================================================
+# M9: pnpm store の置き場所 (CI 4 回目で発覚)
+#
+# CI 4 回目、read_only: true + tmpfs /src 構成で `pnpm install
+# --frozen-lockfile` が `[ENOENT] ENOENT: no such file or directory,
+# mkdir '/usr/local/share/pnpm/store'` で落ちた。イメージが
+# ENV PNPM_HOME=/usr/local/share/pnpm を設定しており、pnpm の store は
+# 既定で $PNPM_HOME/store。read_only 下ではそこを作れない。store を
+# 書ける tmpfs へ逃がす必要があるが、置き場所に 2 案ある:
+#
+#   案 A: $HOME 配下 (/home/node/.local/share/pnpm/store)。/home/node は
+#         /src とは別の tmpfs マウントになる。pnpm は store から
+#         node_modules へハードリンクを張るが、マウントを跨ぐとハード
+#         リンクは張れず copy にフォールバックするはずで、RAM を二重に
+#         食う可能性がある (未確認、ここでの測定対象そのもの)。
+#   案 B: /src 配下 (/src/.pnpm-store)。node_modules と同一 tmpfs
+#         マウントになるのでハードリンクが効くはず。ただし working tree
+#         の中に store を置くことになる。
+#
+# どちらも tmpfs なので run をまたいだキャッシュは無い (毎回全依存を
+# 再ダウンロードする)。git clean -xdff は entrypoint 内で checkout 直後に
+# 走り、pnpm install はその後なので、案 B でも同一 run 内で store が
+# checkout の副作用で消えることはない。
+#
+# 合わせて、store-dir をイメージに焼き込む方法 (実運用でのデフォルト
+# 変更手段) も確認する: コンテナ内で環境変数 (npm_config_store_dir) を
+# 与えるだけで store-dir が変わるかを見る (M9-c、pnpm install は走らせない
+# ので GIT_REPO 不要)。
+#
+# 全て MEASURE。pass/fail 判定はしない。1 ケースあたり pnpm install が
+# 走るため、M9-a / M9-b の 2 ケースに絞る (M9-c は store path の確認のみ
+# で pnpm install を走らせない)。
+#
+# 推測 (docker が無い環境のため未実行・未確認):
+#   - `pnpm store path --store-dir <dir>` のようにサブコマンドの後ろに
+#     --store-dir を置いても pnpm に受理されるはず、という前提で書いて
+#     いる (他の pnpm グローバルオプションと同様のパーサ挙動を想定)。
+#   - マウントを跨ぐハードリンク失敗時に pnpm が warn/info を出すという
+#     前提で、pnpm install の出力から cross-device/EXDEV/hardlink を含む
+#     行を拾っている。実際にそのような行が出るかは未確認。
+# =============================================================================
+echo
+echo "=== M9: pnpm store の置き場所 ==="
+
+# m9a_pnpm_case / m9b_pnpm_case は意図的にほぼ同じ内容 (STORE_DIR と
+# それに伴う注記だけが違う)。M9-a と M9-b の出力を同じ形式で比較できる
+# ことがこの測定の目的なので、共通ヘルパへ括り出さず並べて書く (M1 の
+# raw 版 / uid= 版、M6 の named volume 版 / tmpfs 版と同じ書き方)。
+#
+# 各ケースの出力は測定表示 (MEAS_LOG) に載せると同時に、$SCRATCH 配下の
+# ファイルにも書き出す。m9_summary (このセクション末尾) がそのファイルを
+# 読んで 3 ケース比較のまとめ行を組み立てる。pnpm install をもう一度
+# 走らせて二重に時間を食わないための工夫 (measure() は command
+# substitution 経由でサブシェル実行になり、シェル変数はサブシェルを
+# 抜けると消えるが、ファイルへの書き込みは残る)。
+#
+# SC2016: 各ケースの sh -c '...' 内の $ は意図的にすべて単引用符で
+# エスケープしている。この文字列はコンテナ内の sh に渡され、そちら側で
+# 評価させたいため (このスクリプト自身のシェルではない)。
+
+m9a_pnpm_case() {
+	local proj="verify-m9-a-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+		-T --rm prod sh -c '
+			STORE_DIR="/home/node/.local/share/pnpm/store"
+			human_kb() {
+				n="$1"
+				if [ "$n" -ge 1048576 ]; then printf "%sG" "$((n / 1048576))"
+				elif [ "$n" -ge 1024 ]; then printf "%sM" "$((n / 1024))"
+				else printf "%sK" "$n"
+				fi
+			}
+			t0=$(date +%s)
+			pnpm install --frozen-lockfile --store-dir "$STORE_DIR" >/tmp/m9-install.log 2>&1
+			rc=$?
+			t1=$(date +%s)
+			echo "rc=$rc"
+			echo "--- pnpm install 出力の末尾 (トラブル時の手がかり用) ---"
+			tail -20 /tmp/m9-install.log
+			echo "--- pnpm store path --store-dir $STORE_DIR ---"
+			pnpm store path --store-dir "$STORE_DIR" 2>&1
+			echo "--- du -sh (store 単体) ---"
+			du -sh "$STORE_DIR" 2>&1 || echo "du failed (store may not exist)"
+			store_kb=$(du -sk "$STORE_DIR" 2>/dev/null | cut -f1)
+			echo "--- du -sh /src (node_modules 込み。store は別 tmpfs マウントなのでここには含まれない) ---"
+			du -sh /src 2>&1
+			src_kb=$(du -sk /src 2>/dev/null | cut -f1)
+			mkdir -p /out
+			echo dummy-build-artifact > /out/dummy
+			echo "--- du -sh /out ---"
+			du -sh /out 2>&1
+			out_kb=$(du -sk /out 2>/dev/null | cut -f1)
+			total_kb=$(( ${store_kb:-0} + ${src_kb:-0} + ${out_kb:-0} ))
+			echo "--- 合計 (store + /src + /out。別マウントなので単純合算): ${total_kb:-0}K = $(human_kb "${total_kb:-0}") ---"
+			echo "--- df -h /src ---"
+			df -h /src 2>&1
+			echo "--- df -h /home/node ---"
+			df -h /home/node 2>&1
+			echo "--- hardlink 判定: node_modules 内、リンク数 2 以上 (links+1) のファイル数 / 全ファイル数 ---"
+			linked=$(find node_modules -type f -links +1 2>/dev/null | wc -l)
+			totalf=$(find node_modules -type f 2>/dev/null | wc -l)
+			echo "links+1=$linked total=$totalf"
+			echo "--- pnpm install 出力中の cross-device / hardlink 関連行 ---"
+			grep -iE "cross-device|exdev|hardlink" /tmp/m9-install.log || echo "(該当行なし)"
+			echo "--- 所要時間 ---"
+			echo "${t1}s - ${t0}s = $((t1 - t0))s"
+			echo "M9_RC=$rc"
+			echo "M9_STORE_KB=${store_kb:-0}"
+			echo "M9_SRC_KB=${src_kb:-0}"
+			echo "M9_OUT_KB=${out_kb:-0}"
+			echo "M9_LINKED=$linked"
+			echo "M9_TOTALF=$totalf"
+			echo "M9_ELAPSED=$((t1 - t0))"
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s。pnpm install 個別の rc は本文中の rc= 行を見ること)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out" >"$SCRATCH/m9a-output.txt"
+	printf '%s\n' "$out"
+}
+measure_git M9 "M9-a 案A: store-dir=/home/node/.local/share/pnpm/store (/src とは別 tmpfs マウント)" m9a_pnpm_case
+
+m9b_pnpm_case() {
+	local proj="verify-m9-b-$$" out rc=0
+	# shellcheck disable=SC2016
+	out="$(compose_run "$SCRATCH/compose-src-tmpfs.yaml" "$proj" "file://$SELF_BARE_DIR" "$SELF_COMMIT" \
+		-T --rm prod sh -c '
+			STORE_DIR="/src/.pnpm-store"
+			human_kb() {
+				n="$1"
+				if [ "$n" -ge 1048576 ]; then printf "%sG" "$((n / 1048576))"
+				elif [ "$n" -ge 1024 ]; then printf "%sM" "$((n / 1024))"
+				else printf "%sK" "$n"
+				fi
+			}
+			t0=$(date +%s)
+			pnpm install --frozen-lockfile --store-dir "$STORE_DIR" >/tmp/m9-install.log 2>&1
+			rc=$?
+			t1=$(date +%s)
+			echo "rc=$rc"
+			echo "--- pnpm install 出力の末尾 (トラブル時の手がかり用) ---"
+			tail -20 /tmp/m9-install.log
+			echo "--- pnpm store path --store-dir $STORE_DIR ---"
+			pnpm store path --store-dir "$STORE_DIR" 2>&1
+			echo "--- du -sh (store 単体) ---"
+			du -sh "$STORE_DIR" 2>&1 || echo "du failed (store may not exist)"
+			store_kb=$(du -sk "$STORE_DIR" 2>/dev/null | cut -f1)
+			echo "--- du -sh /src (node_modules + store 込み。store は /src の中にあるので二重計上に注意) ---"
+			du -sh /src 2>&1
+			src_kb=$(du -sk /src 2>/dev/null | cut -f1)
+			mkdir -p /out
+			echo dummy-build-artifact > /out/dummy
+			echo "--- du -sh /out ---"
+			du -sh /out 2>&1
+			out_kb=$(du -sk /out 2>/dev/null | cut -f1)
+			total_kb=$(( ${src_kb:-0} + ${out_kb:-0} ))
+			echo "--- 合計 (/src + /out。store は既に /src の値に含まれているので別途は足さない): ${total_kb:-0}K = $(human_kb "${total_kb:-0}") ---"
+			echo "--- df -h /src ---"
+			df -h /src 2>&1
+			echo "--- df -h /home/node ---"
+			df -h /home/node 2>&1
+			echo "--- hardlink 判定: node_modules 内、リンク数 2 以上 (links+1) のファイル数 / 全ファイル数 ---"
+			linked=$(find node_modules -type f -links +1 2>/dev/null | wc -l)
+			totalf=$(find node_modules -type f 2>/dev/null | wc -l)
+			echo "links+1=$linked total=$totalf"
+			echo "--- pnpm install 出力中の cross-device / hardlink 関連行 ---"
+			grep -iE "cross-device|exdev|hardlink" /tmp/m9-install.log || echo "(該当行なし)"
+			echo "--- 所要時間 ---"
+			echo "${t1}s - ${t0}s = $((t1 - t0))s"
+			echo "M9_RC=$rc"
+			echo "M9_STORE_KB=${store_kb:-0}"
+			echo "M9_SRC_KB=${src_kb:-0}"
+			echo "M9_OUT_KB=${out_kb:-0}"
+			echo "M9_LINKED=$linked"
+			echo "M9_TOTALF=$totalf"
+			echo "M9_ELAPSED=$((t1 - t0))"
+		' <<<"FOO=bar" 2>&1)" || rc=$?
+	compose_down "$SCRATCH/compose-src-tmpfs.yaml" "$proj"
+	if [ "$rc" -ne 0 ]; then
+		out="$(printf 'HARNESS: compose_run 自体が非ゼロ終了 (rc=%s。pnpm install 個別の rc は本文中の rc= 行を見ること)\n%s' "$rc" "$out")"
+	fi
+	printf '%s\n' "$out" >"$SCRATCH/m9b-output.txt"
+	printf '%s\n' "$out"
+}
+measure_git M9 "M9-b 案B: store-dir=/src/.pnpm-store (/src と同一 tmpfs マウント)" m9b_pnpm_case
+
+# M9-c: store-dir をイメージに焼く方法の確認。pnpm install は走らせない
+# (store path の確認だけで十分、とのタスク指示のとおり)。GIT_REPO/GIT_REF
+# も bare repo fetch も使わないので、bare repo 到達性 (HARNESS_GIT_OK) と
+# 無関係 — measure_git ではなく measure を使う。
+m9c_store_dir_env() {
+	local out
+	# shellcheck disable=SC2016
+	out="$(docker run --rm --user 1000:1000 "$IMG" sh -c '
+			echo "--- 素の pnpm store path (環境変数なし。既定は \$PNPM_HOME/store のはず) ---"
+			default_path=$(pnpm store path 2>&1)
+			echo "$default_path"
+			echo "--- 素の pnpm config get store-dir ---"
+			pnpm config get store-dir 2>&1
+			echo "--- npm_config_store_dir=/home/node/.local/share/pnpm/store を与えた場合の pnpm store path ---"
+			env_path=$(npm_config_store_dir=/home/node/.local/share/pnpm/store pnpm store path 2>&1)
+			echo "$env_path"
+			echo "--- 同条件での pnpm config get store-dir ---"
+			npm_config_store_dir=/home/node/.local/share/pnpm/store pnpm config get store-dir 2>&1
+			if [ "$default_path" != "$env_path" ]; then
+				echo "M9_C_CHANGED=YES"
+			else
+				echo "M9_C_CHANGED=NO"
+			fi
+		' 2>&1)"
+	printf '%s\n' "$out" >"$SCRATCH/m9c-output.txt"
+	printf '%s\n' "$out"
+}
+measure M9 "M9-c: 環境変数 npm_config_store_dir だけで pnpm store path / config get store-dir が変わるか (pnpm install は走らせない)" m9c_store_dir_env
+
+# M9 まとめ: M9-a / M9-b / M9-c の出力ファイル ($SCRATCH/m9{a,b,c}-output.txt。
+# 上の 3 関数が pnpm install を再実行せず書き出したもの) を読み、一目で
+# 比較できる 3 行にする。A と B の「合計」は二重計上を避けて計算する:
+# 案 A は store が /src とは別マウントなので store+/src+/out を単純合算、
+# 案 B は store が /src の中にあり /src の du に既に含まれているので
+# /src+/out だけを合算する (store の値自体は比較用に別途表示する)。
+m9_summary() {
+	to_int() { case "$1" in '' | *[!0-9]*) echo 0 ;; *) echo "$1" ;; esac; }
+	kb_to_human() {
+		awk -v kb="$1" 'BEGIN {
+			if (kb >= 1024*1024) { printf "%.1fG", kb/1024/1024 }
+			else if (kb >= 1024) { printf "%.0fM", kb/1024 }
+			else { printf "%dK", kb }
+		}'
+	}
+	field() { grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2-; }
+
+	local a_file="$SCRATCH/m9a-output.txt" b_file="$SCRATCH/m9b-output.txt" c_file="$SCRATCH/m9c-output.txt"
+	local a_line b_line c_line
+
+	if [ -f "$a_file" ]; then
+		local a_rc a_store_kb a_src_kb a_out_kb a_linked a_totalf a_elapsed a_total_kb
+		a_rc="$(field "$a_file" M9_RC)"
+		a_store_kb="$(to_int "$(field "$a_file" M9_STORE_KB)")"
+		a_src_kb="$(to_int "$(field "$a_file" M9_SRC_KB)")"
+		a_out_kb="$(to_int "$(field "$a_file" M9_OUT_KB)")"
+		a_linked="$(field "$a_file" M9_LINKED)"
+		a_totalf="$(field "$a_file" M9_TOTALF)"
+		a_elapsed="$(field "$a_file" M9_ELAPSED)"
+		a_total_kb=$((a_store_kb + a_src_kb + a_out_kb))
+		a_line="$(printf 'A(別tmpfs) rc=%s store=%s /src=%s(node_modules込) 合計=%s(store+/src+/out、別マウントにつき単純合算) hardlink=%s/%s 所要=%ss' \
+			"${a_rc:-?}" "$(kb_to_human "$a_store_kb")" "$(kb_to_human "$a_src_kb")" "$(kb_to_human "$a_total_kb")" \
+			"${a_linked:-?}" "${a_totalf:-?}" "${a_elapsed:-?}")"
+	else
+		a_line="A(別tmpfs): SKIPPED (M9-a 未実行。harness preflight 失敗の可能性が高い)"
+	fi
+
+	if [ -f "$b_file" ]; then
+		local b_rc b_store_kb b_src_kb b_out_kb b_linked b_totalf b_elapsed b_total_kb
+		b_rc="$(field "$b_file" M9_RC)"
+		b_store_kb="$(to_int "$(field "$b_file" M9_STORE_KB)")"
+		b_src_kb="$(to_int "$(field "$b_file" M9_SRC_KB)")"
+		b_out_kb="$(to_int "$(field "$b_file" M9_OUT_KB)")"
+		b_linked="$(field "$b_file" M9_LINKED)"
+		b_totalf="$(field "$b_file" M9_TOTALF)"
+		b_elapsed="$(field "$b_file" M9_ELAPSED)"
+		# store は /src の中にあるため /src の値に既に含まれる。合計へ
+		# 二重に足さない (store 単体の値は比較用として別に表示するのみ)。
+		b_total_kb=$((b_src_kb + b_out_kb))
+		b_line="$(printf 'B(同tmpfs) rc=%s store=%s(/srcの値に含まれる) /src=%s(node_modules+store込) 合計=%s(/src+/out。storeは/srcに含まれるため加算しない) hardlink=%s/%s 所要=%ss' \
+			"${b_rc:-?}" "$(kb_to_human "$b_store_kb")" "$(kb_to_human "$b_src_kb")" "$(kb_to_human "$b_total_kb")" \
+			"${b_linked:-?}" "${b_totalf:-?}" "${b_elapsed:-?}")"
+	else
+		b_line="B(同tmpfs): SKIPPED (M9-b 未実行。harness preflight 失敗の可能性が高い)"
+	fi
+
+	if [ -f "$c_file" ]; then
+		if grep -q '^M9_C_CHANGED=YES$' "$c_file"; then
+			c_line="c: npm_config_store_dir で store path が変わる=YES"
+		elif grep -q '^M9_C_CHANGED=NO$' "$c_file"; then
+			c_line="c: npm_config_store_dir で store path が変わる=NO"
+		else
+			c_line="c: 判定不能 (出力形式が想定と異なる。$c_file を直接参照)"
+		fi
+	else
+		c_line="c: SKIPPED (M9-c 未実行)"
+	fi
+
+	# a_line / b_line / c_line は各分岐の中で既に "A(別tmpfs) rc=…" /
+	# "B(同tmpfs) rc=…" / "c: …" の接頭辞を含めて組み立て済みなので、
+	# ここでは接頭辞を重ねず並べるだけにする。
+	printf '%s\n%s\n%s' "$a_line" "$b_line" "$c_line"
+}
+measure M9 "3 ケースのまとめ (A/B の合計は二重計上を避けて計算。詳細は各ケースの出力を参照)" m9_summary
+
+
+# =============================================================================
 # M3: dotenvx 2.x の環境変数注入 (最優先)
 #
 # dotenvx 2.0.0 は keyring 対応で run / config / get を

@@ -175,6 +175,77 @@ entrypoint が `mkdir` で死なずに stdin のパースまで到達するよ�
 
 ---
 
+## 0.5 CI 4 回目（2026-08-06）— ASSERT 18/18 が緑。実装の欠陥を 1 件検出
+
+**A1〜A18 が全て通った。** A6 の前回の FAIL はハーネス側（`docker create` の `-i` 欠落）で、
+実装の問題ではなかったことが確認できた。
+
+### `/src` の tmpfs 化は成立する（項目 33 の一部）
+
+`read_only: true` + tmpfs `/src` で `git init` / `fetch` / `checkout` / `clean` が完走した。
+tmpfs の既定サイズは **7.9G**（ホスト RAM の 50%）。ホストの RAM 量に比例するため、
+実行ホストを決める際の判断材料になる（設計書 §11「実行ホストの一本化」）。
+
+### entrypoint の ref 検証が効いた
+
+```
+2nd run (tmpfs、GIT_REF=v9.9.9): rc=1
+  GIT_REF does not resolve to a commit in the fetched repository: v9.9.9
+```
+
+前回の `fatal: git checkout: --detach does not take a path argument 'v9.9.9'` から、
+原因が読み取れるメッセージになった。
+
+### `core.hooksPath` は repo 側から上書きできる（実測）
+
+```
+effective (git -C /src config --get core.hooksPath): /tmp/local-hooks
+
+git -C /src config --show-origin --get-all core.hooksPath
+  file:/etc/gitconfig   /usr/local/share/git-hooks
+  file:.git/config      /tmp/local-hooks
+```
+
+git の設定優先順位は local > global > system。イメージが書くのは system なので、
+**リポジトリの `.git/config` が勝つ**。hook を強制装置として扱えないことの実証であり、
+設計書が T6 に不変条件を置かず緩和策として扱っている判断（§3）と整合する。
+README の「イメージ側にあるので repo 側は無視される」という記述は不正確だったので修正した。
+
+---
+
+## 0.6 実装の欠陥 — `read_only` 下で `pnpm install` が落ちる（項目 33 は未達）
+
+```
+M2  pnpm install --frozen-lockfile : FAILED (rc=254)
+    [ENOENT] ENOENT: no such file or directory, mkdir '/usr/local/share/pnpm/store'
+```
+
+イメージが `ENV PNPM_HOME=/usr/local/share/pnpm` を設定しており、pnpm の store は既定で
+`$PNPM_HOME/store`。`read_only: true` 下では作れない。**このままでは prod の deploy が動かない。**
+
+設計書 §4.5 が pnpm を runtime-base に入れると決めている以上、イメージ側で store を書ける
+場所（tmpfs）へ向ける必要がある。ただし置き場所で RAM 消費が変わる。
+
+- **案 A** `$HOME` 配下（`/home/node/.local/share/pnpm/store`）— `/src` とは別の tmpfs
+  マウントになる。pnpm は store から node_modules へハードリンクを張るが、マウントを跨ぐと
+  張れず copy にフォールバックするはずで、RAM を二重に食う可能性がある
+- **案 B** `/src` 配下（`/src/.pnpm-store`）— node_modules と同一 tmpfs なのでハードリンクが
+  効くはず。ただし repo の working tree の中に store を置くことになる
+
+どちらも tmpfs なので run をまたいだキャッシュは無く、毎回全依存を再ダウンロードする。
+**測定項目 M9 として両方を測る**（RAM 合計・ハードリンクの成否・所要時間、および
+`npm_config_store_dir` でイメージに焼けるかの確認）。
+
+## 0.7 原理上この方法では測れないもの
+
+- **`credential.helper` 経由の `GH_TOKEN` 窃取。** `file://` はホスト上のパスへの直接アクセスで
+  認証を要求しないため、git が credential helper を呼ばない。https の remote と実トークンが
+  要る。ただし `core.fsmonitor` で同じ経路（`.git/config` に書かれた設定が entrypoint の
+  git 操作で発火し、それが `GH_TOKEN` 破棄より前に起きる）が実証されているので、
+  **対処は同じ**であり、この 1 項目が未確定でも判断は変わらない。
+
+---
+
 ## 0.4 CI 3 回目（2026-08-06）— N-1 / N-2 が実証され、`/src` の tmpfs 化に裏付けがついた
 
 preflight を通過し、M6 が取れた。**この設計変更の根拠が推論から実測になった。**

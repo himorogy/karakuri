@@ -184,10 +184,36 @@ tracked file が残る**。同じ `GIT_REF` で起動しても改変済みのコ
 - 改善はイメージタグの更新で伝播する
 - `core.hooksPath` は**全 hook を上書きする**ため、hook 側で `.husky/pre-commit` と
   `.githooks/pre-commit` へ明示的にチェーンしている
-- 同時に各リポジトリの `.git/hooks/*` は完全に無視される。過去に `--install` で書き込んだ
-  `pre-commit` が死んだまま残るので、移行時に掃除すること
+- この設定が効いている間、各リポジトリの `.git/hooks/*` は無視される。過去に `--install` で
+  書き込んだ `pre-commit` が死んだまま残るので、移行時に掃除すること
 
 hook の中身は、`.env.keys` が workspace 内に存在しないことの検査と `dotenvx precommit`。
+
+### リポジトリ側から無効化できる（強制装置ではない）
+
+git の設定優先順位は **local > global > system** である。イメージが書くのは system
+（`/etc/gitconfig`）なので、リポジトリの `.git/config` に `core.hooksPath` を書けば**上書きできる**。
+実測（`git config --show-origin --get-all core.hooksPath`）:
+
+```
+file:/etc/gitconfig   /usr/local/share/git-hooks
+file:.git/config      /tmp/local-hooks        ← 実効値はこちら
+```
+
+`--no-verify` でも素通りするし、git CLI を経由しない書き込み（GitHub API、libgit2 系）にも
+効かない。**この hook は予防ではなく早期検知**であり、設計上も不変条件ではなく緩和策として
+位置づけている。本線は CI 側の検査に置く。
+
+同じ性質が prod にも効く。`.git/config` は clone 後のコードが書き換えられるため、
+`core.fsmonitor` のような**コマンドを実行する設定**を仕込まれると、次回の git 操作で走る。
+実測では、named volume を再利用する構成で entrypoint 自身の fetch / checkout / reset / clean が
+仕込まれたコマンドを 8 回実行した。しかも `/run/secrets/GH_TOKEN` を破棄する**前**である。
+
+> **`/src` は named volume をやめて tmpfs へ移す。** この攻撃と、ローカル ref の汚染
+> （前回実行のコードが打ったタグが次回の `GIT_REF` として解決される）を構造的に消すため。
+> 実装は設計書 rev.5 で確定させる。現在の `templates/compose.prod.yaml` はまだ named volume の
+> ままなので、**この節と実装が食い違っている**。検証状況は
+> [verification-record.md](./verification-record.md) を参照。
 
 ### ホスト側の git はこれを読まない
 
