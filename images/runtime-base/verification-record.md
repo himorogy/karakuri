@@ -676,6 +676,20 @@ D18 の歴史的な根拠（CI 3 回目、D21 が存在しなかった時点の�
 無効化される。** 検査を足したときは、その検査より前に書かれた測定が意図した経路を通り続けて
 いるかを確認する必要がある。
 
+**CI 12 回目（2026-08-06）で直りを確認した。** 両ケースとも意図した経路を通っている。
+
+```
+named volume: GIT_REF=v9.9.9 resolved to 82e97a9 → HEAD is now at 82e97a9 commit2 → file.txt=world
+tmpfs:        GIT_REF does not resolve to a commit in the fetched repository: v9.9.9  (rc=1)
+```
+
+named volume では**前回実行が打ったタグが commit2 を指したまま解決され**、指定したはずの
+ものとは別の内容が checkout された（N-1 の再現）。tmpfs ではタグが残らず fail-closed。
+D18 の根拠が、D21 を入れた後の実装に対しても再度実測で立った。
+
+この回の合計は **41 measurements, 41 assertions passed, 0 failed**（A36 の昇格で ASSERT が
+1 件増えている）。
+
 ### `github.job_workflow_ref` は空だった（項目 63）
 
 `ci.yml` からの env-guard 呼び出しは、スキャナを取りに行く前の ref 解決で止まった。
@@ -707,8 +721,24 @@ job_workflow_ref: <empty>
 self-call ではこちらの方が**正しくもある** — タグが指すスキャナではなく、いま検査されている
 その PR のスキャナが走るので、版の食い違いが原理的に起きない。
 
-残る未確定は「他 org から `@v1` で呼んだときに ref が取れるか」で、これは他 org の repo が
-無いと測れない（項目 49 と同じ制約）。
+**CI 12 回目で in-tree 経路が通った。**
+
+```
+job_workflow_ref: <empty>
+scanner source: the caller's own checkout (this workflow was called by path)
+```
+
+karakuri 自身の env-guard は緑になった。ただし**通ったのは self-call 専用の経路**であり、
+**他 org から `@v1` で呼ぶ本来の伝播経路は一度も実行されていない**。
+
+残る未確定は 2 つで、性質が違う。
+
+- **`job_workflow_ref` が `github` コンテキストで常に空なのか**。常に空なら remote 経路は
+  死んだコードであり、他 org からの呼び出しは fail-closed で落ち続ける — 伝播機構として
+  成立していないことになる。診断ステップの出力（`workflow_ref` / `repository` / `ref` 等）を
+  見て判断する
+- **他 org から `@v1` で呼んだときに ref が取れるか**。他 org の repo が無いと測れない
+  （項目 49 と同じ制約）
 
 ### 設計書の記号がそのまま運用の出力に出ている
 
