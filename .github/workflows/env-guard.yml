@@ -77,6 +77,39 @@ jobs:
       #
       # (github.workflow_ref の方は呼び出し**側**の workflow を指すので
       # ここでは使えない。)
+      # 実測 (2026-08-06、karakuri 自身からのローカルパス呼び出し):
+      # github.job_workflow_ref は**空だった**。ドキュメント上は reusable
+      # workflow のジョブで使えることになっているが、少なくともこの経路では
+      # 値が来ない。他 org からの `owner/repo/...@ref` 形式の呼び出しでも同じ
+      # なのかは未確認 — ローカルパス呼び出しに限った話である可能性がある。
+      #
+      # 推測で片方に倒さず、実際に何が来るのかを一度出す。ここで出した値を
+      # 見てから ref の取り方を決める (この設計は「推測で対処を入れず実測して
+      # から決める」で進めてきた)。この診断ステップは決着したら消す。
+      - name: What the runner actually gives us (diagnostic)
+        shell: bash
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -u
+          echo "job_workflow_ref: ${JOB_WORKFLOW_REF:-<empty>}"
+          echo "workflow_ref:     ${WORKFLOW_REF:-<empty>}"
+          echo "repository:       ${REPOSITORY:-<empty>}"
+          echo "ref:              ${REF:-<empty>}"
+          echo "ref_name:         ${REF_NAME:-<empty>}"
+          echo "sha:              ${SHA:-<empty>}"
+          echo "event_name:       ${EVENT_NAME:-<empty>}"
+          echo
+          echo "呼び出し側の作業ツリーにスキャナがあるか (ローカルパス呼び出しなら"
+          echo "同じリポジトリなので存在するはず):"
+          ls -l images/runtime-base/bin/env-guard-scan 2>&1 || true
+
       - name: Resolve the karakuri ref this workflow came from
         id: src
         shell: bash
@@ -94,20 +127,41 @@ jobs:
           rest=${left#*/}
           repo=${rest%%/*}
 
-          # 取れない・形が違うときは黙って main へ倒さない。版が食い違った
-          # まま緑になる方が、動かないより悪い。
-          if [ -z "${ref:-}" ] || [ -z "${owner:-}" ] || [ -z "${repo:-}" ] ||
-            [ "$ref" = "${JOB_WORKFLOW_REF:-}" ] || [ "$owner" = "$rest" ]; then
-            echo "❌ env-guard: could not work out which karakuri commit this workflow came from."
-            echo "   github.job_workflow_ref was: ${JOB_WORKFLOW_REF:-<empty>}"
-            echo "   Refusing to guess a ref: running a different version of the"
-            echo "   scanner than this workflow would make the result meaningless."
-            exit 1
+          # ref が読み取れたなら、その commit の karakuri を第二 checkout する
+          # (下記)。読み取れないときの扱いは、その下の in-tree 判定に委ねる。
+          if [ -n "${ref:-}" ] && [ -n "${owner:-}" ] && [ -n "${repo:-}" ] &&
+            [ "$ref" != "${JOB_WORKFLOW_REF:-}" ] && [ "$owner" != "$rest" ]; then
+            echo "mode=remote" >>"$GITHUB_OUTPUT"
+            echo "repository=$owner/$repo" >>"$GITHUB_OUTPUT"
+            echo "ref=$ref" >>"$GITHUB_OUTPUT"
+            echo "scanner source: $owner/$repo@$ref"
+            exit 0
           fi
 
-          echo "repository=$owner/$repo" >>"$GITHUB_OUTPUT"
-          echo "ref=$ref" >>"$GITHUB_OUTPUT"
-          echo "scanner source: $owner/$repo@$ref"
+          # ref が読み取れないとき (実測: ローカルパス呼び出しでは
+          # github.job_workflow_ref が空)。ここで main へ倒すのは論外だが、
+          # 一つだけ推測でない道がある — **呼び出し側の作業ツリーに
+          # スキャナ自体が入っている**場合である。
+          #
+          # その状態が成立するのは、呼び出し側が karakuri のツリーを持って
+          # いるときだけで、それはまさにローカルパス呼び出しの形である。他 org
+          # のプロジェクトに images/runtime-base/bin/env-guard-scan は無いので、
+          # 見つからなければ従来どおり落ちる (fail-closed は維持)。
+          #
+          # self-call ではこちらの方が正しくもある: タグが指すスキャナではなく、
+          # いま検査されている PR のスキャナが走る。版の食い違いは起きえない。
+          if [ -s images/runtime-base/bin/env-guard-scan ]; then
+            echo "mode=in-tree" >>"$GITHUB_OUTPUT"
+            echo "scanner source: the caller's own checkout (this workflow was called by path)"
+            exit 0
+          fi
+
+          echo "❌ env-guard: could not work out which karakuri commit this workflow came from,"
+          echo "   and the caller's checkout does not contain the scanner either."
+          echo "   github.job_workflow_ref was: ${JOB_WORKFLOW_REF:-<empty>}"
+          echo "   Refusing to guess a ref: running a different version of the"
+          echo "   scanner than this workflow would make the result meaningless."
+          exit 1
 
       # karakuri は public である前提 (設計上すでに置かれている前提)。
       # public リポジトリなら既定の GITHUB_TOKEN で読めるため追加の
@@ -115,6 +169,7 @@ jobs:
       # なってしまうので、スキャナだけ取り出したら消す (検査対象の
       # ファイル一覧や .env.keys の探索範囲を汚さないため)。
       - name: Check out the shared scanner from karakuri
+        if: steps.src.outputs.mode == 'remote'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ steps.src.outputs.repository }}
@@ -124,16 +179,29 @@ jobs:
 
       - name: Stage the scanner outside the working tree
         shell: bash
+        env:
+          MODE: ${{ steps.src.outputs.mode }}
         run: |
           set -u
-          src=karakuri-env-guard-src/images/runtime-base/bin/env-guard-scan
+          case "$MODE" in
+          remote) src=karakuri-env-guard-src/images/runtime-base/bin/env-guard-scan ;;
+          in-tree) src=images/runtime-base/bin/env-guard-scan ;;
+          *)
+            echo "❌ env-guard: internal error — unknown scanner source mode '$MODE'."
+            exit 1
+            ;;
+          esac
 
           if [ ! -s "$src" ]; then
-            echo "❌ env-guard: the scanner is missing from the karakuri checkout ($src)."
+            echo "❌ env-guard: the scanner is missing ($src)."
             echo "   Nothing was inspected, so this is not a pass."
             exit 1
           fi
 
+          # 作業ツリーの外へ出してから使う。第二 checkout の残骸が検査対象の
+          # ファイル一覧や .env.keys の探索範囲に混ざらないようにするため
+          # (in-tree の場合は元から作業ツリーの中にあるが、スキャナ自身は
+          # tracked な env ファイルではないので検査結果には影響しない)。
           cp "$src" "$RUNNER_TEMP/env-guard-scan"
           chmod +x "$RUNNER_TEMP/env-guard-scan"
           rm -rf karakuri-env-guard-src

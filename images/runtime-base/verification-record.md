@@ -676,6 +676,40 @@ D18 の歴史的な根拠（CI 3 回目、D21 が存在しなかった時点の�
 無効化される。** 検査を足したときは、その検査より前に書かれた測定が意図した経路を通り続けて
 いるかを確認する必要がある。
 
+### `github.job_workflow_ref` は空だった（項目 63）
+
+`ci.yml` からの env-guard 呼び出しは、スキャナを取りに行く前の ref 解決で止まった。
+
+```
+job_workflow_ref: <empty>
+❌ env-guard: could not work out which karakuri commit this workflow came from.
+```
+
+**設計どおり fail-closed で止まった**という点では意図どおりである。「取れないときに main へ
+倒す」を書いていたら、workflow とスキャナの版が食い違ったまま緑になっていた。
+
+`github.job_workflow_ref` はドキュメント上 reusable workflow のジョブで使えることになって
+いるが、**少なくともこの経路では値が来ない**。karakuri 自身の `ci.yml` は
+`uses: ./.github/workflows/env-guard.yml` というローカルパス呼び出しなので、
+**ローカルパス呼び出しに限った話である可能性**と、**`github` コンテキストでは常に空
+（OIDC のクレームにしか無い）である可能性**の両方があり、区別できていない。他 org からの
+`owner/repo/...@ref` 形式での呼び出しは未実測。
+
+推測でどちらかに倒さず、次回の実行で候補フィールド（`job_workflow_ref` / `workflow_ref` /
+`repository` / `ref` / `ref_name` / `sha`）を全部出す診断ステップを入れた。
+
+**あわせて、推測ではない代替経路を 1 本足した。** ref が読み取れないとき、
+**呼び出し側の作業ツリーにスキャナ自体が入っている**なら、それを使う。この状態が成立するのは
+呼び出し側が karakuri のツリーを持っているときだけで、それはまさにローカルパス呼び出しの形で
+ある。他 org のプロジェクトに `images/runtime-base/bin/env-guard-scan` は無いので、
+見つからなければ従来どおり落ちる（fail-closed は維持）。
+
+self-call ではこちらの方が**正しくもある** — タグが指すスキャナではなく、いま検査されている
+その PR のスキャナが走るので、版の食い違いが原理的に起きない。
+
+残る未確定は「他 org から `@v1` で呼んだときに ref が取れるか」で、これは他 org の repo が
+無いと測れない（項目 49 と同じ制約）。
+
 ### 設計書の記号がそのまま運用の出力に出ている
 
 ```
@@ -896,7 +930,7 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 | 60 | hook と CI が同一 fixture に対して同一の判定を返す | ✅ | `tests/env-guard.test.sh`（終了コードだけでなく**出力がバイト単位で同一**であることまで見る）。D24 の本題 |
 | 61 | `env-guard.conf` による上書きが hook と CI の両方に効く | ✅ | 同上（`pattern` / `allow` の双方） |
 | 62 | 設定ファイルが `source` / `eval` されない | ✅ | スキャナは行単位のパースのみで、値をパターン文字列としてしか使わない |
-| 63 | CI が checkout するスキャナの ref が reusable workflow 自身の ref と一致する | ⬜ | `github.job_workflow_ref` から取る実装済み（`github.workflow_ref` は呼び出し**側**を指すので使えない）。parse に失敗したら ref を推測せず落とす。**GitHub Actions 上での実行は未実施** |
+| 63 | CI が使うスキャナが reusable workflow と同じ版である | ⬜ | **`github.job_workflow_ref` は空だった**（CI 11 回目。§0.12）。設計どおり fail-closed で止まった。ローカルパス呼び出し限定の話か、`github` コンテキストでは常に空なのかは未区別 — 次回の診断ステップで判定する。ローカルパス呼び出しについては、呼び出し側の作業ツリーのスキャナを使う経路を追加済み（推測ではなく、スキャナが在ること自体が karakuri のツリーである証拠）。**他 org から `@v1` で呼んだ場合は未実測**（項目 49 と同じ制約） |
 | 64 | 検出時の出力に平文の値が含まれない | ✅ | `tests/env-guard.test.sh`（`=` を含まない行では鍵名すら出さない経路を含む） |
 
 ---
