@@ -459,7 +459,7 @@ named volume を再利用する構成には、**rev.4 の `reset --hard` でも�
 
 tmpfs にすれば毎回まっさらな repo から始まるため、**両方とも構造的に成立しない**（実測で確認: N-1 は `GIT_REF does not resolve to a commit` で fail-closed、N-2 は `fresh .git/config`）。同時に **R6**（prod で走るコードが復号値・CLI キャッシュ・トークンを `/src` へ書けばコンテナ削除後も Docker VM のディスクに残る）も解消する。
 
-代償は毎回の full clone と全依存の再ダウンロードで、RAM も消費する。実測では karakuri 自身（依存 174）で `/src` 合計 131M、tmpfs の既定サイズは 7.9G だった。deploy の頻度からして許容できる。
+代償は毎回の full clone と全依存の再ダウンロードで、RAM も消費する。実測では karakuri 自身で `/src` 合計 79M（rev.5 時点では 131M。依存を 1 パッケージ分減らした差であり、構成の変更ではない。この値はプロジェクトの依存木で決まる）、tmpfs の既定サイズは 7.9G だった。deploy の頻度からして許容できる。
 
 `git init` + `fetch` と三段構えの復元は、tmpfs でも**そのまま残す**。tmpfs が毎回新しいことは `compose run --rm` の挙動に依存しており、その前提が崩れても壊れないようにしておく（多重防御）。前回失敗の残骸から復帰できる性質（`git clone` は非空ディレクトリで失敗する）も維持される。
 - **`checkout` だけでは I7 を満たさない（rev.4 で修正）。** `git checkout --detach <sha>` は HEAD が既にその commit にあると working tree を復元せず、tracked file の改変をそのまま残す（`--force` を付けても「切り替えが起きない」ので同じ）。`git clean` が消すのは untracked / ignored だけである。したがって named volume を再利用する構成では、prod で走ったコードが自分のソースを書き換えると、次回同じ `GIT_REF` で起動しても改変済みのコードが実行される。これは R10（dev が書いたコードを prod が実行する）を **前回実行分にまで持続させる**経路であり、I7 の「明示された ref から復元される」が成立しない。`reset --hard "$GIT_REF"` を必ず併記する。三つの役割は重複ではない: `checkout --detach --force` が HEAD を移し、`reset --hard` が tracked を戻し、`clean -xdff` が untracked / ignored を消す。

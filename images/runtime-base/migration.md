@@ -17,8 +17,9 @@
    リリース順は runtime-base → devcontainer-base。
 2. **ホストの docker に空き容量があること。** マルチアーキイメージの pull に要る。
 3. **実行ホストにメモリの余裕があること。** `/src` は tmpfs で、repo と `node_modules` と
-   pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（karakuri 自身での
-   実測使用量は 131M）。
+   pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%。使用量は
+   プロジェクトの依存木で決まる（karakuri 自身での実測は 79M）。移行前に、対象プロジェクトで
+   `du -sh node_modules` を見ておくとよい。
 4. **ディスク暗号化（FileVault / BitLocker）が有効であること。** 本設計の最後の砦であり、
    前提条件として扱う。
 

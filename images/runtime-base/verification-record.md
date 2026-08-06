@@ -332,6 +332,47 @@ hardlink 3491/3547   合計 131M
 `read_only: true` + tmpfs `/src`（`exec` 付き）+ store 同居で、`pnpm install` から
 `prepare` の tsup ビルドまで完走した。
 
+#### 判定材料を差し替えて測り直した（2026-08-06）
+
+上の測定は `packages/enclave-env/dist/cli.js` の有無を「`prepare` が走ったか」の判定材料に
+していた。`dist/` は gitignore 対象なので、checkout 直後には無く、`prepare` の tsup ビルドが
+完走して初めて現れる、という理屈である。
+
+**そのパッケージを廃止したので、この判定材料は成立しなくなった。** workspace に
+`build` / `prepare` を持つパッケージはもう 1 つも無く、放置すれば
+`M9_E_BUILD_RAN=NO`（= prepare が走らなかった）を返し続ける。測定対象が消えたことを理由に
+失敗を報告する測定は、測定が無いより悪い。見た目が「発見」になる。
+
+間接的な問い（prepare が走ったか）をやめ、**直接聞く**形に変えた — `node_modules/.bin` の
+実体を 1 つ実行し、終了コードを見る。0 なら動く、126 なら noexec の Permission denied、
+それ以外は UNKNOWN（バイナリが自分の理由で失敗したものを、マウントの問題と取り違えない）。
+`node_modules/.bin` が無い・空の場合も NO ではなく UNKNOWN とする（実行するものが無いのと、
+実行して拒まれたのは別である）。
+
+```
+M9_E_EXEC=YES (biome)
+M9_RC=0
+M9_STORE_KB=78432   M9_SRC_KB=80712   M9_OUT_KB=4
+M9_LINKED=1679      M9_TOTALF=1705
+M9_ELAPSED=3
+pnpm install 出力中の tsup / Permission denied 関連行: (該当行なし)
+```
+
+- **`M9_E_EXEC=YES`** — `/src` の tmpfs に `exec` を明示した効果が、パッケージ構成に依らない
+  判定材料で確認できた。以前の判定材料が偶然そこにあったパッケージに依存していたのに対し、
+  こちらはどのパッケージにも依存しない
+- **ハードリンク 1679 / 1705（98.5%）** — store が `/src` と同一 tmpfs にあることの確認。
+  別マウントだとリンクが跨げず copy にフォールバックし、この比率は 0 に近くなる（D19）
+- **`/src` 合計 79M**（`M9_SRC_KB=80712`。store はその内数）。**以前の実測 131M から減っている** —
+  enclave-env を廃止したことで tsup / esbuild / typescript が依存木から消えたため。
+  イメージや構成の変更によるものではない
+- 所要時間 3s。noexec の症状（`sh: 1: tsup: Permission denied`）は再現せず
+
+この回の測定は、named build context 経由でスキャナと hook を焼き込む構成の**初回のビルド**でも
+ある（`build-contexts: env-guard=packages/env-guard` + `COPY --from=env-guard`）。
+`runtime-base` と `runtime-base-verify` の両方のビルドが通っており、ビルドコンテキストを
+`images/runtime-base` のまま広げずに済むことが実測で確認できた。
+
 ### store-dir の固定手段（M9-c）
 
 ```
@@ -949,7 +990,7 @@ fail-closed ではあるので安全側だが、**「その ref は存在しな�
 | # | 項目 | 状態 | 根拠 |
 |---|---|---|---|
 | 32 | `tmpfs: - /run:uid=...` の記法で node 所有の tmpfs が作られる | ✅ | §0 / §0.4（`docker run` と `docker compose` の双方で一致）+ **A31** / **B4** |
-| 33 | `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走する | ✅ | §0.68 の **M9-e**（`prepare` の tsup ビルドまで完走）。`exec` の明示が必須であることも同時に確定 |
+| 33 | `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走する | ✅ | §0.68 の **M9-e**。`exec` の明示が必須であることも同時に確定。2026-08-06 に判定材料を差し替えて再測定し `M9_E_EXEC=YES`（同節） |
 | 34 | `GIT_REF` 未指定時に compose が失敗する | ✅ | **A11**（`compose run`）+ **A32 / A33**（`compose config`） |
 | 35 | `logging: driver: none` でもアタッチ時に stdout が手元に表示される | ✅ | **A12** |
 | 36 | ホストの `core_pattern` の内容と、`ulimits: core: 0` 下でコアが生成されないこと | ⛔ | `ulimit -c` が 0 を返すことは **A13** / **B5** で消化済み（`docker compose config` は値 0 を落とすため挙動でしか見られない。§0.71）。**ホストの `/proc/sys/kernel/core_pattern` の実際の内容**はホストでの確認が要る |
