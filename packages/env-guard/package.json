@@ -20,10 +20,12 @@
 	},
 	"license": "MIT",
 	"bin": {
+		"env-guard": "bin/env-guard.js",
 		"env-guard-scan": "bin/env-guard-scan"
 	},
 	"scripts": {
-		"test": "echo 'env-guard: tests live in images/runtime-base/tests/env-guard.test.sh and hook.test.sh; run them with `pnpm test` from the repository root'"
+		"lint:sh": "shellcheck -x --shell=bash --severity=style tests/*.sh",
+		"test": "bash tests/install.test.sh"
 	},
 	"files": [
 		"bin",

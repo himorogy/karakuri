@@ -9,7 +9,7 @@
 
 同じ一覧を与えれば、出力も終了コードも完全に一致します。
 
-実行時の依存はありません。POSIX シェルと `git` / `grep` / `sed` / `find` があれば動きます。
+実行時の依存はありません。スキャナと hook は POSIX シェルと `git` / `grep` / `sed` / `find` があれば動きます。導入コマンド `env-guard install` だけは Node で書かれていますが、こちらも標準モジュール以外は使いません。
 
 ---
 
@@ -74,11 +74,75 @@ git ls-files | npx -y -p @himorogy/env-guard env-guard-scan
 
 パッケージには `hooks/pre-commit` も入っています。staged なファイルの一覧をスキャナへ渡し、その後 `.husky/pre-commit` と `.githooks/pre-commit` があればチェーンします（他の hook 管理ツールを黙って上書きしないためです）。
 
+導入は `env-guard install` で行います。[simple-git-hooks](https://www.npmjs.com/package/simple-git-hooks) を経由するので、**先にそちらを入れてください**。
+
+```sh
+npm install --save-dev simple-git-hooks @himorogy/env-guard
+npx env-guard install
+```
+
+リポジトリのルートで実行してください。このコマンドがすること:
+
+1. `package.json` の `simple-git-hooks.pre-commit` に `sh node_modules/@himorogy/env-guard/hooks/pre-commit` を書く
+2. simple-git-hooks を実行して `.git/hooks/pre-commit` を実体化する
+3. その `.git/hooks/pre-commit` が実在し、実行可能で、env-guard の hook を呼んでいることを**確かめてから**成功を報告する
+
+3 があるのは、`package.json` に書いただけでは `.git/hooks/pre-commit` は生まれないためです。「入れたつもりで何も検査されていない」状態は、hook が無い状態より悪くなります。確かめられなければ非ゼロで終わり、何をすればよいかを出力します。
+
+何度実行しても構いません。既に入っていれば何も書かずに終わります。**別のコマンドが既に `pre-commit` に設定されている場合は上書きせず**、現在の値と必要な値の両方を出力して非ゼロで終わります。既にある検査を黙って消さないためです。合成は次の形になります。
+
+```json
+{
+  "simple-git-hooks": {
+    "pre-commit": "sh node_modules/@himorogy/env-guard/hooks/pre-commit && npx lint-staged"
+  }
+}
+```
+
+`.git/hooks/` は git の管理外なので、clone しても付いてきません。新しい clone でも自動で入るようにするには `package.json` に次を足してください。
+
+```json
+{
+  "scripts": {
+    "prepare": "simple-git-hooks"
+  }
+}
+```
+
+状態の確認だけをしたい場合は `--check` を使います。何も書かず、入っていれば 0、入っていない・食い違っている場合は非ゼロで終わります。手順書や CI からの確認に使えます。
+
+```sh
+npx env-guard install --check
+```
+
+#### hook がスキャナを見つけられなかったとき
+
+hook がスキャナを探す順は、自分自身の隣（`../bin/env-guard-scan`）、次に `/usr/local/bin/env-guard-scan` です。どちらにも無ければ**コミットを拒否します**。見つからないときに黙って通す経路はありません。
+
+hook は自分自身の場所からスキャナの位置を割り出すので、`PATH` を一切引きません。ログインシェルと違う `PATH` で起動される GUI の git クライアントからでも、同じスキャナが走ります。
+
+#### `core.hooksPath` を直接使う方法について
+
+git には `core.hooksPath` で hook ディレクトリごと差し替える機能があり、このパッケージの `hooks/` をそこへ向けることもできます。
+
 ```sh
 git config core.hooksPath node_modules/@himorogy/env-guard/hooks
 ```
 
-hook がスキャナを探す順は、自分自身の隣（`../bin/env-guard-scan`）、次に `/usr/local/bin/env-guard-scan` です。どちらにも無ければ**コミットを拒否します**。見つからないときに黙って通す経路はありません。
+**プロジェクトへの導入手順としてはお勧めしません。** `core.hooksPath` は `.git/hooks/` を丸ごと無視させるため、そのリポジトリの他の hook（simple-git-hooks や husky が書いたもの）が黙って効かなくなります。上の `env-guard install` は既存の仕組みに相乗りするので、この問題が起きません。
+
+この設定が向くのは、**開発コンテナのイメージ側で全リポジトリにまとめて効かせる**用途です。イメージのビルド時に `hooks/pre-commit` を固定の場所へ置き、`core.hooksPath` をコンテナの git 設定へ書いておけば、そのコンテナの中で作られる clone すべてに最初から効きます。
+
+#### コンテナの中と外で、効いているものが違う
+
+この 2 つは独立に動きます。
+
+| commit する場所 | git が使う hook |
+| --- | --- |
+| 開発コンテナの中 | コンテナの git 設定が指すディレクトリ（イメージが用意したもの）。`.git/hooks/` は無視される |
+| ホスト（ターミナル・GUI クライアント） | `.git/hooks/pre-commit`。コンテナの設定は読まれない |
+
+`env-guard install` が用意するのは**後者**です。コンテナの中で検査が効いていることは、ホストの git クライアントから commit する経路には何の効果もありません。逆も同じです。ホストからも commit するなら、`env-guard install --check` が 0 を返すことを一度確かめてください。
 
 ---
 
