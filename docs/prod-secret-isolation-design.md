@@ -1,6 +1,14 @@
 # prod secret 分離設計
 
-status: draft (rev.8) supersedes: `@himorogy/enclave-env` の `templates/prod-shell.sh`
+status: draft (rev.9) supersedes: `@himorogy/enclave-env` の `templates/prod-shell.sh`
+
+rev.9 の主変更（3 件）。プロジェクト側での使い勝手評価（`example/README.md`）から出た決定を反映した。
+
+**1. dev container の鍵注入を broker 方式へ寄せ、ホスト上の恒久平文（compose `env_file` の `dev/.env.container`）を廃止した**（§4.9 / D28）。prod が §6.3 で廃止した `~/.config/<project>/.env.container` と同じ形が dev にだけ残っていた。ただし目的はホスト上の保管状態と意図しない書き出し面の縮小に**限る** — dev container 内のエージェントは同一 UID で動くため、どの搬送路を選んでも鍵の能力は行使でき、そこを守るのは搬送路ではなく鍵のスコープである。注入スクリプト `dev-inject.sh` は詳細仕様の擦り合わせ中で**未実装**（論点は §4.9 に列挙）。
+
+**2. 対話 prod 作業の標準手順を「二段構え」に確定した**（§6.4 / D29）。rev.8 まで §11 は非対話への一本化を第一候補としていたが、dryrun → 適用のような対話的運用が実在する。対話 TTY が使えないのは防衛判断ではなく stdin を搬送路にした技術的帰結（D3）であり、二段構えは注入 1 回・clone 1 回でセッションを維持でき、防御を何も緩めずに体験を回復する。`/src` の tmpfs（D18）は維持する。
+
+**3. GH_TOKEN の checkout 後破棄が dev への流用の障害にならないことを明文化した**（§4.9）。破棄は prod-entrypoint.sh 内の処理であり、dev は entrypoint を通らない。dev で共通化するのは broker・shim・`/run/secrets` 規約・git-askpass であって、entrypoint ではない。
 
 rev.8 の主変更（3 件）。
 
@@ -146,7 +154,7 @@ security find-generic-password -s "<project>-prod-env" -w | \
 
 平文が存在する箇所は、① broker プロセスのメモリ、② カーネルのパイプバッファ（RAM）、③ prod container 内の `/run/secrets`（tmpfs）、④ shim 実行中の対象プロセスの environ、の 4 箇所に限定され、いずれも不揮発ストレージに触れない（I1）。
 
-制約: stdin を secret の**搬送路**に使うため、**`run` の対話 TTY と両立しない**（`-T` で pseudo-TTY を無効化し、entrypoint が stdin を EOF まで消費する）。これは broker の選定（Keychain / 1Password 等）とは無関係で、搬送路が stdin である限り何を上流に置いても変わらない（broker の認可プロンプトは GUI ダイアログであり stdin を使わないため、パイプとは干渉しない）。prod 運用は非対話の一発コマンド（`pnpm deploy`、`dotenvx get` 等）に寄せる。対話シェルが必要な場合は、注入完了後に `docker exec -it` で入る方式で TTY を得られる（§11）。
+制約: stdin を secret の**搬送路**に使うため、**`run` の対話 TTY と両立しない**（`-T` で pseudo-TTY を無効化し、entrypoint が stdin を EOF まで消費する）。これは broker の選定（Keychain / 1Password 等）とは無関係で、搬送路が stdin である限り何を上流に置いても変わらない（broker の認可プロンプトは GUI ダイアログであり stdin を使わないため、パイプとは干渉しない）。prod 運用は非対話の一発コマンド（`pnpm deploy`、`dotenvx get` 等）に寄せる。対話シェルが必要な場合は、注入完了後に `docker exec -it` で入る二段構えを標準手順とする（§6.4。rev.9 で確定）。
 
 #### 代替（Linux ホスト限定・記録として）
 
@@ -258,7 +266,7 @@ prod-run.sh pnpm deploy
 ```
 
 この制約は shim 一般の性質であって dotenvx 固有ではない。`wrangler` / `gh` をローカル依存に持つプロジェクトでも同じことが起きる。**「最上位に置く」だけでは守られない**（規約は破られる）ため、破ったときに何が起きるかが重要になる。dotenvx の場合は D20 の `--strict` がそこを埋める。
-- **shim は環境を判別しない。** 意味論は「`/run/secrets/<VAR>` が存在すれば注入・存在するが空ならエラー・不在なら素通し」の三値で、prod / dev のどちらでも同一に振る舞う。prod では entrypoint が prod secret を書き（§4.6）、dev では dev 環境向けの `GH_TOKEN` / `CLOUDFLARE_API_TOKEN` が別機構（既存の env var 注入、または同パスへのファイル注入）で与えられる。素通し時はプロセス環境をそのまま引き継ぐため、dev の既存注入方式が env var でも壊れない。
+- **shim は環境を判別しない。** 意味論は「`/run/secrets/<VAR>` が存在すれば注入・存在するが空ならエラー・不在なら素通し」の三値で、prod / dev のどちらでも同一に振る舞う。prod では entrypoint が prod secret を書き（§4.6）、dev では dev 環境向けの `GH_TOKEN` / `CLOUDFLARE_API_TOKEN` が同パスへのファイル注入で与えられる（§4.9。rev.9 で env var 注入の廃止を決定）。素通し時はプロセス環境をそのまま引き継ぐため、移行が済むまでの env var 注入とも両立する。
 - 空ファイルの即エラーは compose の空値無言スキップ（§4.1）と同型の事故への防御である（I6）。**ファイル不在の素通しは fail-open ではない**: prod container では `/home/node` が tmpfs で毎回空であり、`~/.wrangler` / `~/.config/gh` 等の fallback 資格情報が存在しえないため、必要な secret を欠いたコマンドは下流の認証失敗として顕在化する。加えて entrypoint が取込件数 ≥ 1 と各値の非空を検証する（§4.6）。
 - `env -u NODE_OPTIONS` については §4.4 を参照。
 - `$( )` は末尾改行を除去するため、secret ファイルの trailing newline は自動処理される。
@@ -289,7 +297,9 @@ D20 は `--strict` を**イメージ側で強制しない**と決めた。判断
 
 - 引数に `run` サブコマンドがある
 - 引数に `--strict` がない
-- `/run/secrets/DOTENV_PRIVATE_KEY_PROD` が存在する
+- `/run/secrets/DOTENV_PRIVATE_KEY_PROD*`（glob）に一致するファイルが存在する
+
+三つ目は rev.9 で固定名 `_PROD` から広げた。dotenvx のファイル名規約は `.env.prod` → `_PROD`、`.env.production` → `_PRODUCTION` であり、固定名では後者の命名を使うプロジェクトで prod 鍵が注入されているのに警告が黙る。`_LOCAL` / `_DEVELOPMENT` は接頭辞 `PROD` に一致しないため誤発火しない。
 
 ```
 dotenvx: WARNING: production key is injected but --strict
@@ -568,6 +578,39 @@ hook は自分自身の場所（`$0`）からスキャナの位置を割り出�
 
 **再発防止として `images/runtime-base/tests/shipped-symbols.test.sh` を置いた**（`pnpm test` から走る）。上の三段の規約をそのまま検査に落としてある。否定対照を 5 本内蔵し、既知の違反を検知すること・許すべきものを誤検知しないことを毎回確認する。
 
+### 4.9 dev container の鍵注入（rev.9）
+
+dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用に fine-scope した `GH_TOKEN` / `CLOUDFLARE_API_TOKEN` 等）も prod と同じ broker 方式で注入する（D28）。従来の注入方式 — compose の `env_file` で `dev/.env.container` を読み environ に載せる — には二つの悪い性質がある。
+
+1. **ホスト不揮発ディスク上の恒久平文**である。prod 側が §6.3 で廃止した `~/.config/<project>/.env.container` と同じ形が dev にだけ残っており、バックアップ・クラウド同期にも乗る。
+2. **コンテナ environ に常駐**する。`docker inspect` の `Config.Env` で可視になり、全子プロセスへ無差別に継承され、コアダンプ・Node diagnostic report へ落ちる面が開く（dev compose は prod と違い `ulimits: core: 0` も `logging: driver: none` も持たない）。
+
+#### 何を守り、何を守らないか
+
+この変更は **dev container 内のエージェントから鍵を隠すためのものではない**。エージェントは node と同一 UID で動くため、`/run/secrets` を直接読めるし、shim 経由でツールに鍵を使わせることもできる。搬送路をどう変えても「エージェントが鍵の能力を行使できる」は不変であり、そこを守る装置は搬送路ではなく**鍵のスコープ**である。守れるのは上記 1・2 — ホスト上の保管状態と、意図しない書き出し面 — に限る。この限定を理解した上で、増える複雑性（起動後の注入 1 ステップ）と釣り合うと判断した。
+
+#### 経路
+
+dev container は IDE（devcontainer 拡張）が起動するため、prod のような entrypoint への stdin 注入経路が無い。かわりに、**起動済みのコンテナへホストから注入する**。
+
+```sh
+# ホスト側。templates/dev-inject.sh の骨子
+<dev 用 broker> | docker exec -i <dev-container> /usr/local/bin/secrets-ingest.sh
+```
+
+- dev 用 broker は prod と同じ契約（§4.1）・同じ実装で、鍵束のサービス名だけを分ける（例: `prj1-dev-env` / `prj1-prod-env`）。
+- 取込スクリプトは stdin の dotenv（§4.1 の方言）を `/run/secrets/<VAR 名>`（umask 077）へ書く。shim（§4.3）は三値意味論のまま無変更で効く。plain git の fetch / push は `GIT_ASKPASS=/usr/local/bin/git-askpass` を設定すれば `/run/secrets/GH_TOKEN` を読む — イメージに焼き込み済みで、**dev は prod-entrypoint.sh を通らないため checkout 後破棄（§4.6）の影響を受けない**。
+- **dev compose に `/run` の tmpfs が必須である。** `tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]`。これが無いと `/run/secrets` はコンテナの writable layer = ホスト側の不揮発ディスクへ書かれ、恒久平文を廃止した意味が消える。オプション無しの短縮形が root:root 所有になる罠は §4.2 と同じ。
+- 注入を忘れた場合は下流の認証失敗として顕在化する（shim は不在素通し）。ただし dotenvx だけは `--strict` を欠くと沈黙する — dev には prod 鍵が来ないため D22 の警告も出ない。dev の運用でも `--strict` を推奨する理由になる。
+
+#### 擦り合わせ結果（2026-08-06 決定・同日実装。各プロジェクトの移行は未実施）
+
+- **取込スクリプトは entrypoint から切り出して共通化する。** prod-entrypoint.sh から dotenv 取込部（方言パース + `/run/secrets` への書き込み + 件数・非空の検証）を `/usr/local/bin/secrets-ingest.sh`（正典は `images/runtime-base/bin/secrets-ingest.sh`）へ切り出してイメージに焼き、entrypoint と `docker exec` の両方が同じファイルを呼ぶ。方言パーサの実装を 1 つに保つ — 2 実装になると、D24 が潰した「判定が 2 つ」と同じ形が搬送路側に生まれる。取込完了時に書き込んだ**鍵名だけ**（値は出さない）を stderr へ出す — §4.3 の「名前だけなら安全に出せる」と同じ判断
+- **コンテナは compose project 名から引く**（`docker compose -p <name> ps -q dev` 相当）。`container_name` 決め打ちは、プロジェクト複製時の直し忘れがそのまま「別プロジェクトへの注入」事故になるため採らない
+- **再注入は「コンテナを起動するたびに 1 回」が運用になる。** `/run` は tmpfs であり、再作成だけでなく停止 → 再起動でも消える（tmpfs はコンテナ起動ごとに新規マウント）。dev-inject は冪等（再実行は上書き）とし、完了時に書き込んだ鍵名（値は出さない）を stderr へ出す。未注入のまま使った場合は shim の素通しにより下流の認証失敗として顕在化し、対話シェルの注入済み鍵名表示（§4.3）でも確認できる。なお dev-inject は**起動ラッパーではない** — 起動は従来どおり IDE が行い、dev-inject は起動後に打つ注入コマンドである（prod-run.sh が起動そのものを包むのとは役割が違う）
+- **plain git の認証**: dev compose の `environment:` に `GIT_ASKPASS: /usr/local/bin/git-askpass` を置く（パスは秘匿情報ではないため env で渡してよい）。GH_TOKEN 不在で認証が要求された場合は非ゼロ終了で顕在化する
+- **移行手順**: 鍵束の Keychain 登録 → dev compose の `/run` tmpfs 化 + `GIT_ASKPASS` 追加 → dev-inject 運用へ切替 → `env_file` 行と `dev/.env.container` の削除、の順。切替と削除を分けるのは、注入漏れの切り分けを env_file が生きているうちに済ませるため（shim はファイルを environ より優先するので、両方が有る期間も動作は file 側で検証できる）
+
 ---
 
 ## 5. 設計判断
@@ -594,13 +637,15 @@ hook は自分自身の場所（`$0`）からスキャナの位置を割り出�
 | D18 | `/src` を named volume ではなく **tmpfs** にする（rev.5） | named volume の再利用には rev.4 の `reset --hard` でも塞がらない穴が二つあり、いずれも実測で再現した。**N-1**: `fetch --tags` は既存ローカルタグを clobber せず、ローカル branch は fetch 対象外なので、前回実行のコードが打った ref が次回の `GIT_REF` として解決される。**N-2**: git の設定優先順位は local > system なので `.git/config` の `core.fsmonitor` 等が entrypoint 自身の git 操作で発火し、しかも `GH_TOKEN` 破棄の**前**に走る。設定経由の実行経路を列挙して潰すのは筋が悪い。tmpfs にすれば両方が構造的に消え、R6（`/src` への書き込みが Docker VM のディスクに残る）も解消する。代償は毎回の full clone と RAM 消費（実測 131M、tmpfs 既定 7.9G）（§4.6） |
 | D19 | pnpm の store を **node_modules と同一の tmpfs マウント**に置く（rev.5） | `read_only` 下では既定の `$PNPM_HOME/store` を作れず `pnpm install` が ENOENT で落ちる。store を tmpfs へ移す必要があるが、`$HOME`（別マウント）へ置くとハードリンクがマウントを跨げず copy にフォールバックし、**RAM が倍**になる（実測 260M vs 131M、リンク数 2 以上のファイルが 0/3546 vs 3491/3546。pnpm 自身が `copied` / `hard linked` と出力で明言）。`/src/.pnpm-store` に置く（§4.5 / §4.6） |
 | D20 | prod の `dotenvx run` には `--strict` / `--no-armor` を付けるが、**イメージ側では強制しない**（rev.6 で書き換え） | dotenvx は復号に失敗しても非ゼロ終了せず、暗号文をそのまま値として注入して rc=0 を返す（実測）。I6 が排除したい「沈黙した成功」そのものなので、prod の運用手順としては必須である。**しかし機構で強制しない。** 強制の場は shim しかないが、shim は runtime-base 経由で dev container にも継承され（I5 の帰結）、`--strict` は**正当な使い方を壊す** — dotenvx には `--convention flow`（`.env` / `.env.local` / `.env.development` を重ねる規約）があり、この規約では一部のファイルが存在しないのが正常であるところ、`--ignore=MISSING_ENV_FILE` が示すとおりファイル不在はエラーコードの一つなので、`--strict` 下では重ね掛けの 1 枚が無いだけで落ちうる。**この根拠は rev.6 では `--ignore=MISSING_ENV_FILE` の存在からの推論だったが、rev.7 で実測に置き換わった** — `.env` と `.env.local` があり `.env.development` が無い状態で `--convention flow --strict` は rc=1 で落ちる（欠けていると言われるのは `.env.development.local`）。`--no-armor` も同様に、dev の開発者が自分の dev 鍵を Armor で管理している運用を壊す。**これは dotenvx の使い方の問題であってコンテナの責務ではない。** shim がプロジェクトの env 構成を知らないまま焼く判断ではなく、プロジェクト側に委ねる。破ったときの結果は R12 に記録し、忘れたことに気付ける機会を D22 で作る。`--no-armor` の根本対処は §11 の egress-guard 適用に寄せる。**副次的な実測**: `-f` でファイルを明示した場合、不在ファイルは `--strict` の有無に関わらず rc=1 になる。prod は `-f .env.prod` を明示する運用なので、`--strict` が追加で担うのは**復号失敗の顕在化だけ**である |
-| D22 | `--strict` の欠落を shim が**警告する**（強制はしない）（rev.7） | D20 の「強制しない」は維持するが、「黙る」まで引き受ける必要はない。`--strict` を欠いたときの失敗は rc=0 で暗号文が値として注入されるという静かなもので（R12）、忘れたことに気付く機会が一度もない。「引数に `run` があり、`--strict` が無く、`/run/secrets/DOTENV_PRIVATE_KEY_PROD` が存在する」ときだけ stderr へ 1 行出す。**環境の判別ではなく注入済み鍵の観測**なので D15 の三値意味論と矛盾せず、prod 鍵が来ない dev 側ではノイズがゼロになる。`--convention flow` も `--ignore=` も壊さない。強制なしで I6 の趣旨を回収する最小の手段（§4.3） |
+| D22 | `--strict` の欠落を shim が**警告する**（強制はしない）（rev.7） | D20 の「強制しない」は維持するが、「黙る」まで引き受ける必要はない。`--strict` を欠いたときの失敗は rc=0 で暗号文が値として注入されるという静かなもので（R12）、忘れたことに気付く機会が一度もない。「引数に `run` があり、`--strict` が無く、`/run/secrets/DOTENV_PRIVATE_KEY_PROD*`（glob。`.env.production` 命名の `_PRODUCTION` も拾う — rev.9 で固定名から拡張）が存在する」ときだけ stderr へ 1 行出す。**環境の判別ではなく注入済み鍵の観測**なので D15 の三値意味論と矛盾せず、prod 鍵が来ない dev 側ではノイズがゼロになる。`--convention flow` も `--ignore=` も壊さない。強制なしで I6 の趣旨を回収する最小の手段（§4.3） |
 | D24 | hook と CI が**同一の共有スキャナ**を使い、検査対象パターンはプロジェクトごとに上書きできる（rev.7） | D23 で CI 側を差し替えた結果、hook（`dotenvx precommit`）と CI（独自走査）で**判定の実装が 2 つ**になった。パターンだけ揃えても判定が別なら「hook は通るが CI で落ちる」という分岐は残る。判定ロジックをリポジトリ内の 1 ファイルへ切り出し、**入力を検査対象ファイルの一覧だけにする** — hook は staged を、CI は tracked を流す。スコープだけが違い判定は同一になる。差分を見るか現在の状態を見るかは文脈が決めることで（D23）、何を平文と見なすかは文脈に依らない。イメージが `COPY` し、reusable workflow は karakuri を第二 checkout して同じファイルを取る。**hook から `dotenvx precommit` は外れる** — 自前のファイル名フィルタを持ち上書きできないため、残すと逆向きの分岐を作る。上書きはリポジトリルートの設定ファイル 1 枚で、hook と CI が同じ規則で読むので片方にだけ効くことがない。**設定ファイルは `source` せず parse する**（リポジトリの中身は信頼しない側が書ける。防御装置を攻撃経路にしない）。既定は変えず、広げるかどうかは 4 リポジトリの実測後に判断する（R13）（§8.2） |
 | D23 | CI の検査から `dotenvx precommit` を**外す**（rev.7） | `precommit` の検査対象は `git diff HEAD` の差分のみで、CI のクリーンな checkout（差分ゼロ）では平文の tracked `.env` を 2 件見つけておきながら「encrypted/gitignored (2)」と表示して rc=0 を返す（実測）。**単なる no-op ではなく「検査した風の緑」**であり、検知装置としては無いより悪い — 「CI で見ている」という誤った安心を与える。tracked ファイルの直接走査へ差し替える（§8.2）。hook 側（staged 差分がある文脈）では正しく機能するので、そちらは `precommit` のままにする。同じ検査ロジックを二つの文脈で使い回そうとしたことが誤りであり、文脈が違えば手段も違ってよい |
 | D21 | `GIT_REF` は entrypoint で**完全な commit sha を強制**し、`PROD_ALLOW_MUTABLE_REF=1` を明示したときだけ可変 ref を許す（rev.6） | rev.5 は「完全な commit sha を渡す」を要件としながらラッパーの警告だけで続行しており、契約と実装がずれていた。R10 の唯一のゲートは deploy 前の人間のレビューであり、その前提は「レビューした対象と流したものが一致する」ことである。ブランチ名はその一致を切る — 押した瞬間に何を流したか分からず、main は動くので後から再現もできない。一方 sha は「古いかもしれないが既知で再現可能」。**失敗の性質が違う**（未知 vs 既知）ため既定は拒否とする。ただし危険を理解した上でブランチ運用を選ぶ余地は残すため、環境変数による明示的な脱出口を置く。検査は entrypoint 側に置き、ラッパーを迂回しても効くようにする。**ラッパーに `git ls-remote` で事前解決させる案は不採用** — 起動ラッパーにネットワーク経路と資格情報を持ち込むことになり、「broker と secret 以外に触らせない」という位置づけが崩れる（§4.6） |
 | D25 | 共有スキャナの正典を **`packages/env-guard/bin/env-guard-scan`** に置き、リポジトリ内に**複製を作らない**（rev.8） | 配布単位（npm パッケージ）と正典の置き場を一致させる。イメージ・karakuri の CI・ホストの三方向すべてがこの 1 ファイルを見る。**複製して同一性をテストで担保する案は採らない** — 同じファイルが 1 つしかなければ担保するものが無い。D24 が潰した「判定が 2 つ」の再来を、テストではなく構造で防ぐ。`@himorogy/enclave-env` は廃止した（§6.3） |
 | D26 | イメージへは **named build context** で供給し、ビルドコンテキストは `images/runtime-base` のまま広げない（rev.8） | D25 の帰結。スキャナが `packages/env-guard` へ移ったため、`images/runtime-base` のコンテキストからは見えなくなる。当初はコンテキストをリポジトリルートへ広げる案だったが**却下した** — 除外設定に書かれていない全ファイルが docker デーモンへ転送され、新しい除外設定の網羅性が未確認事項として増える。buildx の named build context なら必要なディレクトリだけを追加供給でき、変更はビルドを行う 2 つの workflow に 1 行ずつで済む。**片方だけに足すともう片方のビルドが `COPY` で落ちる** |
 | D27 | 他 org からの呼び出しは npm 経由でスキャナを取り、**karakuri 自身の CI は作業ツリーのファイルを直接使う**（rev.8。未実装） | reusable workflow が自分の ref を割り出せない問題（§8.2）は、バージョンを workflow ファイル自身に書ける npm 経由なら**問いごと消える**。ただし karakuri 自身まで npm に寄せると、**スキャナを変更する PR が変更前の公開済みスキャナで検査される** — 緑になるがその PR の変更を一度も通していない。作業ツリー検出の分岐は残し、置き換えるのは第二 checkout の側だけにする。npm から取ったものは SHA256 で照合する（`npx` は取得物のハッシュを検証しない。バージョン固定は改竄への対策にならない） |
+| D28 | dev 鍵の注入も broker 方式にし、ホスト上の恒久平文（`env_file` の `dev/.env.container`）を廃止する（rev.9。機構は実装済み・各プロジェクトの移行は未実施） | 恒久平文は prod 側が廃止した `~/.config/<project>/.env.container` と同じ形であり、environ 常駐は `docker inspect` / コアダンプ / diagnostic report / 全子プロセス継承という書き出し面を開く。broker・shim・`/run/secrets` 規約・git-askpass は既存のまま流用でき、増えるのは起動後の注入 1 ステップと dev compose の `/run` tmpfs 化のみ。**エージェントから鍵を隠す目的ではない** — 同一 UID のため原理的に不可能で、そこは鍵のスコープで守る。この目的の限定を理解した上で複雑性と釣り合うと判断した（§4.9） |
+| D29 | 対話 prod 作業は「二段構え」（broker をパイプした `compose run -dT --rm prod sleep 8h` → `docker exec -it`）を標準手順とする（rev.9） | rev.8 まで第一候補だった非対話一本化は、dryrun → 適用のような対話的運用の実在と衝突する。対話 TTY が使えないのは防衛判断ではなく stdin を搬送路にした技術的帰結（D3）であり、二段構えは entrypoint 完了後に exec するため注入・clone とも 1 回でセッションを維持でき、防御を何も緩めない。`sleep` は `infinity` ではなく時間を切り、stop 忘れを自動回収する。`/src` の tmpfs（D18）は維持し、セッションを跨ぐ再 clone はその代償として受容する（§6.4） |
 
 ---
 
@@ -644,6 +689,7 @@ prod で `dotenvx run` を使うときの必須オプション（rev.5）:
 - dev/prod 相互排他チェック
 - `~/.config/<project>/.env.container`
 - 各リポジトリの `.git/hooks/pre-commit`（`core.hooksPath` に置換）
+- dev compose の `env_file` 注入（`dev/.env.container`。§4.9 の broker 方式へ置換。rev.9 で決定・移行は未実施）
 
 `@himorogy/enclave-env` は**廃止した（rev.8）。** 保留にしていた「package という配布層が要るか」という問いには、要るという答えが出た — ただし enclave-env としてではない。
 
@@ -670,6 +716,21 @@ enclave-env の廃止で 1 つ実害を持ち越している。公開済みの v
 
 `.env.keys` の workspace 内不存在チェック（dotenvx の自動フォールバック対策、§4.3）は
 共有スキャナが引き継いでいる。
+
+### 6.4 対話 prod 作業（rev.9 で標準手順化）
+
+stdin が secret の搬送路のため、`run` の対話 TTY とは両立しない（§4.1 / D3）。dryrun → 適用のような対話的な運用は**二段構え**で行う（D29）。
+
+```sh
+<broker> | GIT_REPO=<url> GIT_REF=<sha> \
+  docker compose -f compose.prod.yaml run -dT --rm prod sleep 8h
+docker exec -it -w /src <container> bash
+```
+
+- entrypoint 完了後に exec するため `/run/secrets` は注入済み。対話シェルの起動時に注入済み鍵名が表示される（§4.3）
+- 注入 1 回・clone 1 回でセッションを維持でき、その中で dryrun と適用を続けられる
+- `sleep infinity` ではなく時間を切る。退出後の `docker stop` 忘れがそのまま放置され続けない
+- セッションを跨ぐと `/src`（tmpfs）は消え、再 clone になる。これは D18 の代償であり緩めない — named volume に戻すと、前回実行のコードが打ったローカル ref の汚染と `.git/config` 経由のコード実行（いずれも実測で再現済み。§4.2）が復活する
 
 ---
 
@@ -949,8 +1010,7 @@ rev.7 で追加した項目:
 
 - **broker の具体選定**: 契約（§4.1）は確定。macOS は `security` CLI が第一候補（Secure Enclave 束縛が Keychain 実装側で既に担保され、「底の亀」問題は OS に委譲して閉じる）。Windows 側と、チーム共有鍵（`DOTENV_PRIVATE_KEY_PROD`）の受け渡しを考えると 1Password / Bitwarden CLI への統一も候補。stdin 注入により broker はコマンド 1 個の差し替えで移行でき、compose・entrypoint 側は無変更で済む。実測して決定する。
 - **ホスト側 hook の導入コマンド**: 方式は A（simple-git-hooks との併用）で確定した（rev.8）— simple-git-hooks が macOS 実機で動作していることが確認できており、動いている仕組みの上に載せる方が速い。残るのは `@himorogy/env-guard` に冪等な導入コマンドを置くこと。**GUI クライアントの PATH でスキャナを見つけられるかは、測って決める問いではない** — 見つからなければ非ゼロで終わるように書けばよく、それはこちらが書くコードの性質である。実測の役割は「意図どおり落ちること」の確認に変わる。
-- **対話 prod shell の要否**: stdin 注入は `run` の TTY と両立しない（§4.1）。運用を非対話コマンドに寄せて廃止するのが第一候補。必要になった場合の選択肢は、(a) **二段構え**: `<broker> | docker compose run -dT --rm prod sleep infinity` で注入・起動し、`docker exec -it <container> bash` で TTY を得る（entrypoint 完了後なので /run/secrets は注入済み。退出後の `docker stop` 忘れが唯一の運用リスク）、(b) secret 不要な素の `run` シェル（shim は不在素通しだが、prod container には fallback 資格情報が無いため secret を使うコマンドだけが失敗する）、(c) Linux ホストへの一本化 + `file:` ソース / `/dev/shm` 代替（§4.1）。
-- **実行ホストの一本化**: Mac / Windows ミニ PC のどちらで prod 実行を行うか。swap 経由の露出（R7）はメモリに余裕のある側に寄せるのが一貫する。Linux ホストに一本化できるなら上記 (c) の選択肢も開ける。**rev.5 でこの判断の重みが増した** — `/src` が tmpfs になったため、repo と `node_modules` と pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G、実測の使用量は karakuri 自身で 131M）。依存の重いプロジェクトを載せるなら実行ホストのメモリ量が直接の制約になる。
+- **実行ホストの一本化**: Mac / Windows ミニ PC のどちらで prod 実行を行うか。swap 経由の露出（R7）はメモリに余裕のある側に寄せるのが一貫する。Linux ホストに一本化できるなら `file:` ソース + `/dev/shm` の代替（§4.1）も開ける。**rev.5 でこの判断の重みが増した** — `/src` が tmpfs になったため、repo と `node_modules` と pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G、実測の使用量は karakuri 自身で 131M）。依存の重いプロジェクトを載せるなら実行ホストのメモリ量が直接の制約になる。
 - **署名タグの検証**: rev.6 で `GIT_REF` は完全な commit sha を強制するようにした（D21）。署名タグを使いたい場合は `git tag -v` 相当の検証を entrypoint に入れる必要があり、信頼する公開鍵をどこから持ってくるか（イメージに焼く / broker で渡す）が未決。実装するまでは `PROD_ALLOW_MUTABLE_REF=1` が唯一の逃げ道で、これは検証を伴わないため「危険を理解した上での選択」以上のものにはならない。
 - **prod container への egress-guard 適用**: `compose.prod.yaml` は `cap_add: [NET_ADMIN, NET_RAW]` も firewall 起動も持たない。したがって**この構成のままでは prod に egress 制限は掛からない**。適用するには capability 追加と root での firewall 初期化が必要で、「能力は最小に」（§4.5 の配置規約）と緊張関係にある。prod は信頼境界の内側（§2.1）だが、依存パッケージの supply chain に対する多層防御としての価値はある。エージェント不在の prod で egress 制御に払うコスト（caps + entrypoint の root 化）が見合うか、実装時に判断する。
 
@@ -962,6 +1022,10 @@ rev.7 で追加した項目:
   - `--strict` の欠落は shim が警告する（D22）。**`--no-armor` の欠落には対応する警告を置かない** — `--strict` の欠落が「静かに壊れた値で動く」という自分の環境内で完結する事故なのに対し、`--no-armor` の欠落は「外へ出る」事故であり、警告で足りる性質ではないと判断した。面で塞ぐまでは残余リスクとして開いたまま数える（R12）
   - egress-guard の prod 適用を決めるまでは、この項目を §11 の未決の中で**最優先**として扱う
 - **他 org 展開時のイメージ配布**: `ghcr.io/himorogy/runtime-base` を各 org から pull させるか、org ごとにミラーするか。
+
+### rev.9 で決着し、未決から外したもの
+
+- ~~対話 prod shell の要否~~ → **二段構えを標準手順として確定**（§6.4 / D29）。非対話への一本化案（rev.8 までの第一候補）は撤回。旧選択肢のうち (b)（secret 不要な素の `run` シェル）は二段構えで代替でき、(c)（Linux ホスト一本化 + `file:` ソース / `/dev/shm`）は「実行ホストの一本化」の側に残した。
 
 ### rev.5 で決着し、未決から外したもの
 
