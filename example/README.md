@@ -49,17 +49,22 @@ alias prj1-prod-deploy='PROD_BROKER=$HOME/.local/bin/prj1-broker \
 
 ```sh
 #!/usr/bin/env bash
-export PROD_KEYCHAIN_SERVICE=prj1-prod-env
+export BROKER_KEYCHAIN_SERVICE=prj1-prod-env
 exec "$HOME/.local/bin/broker-macos-keychain.sh"
 ```
 
-Keychain への登録（初回のみ。プロンプトに dotenv 形式の全文を貼り付ける — シェル履歴に残らない）:
+Keychain への登録（初回のみ）。**`-w` の対話プロンプトは 1 行しか受け付けない**ため、複数行の dotenv は base64 で 1 行に畳んでから格納する（broker が取り出し時に復元する）:
 
 ```sh
-security add-generic-password -s "prj1-prod-env" -a "$(whoami)" -w
+# 1. dotenv 全文を base64 にしてクリップボードへ（stdin 入力なので履歴に残らない。Ctrl-D で確定）
+base64 | pbcopy
+# 2. 登録。プロンプトに base64 の 1 行を貼り付ける。-T "" で無認可アクセスできるアプリを無しにする
+security add-generic-password -s "prj1-prod-env" -a "$(whoami)" -T "" -w
+# 3. クリップボードを空に
+pbcopy < /dev/null
 ```
 
-1 項目に GH_TOKEN / CLOUDFLARE_API_TOKEN / DOTENV_PRIVATE_KEY_PROD 等をまとめた複数行テキストを格納する。プロジェクトの分離はサービス名（`prj1-prod-env` / `prj2-prod-env`）で行う。Bitwarden / 1Password を使う場合は、CLI で同じ dotenv 全文を取り出して stdout に出すラッパーを書けば broker 契約（`templates/broker-macos-keychain.sh` 冒頭に記載)を満たす。
+1 項目に GH_TOKEN / CLOUDFLARE_API_TOKEN / DOTENV_PRIVATE_KEY_PROD 等をまとめて格納する。プロジェクトの分離はサービス名（`prj1-prod-env` / `prj2-prod-env`）で行う。Bitwarden を使う場合は `templates/broker-bitwarden.sh`（note は元々複数行を持てるので base64 は不要）。1Password 等も、dotenv 全文を stdout に出すラッパーを書けば broker 契約（各テンプレート冒頭に記載）を満たす。
 
 ### 挙動と制約
 

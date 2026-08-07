@@ -2,8 +2,8 @@
 #
 # broker-macos-keychain.sh — macOS Keychain を使った broker の参照実装
 #
-# broker は差し替え可能である。ここで定義する契約さえ満たせば、1Password
-# CLI（`op read`）や Bitwarden CLI（`bw get`）等、別の実装に差し替えて
+# broker は差し替え可能である。ここで定義する契約さえ満たせば、Bitwarden CLI
+# （broker-bitwarden.sh）や 1Password CLI（`op read`）等、別の実装に差し替えて
 # よい。どの broker を標準とするかは未決事項である。これはあくまで macOS
 # 向けの一実装。
 #
@@ -12,24 +12,52 @@
 #   2. 保管中の実体が不揮発ストレージ上で平文でない
 #   3. 取得時に OS レベルの認可（パスワード / Touch ID プロンプト）が働く
 #   4. 非対話環境で認可を得られない場合は非ゼロ終了する
+#   5. stdout 以外へ secret を出さない
 #
 # --- セットアップ（初回のみ、対話的に実行する） -------------------------------
 #
-#   security add-generic-password \
-#     -s "<project>-prod-env" \
-#     -a "$(whoami)" \
-#     -w
+#   Keychain の対話プロンプト（-w）は 1 行しか受け付けない。複数行の dotenv を
+#   そのまま渡そうとすると、全体が 1 行に潰れて「最初の変数の値の一部」として
+#   取り込まれる（実測）。そこで dotenv 全文を base64 で 1 行に畳んでから
+#   格納し、このスクリプトが取り出し時に復元する。
 #
-#   -s に渡した文字列を、このスクリプトを呼ぶ側で PROD_KEYCHAIN_SERVICE
-#   として渡す（例: `PROD_KEYCHAIN_SERVICE="<project>-prod-env" prod-run.sh
-#   ...` や、prod-run.sh を呼ぶさらに外側のラッパーで export する）。
-#   -w を付けて実行すると、値の入力を対話的なプロンプト（シェル履歴に
-#   平文が残らない）で求められる。求められる値は「dotenv 形式のテキスト
-#   全文」（複数行の KEY=value をまとめたもの）で、それを 1 項目として
-#   丸ごと Keychain に格納する。
+#   1. dotenv 全文を base64 にしてクリップボードへ。端末でそのまま実行し、
+#      KEY=value を行ごとに打ち込んで（またはパスワードマネージャから貼って）
+#      最後に Ctrl-D。stdin 入力なのでシェル履歴に残らず、ファイルにも
+#      書かない:
 #
-#   登録後、Keychain Access.app でこの項目を開き「アクセス制御」タブから
-#   ACL を選べる。実務上の選択肢はおおむね次の二つ:
+#        base64 | pbcopy
+#        GH_TOKEN=xxxx
+#        DOTENV_PRIVATE_KEY_PROD=xxxx
+#        ^D
+#
+#   2. Keychain へ登録。プロンプトが出たら base64 の 1 行を貼り付ける:
+#
+#        security add-generic-password \
+#          -s "<project>-prod-env" \
+#          -a "$(whoami)" \
+#          -T "" \
+#          -w
+#
+#      -T "" は「この項目を無認可で読めるアプリを無しにする」指定。これを
+#      省くと項目を作成したアプリが信頼リストに入り、以後の取り出しが
+#      認可プロンプトなしで通ることがある。取得のたびに認可を求めるのが
+#      この broker の契約なので、明示的に空にしておく。
+#
+#   3. クリップボードに base64（= secret 本体）が残っているので空にする。
+#      クリップボード履歴ツールを使っている場合はそちらの履歴からも消すこと:
+#
+#        pbcopy < /dev/null
+#
+#   -s に渡した文字列を、このスクリプトを呼ぶ側で BROKER_KEYCHAIN_SERVICE
+#   として渡す（例: `BROKER_KEYCHAIN_SERVICE="<project>-prod-env"
+#   PROD_BROKER=... prod-run.sh ...` や、プロジェクト別の 1 行ラッパーで
+#   export する）。
+#
+#   登録後、Keychain Access.app（macOS 15 以降は Spotlight で
+#   「キーチェーンアクセス」。「パスワード」App には generic password は
+#   表示されない）でこの項目を開き「アクセス制御」タブから ACL を選べる。
+#   実務上の選択肢はおおむね次の二つ:
 #
 #     - 都度確認 / Touch ID を要求する — アクセスのたびにユーザー
 #       プレゼンスの確認が入る。broker 契約 3 が求めているのはこちら。
@@ -49,10 +77,10 @@
 set -euo pipefail
 
 # サービス名にデフォルト値は持たせない。決め打ちの名前を置くと、複数
-# プロジェクトを同一ホストで扱う際に取り違えて別プロジェクトの prod 鍵を
+# プロジェクトを同一ホストで扱う際に取り違えて別プロジェクトの鍵束を
 # 注入してしまう事故を機構的に防げなくなる。
-if [ -z "${PROD_KEYCHAIN_SERVICE:-}" ]; then
-	echo "broker-macos-keychain: PROD_KEYCHAIN_SERVICE is required (the -s value used at 'security add-generic-password' setup time)" >&2
+if [ -z "${BROKER_KEYCHAIN_SERVICE:-}" ]; then
+	echo "broker-macos-keychain: BROKER_KEYCHAIN_SERVICE is required (the -s value used at 'security add-generic-password' setup time)" >&2
 	exit 1
 fi
 
@@ -65,24 +93,32 @@ fi
 # secret 本体を含まない）はコマンド置換の対象外（標準エラーのみ）なので
 # そのままこのスクリプトの標準エラーへ流れる。secret を含みうる標準出力
 # だけを変数に取り込む。
-if dotenv="$(security find-generic-password -s "${PROD_KEYCHAIN_SERVICE}" -w)"; then
+if b64="$(security find-generic-password -s "${BROKER_KEYCHAIN_SERVICE}" -w)"; then
 	rc=0
 else
 	rc=$?
 fi
 
 if [ "$rc" -ne 0 ]; then
-	echo "broker-macos-keychain: security find-generic-password failed (exit ${rc}) for service '${PROD_KEYCHAIN_SERVICE}'; see the 'security' diagnostic above, if any" >&2
+	echo "broker-macos-keychain: security find-generic-password failed (exit ${rc}) for service '${BROKER_KEYCHAIN_SERVICE}'; see the 'security' diagnostic above, if any" >&2
 	exit "$rc"
 fi
 
-# 空文字は「項目はあるが値が空」という事故的な状態。パイプの先の
-# entrypoint も空 secret を検出して落ちるが、broker 側で先に止めておいた
-# 方が問題の切り分けが早い。secret の欠落が沈黙した成功にならないように
-# するのがこの構成全体の要求であり、検出は早い段でも遅い段でもよいので
-# はなく、原因に近い段で出す方が運用中に読める。
+if [ -z "$b64" ]; then
+	echo "broker-macos-keychain: keychain item '${BROKER_KEYCHAIN_SERVICE}' returned an empty value" >&2
+	exit 1
+fi
+
+# 格納形式は base64（上記セットアップ手順）。復号に失敗した場合は、平文の
+# まま格納した項目である可能性が高いので、直し方まで含めて案内する。
+# エラーメッセージに取り出した値そのものは出さない。
+if ! dotenv="$(printf '%s' "$b64" | base64 --decode 2>/dev/null)"; then
+	echo "broker-macos-keychain: keychain item '${BROKER_KEYCHAIN_SERVICE}' is not valid base64. Store the dotenv text base64-encoded — the interactive -w prompt accepts only a single line, so a multi-line dotenv must be folded first. See the setup notes at the top of this script." >&2
+	exit 1
+fi
+
 if [ -z "$dotenv" ]; then
-	echo "broker-macos-keychain: keychain item '${PROD_KEYCHAIN_SERVICE}' returned an empty value" >&2
+	echo "broker-macos-keychain: keychain item '${BROKER_KEYCHAIN_SERVICE}' decoded to an empty value" >&2
 	exit 1
 fi
 

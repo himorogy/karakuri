@@ -146,7 +146,7 @@ security find-generic-password -s "<project>-prod-env" -w | \
 - `export ` 接頭辞は**非対応**
 - 空値（`KEY=`）はエラー。取込件数 0 もエラー（I6）
 
-参照実装: macOS は `security` CLI（Keychain 項目は Secure Enclave 由来の鍵で暗号化され、ACL で毎回確認 / Touch ID / 常時許可を選べる。dotenv 全文を 1 項目として格納）。Windows は Credential Manager 直接よりも 1Password / Bitwarden 等の CLI（生体認証アンロック + dotenv 出力）が実務的。**SOPS は不採用**: 標準の age 運用は復号鍵を `~/.config/sops/age/keys.txt` に平文常駐させるため契約 2 に違反する。KMS / ハードウェアプラグインを足せば回避できるが、鍵束を git 管理しない以上、ファイル暗号化ツールを挟む動機自体がない。
+参照実装: macOS は `security` CLI（Keychain 項目は Secure Enclave 由来の鍵で暗号化され、ACL で毎回確認 / Touch ID / 常時許可を選べる。dotenv 全文を **base64 で 1 項目に**格納する — `-w` の対話登録プロンプトは 1 行しか受け付けず、複数行の dotenv をそのまま渡すと全体が 1 行に潰れて最初の変数の値として取り込まれることを実測した。rev.9。あわせて登録時は `-T ""` で信頼アプリを空にする — 省くと作成アプリが信頼リストに入り、以後の取得が認可プロンプトなしで通り契約 3 が静かに消える）。Windows は Credential Manager 直接よりも 1Password / Bitwarden 等の CLI（生体認証アンロック + dotenv 出力）が実務的。**SOPS は不採用**: 標準の age 運用は復号鍵を `~/.config/sops/age/keys.txt` に平文常駐させるため契約 2 に違反する。KMS / ハードウェアプラグインを足せば回避できるが、鍵束を git 管理しない以上、ファイル暗号化ツールを挟む動機自体がない。
 
 - broker の stdout → パイプ → prod-entrypoint.sh の stdin へ直結し、entrypoint が**コンテナ内 tmpfs**（`/run/secrets/<VAR名>`、umask 077）へ書く（§4.6）。恒久平文ファイル（旧 `~/.config/<project>/.env.container`）は廃止する。
 - 環境変数を一切経由しないため、ホストシェルの environ（I2）にも、compose プロセスの environ にも、`docker inspect` の `Config.Env`（T4）にも現れない。
