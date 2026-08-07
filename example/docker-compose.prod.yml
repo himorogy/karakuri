@@ -28,7 +28,7 @@ services:
     # 変えられる。この構成は「prod が実行するものは明示された ref から
     # 復元される」ことを守ろうとしており、prod が動かすイメージの中身は
     # まさにその守るべき対象そのものなので、可変な参照であってはならない。
-    image: ghcr.io/himorogy/runtime-base@sha256:33da300c1fb83499debf2af0d805674cd4fd69fee041be7d917d53a0a5db5651
+    image: ghcr.io/himorogy/runtime-base@sha256:689c05a2c6f5c80644d82e60eacf81a5d88b7308293fb5323f98117ce2807b54 # v1.1.0
 
     entrypoint: ["/usr/local/bin/prod-entrypoint.sh"]
     working_dir: /src
