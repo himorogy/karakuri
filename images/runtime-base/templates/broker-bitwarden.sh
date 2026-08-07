@@ -25,8 +25,26 @@
 #
 # --- セットアップ（初回のみ） --------------------------------------------------
 #
-#   bw login                      # アカウントへのログイン（初回のみ）
-#   bw sync                       # vault キャッシュの更新
+#   bw CLI のインストールは native 実行ファイルを推奨する。broker はホスト側で
+#   最も特権的な部品（マスターパスワードを握り、全鍵束を stdout に出す）で
+#   あり、その取得経路は狭く・固定的に保つ。npm 版（npm install -g
+#   @bitwarden/cli）は install 時に postinstall スクリプトが走り、依存木が
+#   深く、update で黙って版が動く。native 版は単一ファイルで、版は自分で
+#   上げるまで動かない:
+#
+#     # bitwarden/clients の GitHub Releases（cli-v* タグ）から取得し、
+#     # リリースアセットの SHA-256 と照合してから固定パスへ置く
+#     curl -LO https://github.com/bitwarden/clients/releases/download/cli-v<VER>/bw-macos-<VER>.zip
+#     shasum -a 256 bw-macos-<VER>.zip     # 照合
+#     unzip bw-macos-<VER>.zip && mv bw ~/.local/bin/bw && chmod +x ~/.local/bin/bw
+#     xattr -d com.apple.quarantine ~/.local/bin/bw   # 初回実行が隔離で止まる場合
+#
+#   npm 版を使う場合は、取得物のハッシュ照合と版の固定を自分で行うこと
+#   （nodenv 等の環境では node 版ごとのインストールになり、node を
+#   切り替えると消える点にも注意）。
+#
+#   bw login                       # アカウントへのログイン（初回のみ）
+#   bw sync                        # vault キャッシュの更新
 #
 #   Bitwarden 側に Secure Note を 1 項目作り、名前を「env/<project>/<環境>」の
 #   ように付ける（例: env/radwisp/dev）。中身は dotenv 形式のテキスト全文
@@ -49,6 +67,13 @@
 #
 set -euo pipefail
 
+# bw の実体は BROKER_BW_BIN で絶対パス指定できる（既定は PATH 解決）。
+# PATH 任せだと、バージョンマネージャの shim 等、PATH 上で先に来たものが
+# 勝つ。broker が呼ぶバイナリは固定的であってほしいので、上記の固定パスへ
+# 置いた native 版を使う場合はここで名指しする:
+#   BROKER_BW_BIN="$HOME/.local/bin/bw"
+bw_bin="${BROKER_BW_BIN:-bw}"
+
 # 項目名にデフォルト値は持たせない。決め打ちの名前を置くと、複数プロジェクトを
 # 同一ホストで扱う際に取り違えて別プロジェクトの鍵束を注入してしまう事故を
 # 機構的に防げなくなる。
@@ -60,16 +85,16 @@ fi
 # ここでマスターパスワードのプロンプトが出る（stderr / tty 経由。stdout には
 # セッション鍵だけが出るので変数に受け、dotenv 出力と混ざらないようにする）。
 # 非対話環境ではプロンプトを出せず非ゼロ終了する。
-session=$(bw unlock --raw)
+session=$("$bw_bin" unlock --raw)
 
 # 取得の成否によらず、このスクリプトを抜けるときには必ず lock する。
 # lock の失敗で本来の終了コードを上書きしない。
-trap 'BW_SESSION="$session" bw lock >/dev/null 2>&1 || true' EXIT
+trap 'BW_SESSION="$session" "$bw_bin" lock >/dev/null 2>&1 || true' EXIT
 
 # bw の失敗（項目が見つからない・同名項目が複数ある、等）を必ず非ゼロで
 # 伝播させる。bw 自身の診断メッセージは stderr へ出るのでそのまま流れる。
 # secret を含みうる stdout だけを変数に取り込む。
-if dotenv="$(BW_SESSION="$session" bw get notes "$BROKER_BW_ITEM")"; then
+if dotenv="$(BW_SESSION="$session" "$bw_bin" get notes "$BROKER_BW_ITEM")"; then
 	rc=0
 else
 	rc=$?
