@@ -192,14 +192,17 @@ RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" 
     && chmod 0440 /etc/sudoers.d/node-firewall \
     && visudo -cf /etc/sudoers.d/node-firewall
 
-# --- prod entrypoint / git-askpass ---------------------------------------------
+# --- prod entrypoint / secrets-ingest / git-askpass -----------------------------
 # 秘密鍵 (dotenv 形式) を stdin から受け取り /run/secrets (tmpfs) へ書き出し、
 # 明示された git ref へ /src (tmpfs) を復元してから "$@" を exec する。
+# stdin の取込部は secrets-ingest.sh に分かれており、prod では entrypoint が、
+# dev ではホスト側の注入スクリプトが `docker exec -i` 経由で同じファイルを
+# 呼ぶ (方言パーサを 1 実装に保つ)。
 # GH_TOKEN は checkout 直後に破棄するため、git-askpass は clone/fetch の間
 # だけ使われる (設計書 §4.6)。
-COPY bin/prod-entrypoint.sh bin/git-askpass /usr/local/bin/
-RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/git-askpass \
-    && chmod 0755 /usr/local/bin/prod-entrypoint.sh /usr/local/bin/git-askpass
+COPY bin/prod-entrypoint.sh bin/secrets-ingest.sh bin/git-askpass /usr/local/bin/
+RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass \
+    && chmod 0755 /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass
 
 # --- prod-context: 注入済み鍵名の表示 (rev.6 / §4.3) ----------------------------
 # 対話シェルの起動時に、/run/secrets の「ファイル名」(= 環境変数名) と

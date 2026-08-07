@@ -38,10 +38,20 @@ skip() {
 # 実 /run/prod-ref (root 所有が普通) へ書きに行かせないための必須の
 # 差し替えで、対象パスが単なる文字列 "/run/prod-ref" を含む唯一の行
 # (echo の説明文言も含む) すべてに対して機械的に効く。
+#
+# stdin の取込部は bin/secrets-ingest.sh に切り出されており、entrypoint は
+# それを /usr/local/bin の絶対パスで呼ぶ。同じ考え方で取込スクリプト側も
+# /run/secrets を差し替えた tmpdir 配下のコピーを作り、entrypoint 側の
+# 呼び出しパスをそこへ向ける。
 make_entrypoint() {
 	local dir="$1"
 	mkdir -p "$dir/secrets" "$dir/src"
 	sed \
+		-e "s#/run/secrets#$dir/secrets#g" \
+		"$SCRIPT_DIR/bin/secrets-ingest.sh" >"$dir/secrets-ingest.sh"
+	chmod +x "$dir/secrets-ingest.sh"
+	sed \
+		-e "s#/usr/local/bin/secrets-ingest.sh#$dir/secrets-ingest.sh#g" \
 		-e "s#/run/secrets#$dir/secrets#g" \
 		-e "s#/run/prod-ref#$dir/prod-ref#g" \
 		-e "s#/src#$dir/src#g" \

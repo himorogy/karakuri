@@ -12,68 +12,21 @@
 set -eu
 : "${GIT_REPO:?}" "${GIT_REF:?}"
 
-# broker がどの OS で走るか (ひいては改行コードが LF か CRLF か) は
-# 読めないため、行末の CR は毎行剥がす。剥がし忘れると鍵名や値の末尾に
-# 不可視の \r が残り、shim 側のファイル比較や dotenvx の鍵選択が
-# 不可解に失敗する。
-cr=$(printf '\r')
+# umask はここ (取込の外) でも設定する。取込スクリプトは自分の umask を
+# 自分で設定するが、それは子プロセスの中で閉じる。この entrypoint 自身が
+# 以降に作るファイル (/run/prod-ref 等) の既定も秘匿寄りに保つため、従来
+# どおり冒頭で 077 にしておく (/run/prod-ref は後段で明示的に 0644 へ緩める)。
+umask 077
 
 # --- secrets: stdin (dotenv 形式) -> /run/secrets (tmpfs) ---
-umask 077
-mkdir -p /run/secrets
-# entrypoint は入力を反射しない: パース失敗時のメッセージに $line や $k を
-# 埋めない。broker の出力が壊れて "KEY=" の形になっていない場合、その行は
-# secret 本体そのものでありうる。`logging: none` はホストのログファイルを
-# 止めるだけで、アタッチ先の端末表示 (とそのスクロールバック) は止められ
-# ないため、位置は行番号だけで示す
-# (docs/prod-secret-isolation-design.md §4.6)。
-#
-# lineno は「読んだ行」の通し番号 (空行・コメント行も数える)。n は「取り
-# 込んだ secret の件数」で意味が異なる — n を流用すると後段の
-# `[ "$n" -gt 0 ]` の検証 (「1 件も secret が来なかった」の検出) が壊れる
-# ため、別カウンタにする。
-n=0
-lineno=0
-while IFS= read -r line || [ -n "$line" ]; do
-  lineno=$((lineno+1))
-  line=${line%"$cr"}
-  case "$line" in ''|\#*) continue ;; esac
-
-  # '=' を含まない行を許すと k=${line%%=*} が行全体を鍵名にしてしまい、
-  # 意図しないファイル名で secret が書かれる事故につながるため、ここで
-  # 弾く。
-  case "$line" in
-    *=*) ;;
-    *) echo "invalid secret input at stdin line $lineno: missing '='" >&2; exit 1 ;;
-  esac
-
-  k=${line%%=*}
-  v=${line#*=}
-
-  # 鍵名を [A-Za-z_][A-Za-z0-9_]* に制限する。broker が壊れた行を
-  # 出力した場合でも、"/" や ".." を含む鍵名で /run/secrets/$k が
-  # パストラバーサルに使われないようにするための最終防波堤。
-  case "$k" in
-    [A-Za-z_]*) ;;
-    *) echo "invalid secret input at stdin line $lineno: invalid key" >&2; exit 1 ;;
-  esac
-  case "$k" in
-    *[!A-Za-z0-9_]*) echo "invalid secret input at stdin line $lineno: invalid key" >&2; exit 1 ;;
-  esac
-
-  # ダブルクォート / シングルクォートいずれの引用も剥がす。v の途中に
-  # "=" が含まれるケース (DATABASE_URL=postgres://u:p@h/db?a=b 等) は、
-  # v=${line#*=} が最初の "=" だけを削るので既に正しく残っている。
-  case "$v" in
-    \"*\") v=${v#\"}; v=${v%\"} ;;
-    \'*\') v=${v#\'}; v=${v%\'} ;;
-  esac
-
-  [ -n "$v" ] || { echo "invalid secret input at stdin line $lineno: empty secret" >&2; exit 1; }
-  printf '%s' "$v" > "/run/secrets/$k"
-  n=$((n+1))
-done
-[ "$n" -gt 0 ] || { echo "no secrets received on stdin" >&2; exit 1; }
+# 取込 (方言パース + /run/secrets への umask 077 書き込み + 取込件数と
+# 各値非空の検証) は secrets-ingest.sh に切り出してある。dev container への
+# ホストからの注入 (`docker exec -i` 経由) と同じ実装を共有するためで、
+# パーサが 2 実装になると挙動の食い違いがそのまま搬送路の穴になる
+# (docs/prod-secret-isolation-design.md §4.1 / §4.9)。
+# stdin は子プロセスとして走る取込スクリプトが EOF まで消費する。失敗時は
+# set -eu によりこの entrypoint ごとここで落ちる。
+/usr/local/bin/secrets-ingest.sh
 export GIT_ASKPASS=/usr/local/bin/git-askpass
 
 # --- self-check: /src が exec であること ----------------------------------------

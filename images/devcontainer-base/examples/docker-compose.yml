@@ -43,12 +43,23 @@ services:
       CLAUDE_CONFIG_DIR: /home/node/.claude
       # 下の ports と同じ値にする。
       CRIT_PORT: "4517"
+      # git の認証を /run/secrets/GH_TOKEN から取る（注入されていなければ、認証が
+      # 要る操作が非ゼロ終了して顕在化する）。パス自体は秘匿情報ではないので、
+      # 環境変数で渡してよい。
+      GIT_ASKPASS: /usr/local/bin/git-askpass
 
-    # runArgs の --env-file の置き換え。dotenvx の local / dev 復号キーを注入する。
-    # prod キーはワークスペース外に置く。
-    # **ファイルが無いと起動そのものが失敗する。** 使わないなら丸ごと消すこと。
-    env_file:
-      - ./dev/.env.container
+    # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
+    # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと
+    # root 所有で作られ、node ユーザーが /run/secrets を作れず書けない。
+    # tmpfs はコンテナを停止 → 再起動するだけでも消えるので、起動のたびに
+    # ホスト側の dev-inject スクリプトを実行し直すこと。
+    tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]
+
+    # dev 鍵（dotenvx の local / dev 復号キーや dev 用のトークン）は env_file では
+    # 注入しない。env_file はホスト上に恒久的な平文ファイルを要求し、コンテナの
+    # environ にも常駐して docker inspect や全子プロセスから見えてしまう。
+    # かわりに、コンテナ起動後にホスト側の dev-inject スクリプトで上の tmpfs
+    # （/run/secrets）へ注入する。
 
     # runArgs の -p の置き換え。crit のポート転送。
     # プロジェクトごとに重複しない値を割り当てる。base で CRIT_HOST=0.0.0.0 を

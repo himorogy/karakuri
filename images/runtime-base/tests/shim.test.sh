@@ -346,6 +346,27 @@ else
 fi
 rm -rf "$t"
 
+# 12b. DOTENV_PRIVATE_KEY_PRODUCTION のみ存在 + run + --strict 無し -> 警告が
+#      出る。dotenvx のファイル名規約は .env.prod → _PROD、.env.production →
+#      _PRODUCTION であり、固定名 _PROD の判定では後者の命名を使うプロジェクト
+#      で prod 鍵が注入されているのに警告が黙る (glob 化の回帰確認)。
+#      否定対照は上の 12 が担う: glob を広げすぎて DOTENV_PRIVATE_KEY_* 全体に
+#      一致するようになれば、_DEVELOPMENT のみの 12 が赤くなる。
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-production' >"$t/secrets/DOTENV_PRIVATE_KEY_PRODUCTION"
+err="$("$t/bin/dotenvx" run -- node -e 1 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+	printf '%s\n' "$err" | grep -q "WARNING" &&
+	printf '%s\n' "$err" | grep -q -- "--strict"; then
+	ok "dotenvx: _PRODUCTION のみ注入済み + run + --strict 無し -> 警告が出る"
+else
+	ng "dotenvx: _PRODUCTION のみ注入済み + run + --strict 無し -> 警告が出る (rc=$rc err=$err)"
+fi
+rm -rf "$t"
+
 # 13. 警告は動作を変えない: 警告が出る条件でも出ない条件でも、実体が受け取る
 #     引数と実体の終了コードが同一であること。
 t="$(mktemp -d)"

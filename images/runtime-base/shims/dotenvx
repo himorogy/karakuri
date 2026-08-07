@@ -50,8 +50,19 @@ for a in "$@"; do
   --strict) has_strict=1 ;;
   esac
 done
-if [ "$has_run" -eq 1 ] && [ "$has_strict" -eq 0 ] &&
-  [ -e /run/secrets/DOTENV_PRIVATE_KEY_PROD ]; then
+# prod 鍵の有無は固定名ではなく DOTENV_PRIVATE_KEY_PROD* の glob で見る。
+# dotenvx のファイル名規約は .env.prod → DOTENV_PRIVATE_KEY_PROD、
+# .env.production → DOTENV_PRIVATE_KEY_PRODUCTION であり、固定名では後者の
+# 命名を使うプロジェクトで prod 鍵が注入されているのに警告が黙ってしまう。
+# _LOCAL / _DEVELOPMENT は接頭辞 PROD に一致しないため誤発火しない
+# (docs/prod-secret-isolation-design.md §4.3)。
+# このスクリプトは末尾で "$@" を exec するため、`set -- <glob>` で判定する
+# 形は使えない (positional args が潰れる)。for ループで見る。
+prod_key=0
+for pk in /run/secrets/DOTENV_PRIVATE_KEY_PROD*; do
+  [ -e "$pk" ] && { prod_key=1; break; }
+done
+if [ "$has_run" -eq 1 ] && [ "$has_strict" -eq 0 ] && [ "$prod_key" -eq 1 ]; then
   echo "dotenvx: WARNING: production key is injected but --strict" >&2
   echo "dotenvx:   is absent. dotenvx exits 0 even when decryption" >&2
   echo "dotenvx:   fails, injecting the ciphertext as the value." >&2
