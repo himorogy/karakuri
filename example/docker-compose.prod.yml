@@ -1,0 +1,174 @@
+# compose.prod.yaml — prod container 起動用テンプレート
+#
+# dev 側の compose 定義（devcontainer.json 経由）とは意図的に完全分離する。
+# compose の profiles を使って一枚のファイルに dev と prod を同居させると、
+# dev を起動する側の設定にも prod 鍵への参照が残ってしまう。ファイルごと
+# 分ければ、dev 用の設定ファイルのどこにも prod 鍵への参照が一行も現れない
+# 状態を作れる。prod 鍵を持つシェルから誤って dev を起動する経路を構造的に
+# 塞ぐのが狙い。
+#
+# secret はここには一切書かない。broker（prod の秘匿情報を OS キーチェーン
+# 等の暗号化ストアから取り出し、dotenv 形式の KEY=value 行として stdout に
+# 出すコマンド。実装は差し替え可能）の出力を `docker compose run -T` の
+# stdin へパイプし、prod-entrypoint.sh がコンテナ内 tmpfs (/run/secrets) へ
+# 書く。呼び出し側は prod-run.sh を使うこと。
+#
+# プロジェクト固有の値（プロジェクト名・リポジトリ URL）はここに焼き込まない。
+# この一枚は複数のリポジトリへそのままコピーして使う配布テンプレートであり、
+# コピー先ごとに中身を書き換える必要がないことに価値がある。プロジェクト名は
+# `docker compose -p <name>` / `COMPOSE_PROJECT_NAME` に委ね、リポジトリ
+# URL / ref は環境変数 GIT_REPO / GIT_REF で渡す。
+
+services:
+  prod:
+    # プレースホルダ。このままでは digest が実在しないため pull に失敗し、
+    # 使う前に必ず実際の digest へ置き換える必要がある（差し替え忘れが
+    # 「起動失敗」という分かりやすい形で顕在化する）。
+    # タグではなく digest pin にする理由: タグは後から指すコミットを
+    # 変えられる。この構成は「prod が実行するものは明示された ref から
+    # 復元される」ことを守ろうとしており、prod が動かすイメージの中身は
+    # まさにその守るべき対象そのものなので、可変な参照であってはならない。
+    image: ghcr.io/himorogy/runtime-base@sha256:33da300c1fb83499debf2af0d805674cd4fd69fee041be7d917d53a0a5db5651
+
+    entrypoint: ["/usr/local/bin/prod-entrypoint.sh"]
+    working_dir: /src
+
+    # GIT_REPO / GIT_REF は秘匿情報ではないため通常の環境変数で渡してよい。
+    # secret はここに置かない・置けない設計にする。環境変数として渡すと
+    # `docker inspect` の Config.Env から誰でも読めてしまうためで、
+    # secret の搬送路は stdin だけに限定する。
+    # `${VAR:?msg}` により、未指定なら `docker compose run` 自体がここで
+    # 失敗する。何を実行するのか分からないまま起動が成功してしまう状態
+    # （指定漏れが沈黙した成功になること）を避けるためである。entrypoint
+    # 側にも同じ変数の `: "${...:?}"` があるが、compose 側でも早期に
+    # 落とすことで失敗箇所を分かりやすくする。
+    environment:
+      GIT_REPO: ${GIT_REPO:?GIT_REPO is required}
+      GIT_REF: ${GIT_REF:?GIT_REF is required}
+      # GIT_REF が完全な 40 桁 commit sha でないとき、既定では
+      # prod-entrypoint.sh が拒否する。ブランチ名や軽量タグは後から
+      # 付け替えられるため、deploy 前にレビューした対象と実際に流れた
+      # ものが一致する保証を失う。危険を理解した上で
+      # ブランチ運用を選ぶ場合だけ 1 を明示する。`:-` で未設定を許す
+      # （`:?` にしない — 未設定が既定の安全な状態であり、必須ではない）。
+      # ここで渡し忘れると、prod-run.sh 側で警告して続行しても
+      # entrypoint 側には届かず拒否されるだけになる。
+      PROD_ALLOW_MUTABLE_REF: ${PROD_ALLOW_MUTABLE_REF:-}
+
+    read_only: true
+
+    # イメージは `USER node` で終わる想定なので明示は本来冗長だが、直下の
+    # tmpfs オプション (uid=1000,gid=1000) と実行 UID を一致させる意図を
+    # このファイル単体で読めるようにするため、あえて明示する。イメージ側の
+    # 既定 UID が将来変わった場合、ここが揃っていないと tmpfs の所有者と
+    # 実行ユーザーが再びずれて entrypoint が /run/secrets を作れず落ちる
+    # ので、変更する際は下の tmpfs 行と同時に直すこと。
+    user: "1000:1000"
+
+    # オプションを付けない素の短縮形 `tmpfs: ["/run", "/tmp", "/out",
+    # "/home/node"]` は root:root 所有・noexec の tmpfs を作る（実測。
+    # Docker Engine 28.0.4 / Compose v2.38.2）:
+    #   tmpfs on /src type tmpfs (rw,nosuid,nodev,noexec,relatime,mode=755,inode64)
+    # 既定 mode は 1777 だろうという推測は誤りで、実測では 755 だった。
+    # `read_only: true` の下ではコンテナ起動後に chown する
+    # 手段がなく（root への昇格経路を prod には意図的に持たせていない。
+    # cap_add を置かない理由は下記参照）、`USER node` で走る entrypoint が
+    # /run/secrets を作れずに起動直後に失敗する。
+    #
+    # `docker run --tmpfs` と同じ `<path>:<options>` 記法（uid= / gid= /
+    # mode= はいずれも tmpfs マウント自体のオプションで、カーネルへそのまま
+    # 渡る）で node（uid=gid=1000。上の user: と一致させる）所有にする。
+    # long syntax（`type: tmpfs` の volumes エントリ、`tmpfs: {size, mode}`
+    # サブキー）ではなくこちらを選んだのは、compose spec が long syntax の
+    # tmpfs サブキーとして size / mode しか規定しておらず、uid/gid が
+    # 実装間で可搬かどうか確証が持てないため。`<path>:<options>` は
+    # dockerd の Mount API にオプション文字列としてそのまま渡るので、
+    # uid/gid が効くことがより確実に言える。
+    #
+    # `noexec` は uid=/gid=/mode= を渡しても消えない（実測で確認済み）。
+    # 消すには `exec` の明示が要る。`/src` は信頼しないコードを clone して
+    # ビルド・実行する場所であり、`exec` が無いと node_modules/.bin 配下の
+    # 実行ファイルが一切動かない（実測: `sh: 1: tsup: Permission denied`、
+    # rc=126）。ビルドも deploy も成立しないため、`/src` にだけ `exec` を
+    # 明示する。`/run`（secrets）・`/out`（成果物）・`/tmp` はそこで何かを
+    # 実行する用途が無いので noexec のままにする（`/tmp` は node-gyp 等が
+    # 一時ファイルを実行する可能性はあるが、実際に踏むまでは絞っておく）。
+    #
+    # `/src` を named volume ではなく tmpfs にした理由: named volume を
+    # 使い回すと、次の二つが起きる。いずれも `git reset --hard` を足しても
+    # 塞がらず、実測で再現した。
+    #
+    #   1. 前回実行の（信頼しない）コードが打ったローカル ref が、次回の
+    #      GIT_REF として解決されてしまう。`git fetch --tags` は既存の
+    #      ローカルタグを上書きせず（--force が無い）、ローカル branch は
+    #      そもそも fetch の対象外なので、`git tag v1.2.3 <別の commit>` を
+    #      打たれると次回の GIT_REF=v1.2.3 がそちらへ解決される。
+    #   2. 持ち越された .git/config の core.fsmonitor 等（コマンドを実行
+    #      する設定）が、次回 entrypoint 自身の git 操作で発火する。git の
+    #      設定優先順位は local > global > system なので、repo の
+    #      .git/config はイメージが焼いた /etc/gitconfig に勝つ。しかも
+    #      発火する位置は entrypoint が GH_TOKEN を破棄するより前であり、
+    #      トークンがまだ存在する状態で任意コードが走る。
+    #
+    # tmpfs 化で毎回まっさらな repo から始まるため両方とも構造的に成立
+    # しなくなり、prod で走ったコードが /src へ書いた内容がコンテナ削除後も
+    # Docker VM のディスクに残る問題も同時に解消する。
+    #
+    # 「毎回 clone して依存を落とし直すのは遅い」という性能上の動機から
+    # `volumes: [prod-src:/src]` を足すのは自然な一行で、read_only: true を
+    # 維持したままでも成立し、起動も deploy も成功し続ける。それでいて上の
+    # 二つが静かに復活する。この compose ファイル自身にそのドリフトを止める
+    # 手段はないため、/src と /run/secrets が本当に tmpfs かどうかは
+    # prod-entrypoint.sh が /proc/mounts を見て起動時に検査し、違っていれば
+    # 落ちる。ここを外して起動できてしまった場合は entrypoint 側を見ること。
+    #
+    # /tmp だけ mode=1777（sticky bit 付き world-writable）にするのは、
+    # 複数のツールが /tmp を共有前提で使う一般的な作法に合わせるため。
+    # 他は node 単独所有で足りるので 0755 とする。
+    #
+    # size= は指定しない。既定はホスト RAM の 50%（CI ランナーでの実測は
+    # 7.9G）。参考までに、小規模なプロジェクト 1 つでの /src 使用量の実測は
+    # 79M だった。ただし**この数字はプロジェクトの依存木で決まる**ので、
+    # そのまま当てにはできない。既定サイズは実行ホストのメモリ量に比例する
+    # ため、余裕が足りるかどうかは実行ホスト側の問題として残る。
+    tmpfs:
+      - /src:exec,uid=1000,gid=1000,mode=0755
+      - /run:uid=1000,gid=1000,mode=0755
+      - /tmp:uid=1000,gid=1000,mode=1777
+      - /out:uid=1000,gid=1000,mode=0755
+      - /home/node:uid=1000,gid=1000,mode=0755
+
+    # コアダンプがホスト側 (/var/lib/docker 配下や systemd-coredump 経由)
+    # に書かれるのを防ぐ。/proc/sys/kernel/core_pattern は名前空間化されて
+    # いないため、コンテナ内で落ちたプロセスのコアがホストの不揮発ディスク
+    # へ書かれる経路が実在する。コアにはそのプロセスのメモリがそのまま
+    # 含まれ、注入済みの secret も一緒に落ちる。コンテナ作成時の rlimit と
+    # して効くので、シェルを経由しない起動パスでも有効。
+    ulimits:
+      core: 0
+
+    # 既定の json-file ログドライバは stdout/stderr をホストの不揮発ディスク
+    # (/var/lib/docker/containers/<id>/*-json.log) に書く。prod のコマンドが
+    # 何かの拍子に secret を出力すると、それがそのままディスクに残る（TTY
+    # 付きでアタッチしていても記録される）。アタッチ時の表示は attach
+    # ストリーム経由で手元に出るので、これで失うのは `docker logs` だけ。
+    logging:
+      driver: "none"
+
+    # secrets: ブロックは意図的に置かない。compose secrets の environment /
+    # content ソースは、コンテナ作成後・起動前に Docker API 経由で
+    # コンテナの writable layer（= ホスト側の不揮発ディスク）へ書き込まれる
+    # ため、「prod 秘密鍵の平文を不揮発ストレージ上に置かない」というこの
+    # 構成の前提を満たさない。さらに `read_only: true` と併用すると書き込み
+    # 先が read-only になり起動そのものが失敗する（検討の上で却下した。
+    # docker/compose#9648 #12031 #12303 参照。公式 docs にある
+    # 「/run/secrets/<name> に bind mount される」という記述が当てはまるのは
+    # file: ソースだけである）。secret は prod-run.sh が broker の stdout を
+    # `docker compose run -T` の stdin へパイプし、prod-entrypoint.sh が
+    # コンテナ内 tmpfs (/run/secrets/<VAR名>) へ書く方式に一本化する。
+
+    # cap_add は意図的に置かない。prod への egress-guard 適用
+    # (NET_ADMIN / NET_RAW の付与と root での firewall 初期化) は
+    # 未決事項である。ここで先取りすると「能力（できることを増やすもの）は
+    # 最小に、制約（できることを減らすもの）は最大に」という配置規約と
+    # 衝突するため、適用するかどうかは実装時に個別に判断する。
