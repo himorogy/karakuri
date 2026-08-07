@@ -14,12 +14,12 @@ dev container には LLM エージェントが常駐するため信頼しない�
 
 ```
 ~/.local/bin/                  # dev workspace の外（ホスト固定パス）
+  bw                           # Bitwarden CLI（native ビルドを SHA-256 照合の上配置）
   prod-run.sh                  # images/runtime-base/templates/prod-run.sh のコピー
-  broker-macos-keychain.sh     # images/runtime-base/templates/ のコピー（broker 参照実装）
-  broker-macos-keychain-set.sh # 同（Keychain 項目の登録・更新ツール）
-  prj1-broker                  # prod 鍵束のラッパー（下記）
-  prj1-dev-broker              # dev 鍵束のラッパー（サービス名だけ違う。「dev の起動」参照）
   dev-inject.sh                # images/runtime-base/templates/dev-inject.sh のコピー
+  broker-bitwarden.sh          # broker 標準実装（templates/ のコピー）
+  prj1-broker                  # prod 鍵束のラッパー（下記）
+  broker-macos-keychain.sh     # 代替: macOS Keychain broker（登録ツール broker-macos-keychain-set.sh と対）
 ~/.config/prj1/
   compose.prod.yaml            # templates/compose.prod.yaml のコピー。image の digest を実在のものへ差し替える
 <project repo>/                # dev container にマウントされる（git 管理）
@@ -46,22 +46,18 @@ alias prj1-prod-deploy='PROD_BROKER=$HOME/.local/bin/prj1-broker \
   prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy'
 ```
 
-`~/.local/bin/prj1-broker`（PROD_BROKER は引数を取れないため、サービス名はラッパーで固定する）:
+broker の標準は Bitwarden CLI（`templates/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
+
+`~/.local/bin/prj1-broker`（PROD_BROKER は引数を取れないため、項目名はラッパーで固定する。カンマ区切りで複数項目をマージでき、同名キーは後勝ちなので共有を先・個人を後に）:
 
 ```sh
 #!/usr/bin/env bash
-export BROKER_KEYCHAIN_SERVICE=prj1-prod-env
-exec "$HOME/.local/bin/broker-macos-keychain.sh"
+export BROKER_BW_BIN="$HOME/.local/bin/bw"
+export BROKER_BW_ITEM="env/prj1/shared/prod,env/prj1/prod"
+exec "$HOME/.local/bin/broker-bitwarden.sh"
 ```
 
-Keychain への登録・更新は `templates/broker-macos-keychain-set.sh` で行う（`-w` の対話プロンプトは 1 行しか受け付けないため、複数行の dotenv は base64 で 1 行に畳んで格納し、broker が取り出し時に復元する。ツールがそこまで面倒を見る — クリップボード不要、値は argv にも載らない）:
-
-```sh
-BROKER_KEYCHAIN_SERVICE=prj1-prod-env broker-macos-keychain-set.sh
-# → KEY=value を行ごとに入力（貼り付け可）して Ctrl-D
-```
-
-1 項目に GH_TOKEN / CLOUDFLARE_API_TOKEN / DOTENV_PRIVATE_KEY_PROD 等をまとめて格納する。プロジェクトの分離はサービス名（`prj1-prod-env` / `prj2-prod-env`）で行う。Bitwarden を使う場合は `templates/broker-bitwarden.sh`（note は元々複数行を持てるので base64 は不要）。1Password 等も、dotenv 全文を stdout に出すラッパーを書けば broker 契約（各テンプレート冒頭に記載）を満たす。
+macOS Keychain を使う代替もある（`broker-macos-keychain.sh`。登録・更新は対になる `broker-macos-keychain-set.sh` で行う — Keychain のプロンプトが 1 行しか受けないため base64 で畳む等の面倒をツールが見る）。1Password 等も、dotenv 全文を stdout に出すラッパーを書けば broker 契約（各テンプレート冒頭に記載）を満たす。
 
 ### 挙動と制約
 
@@ -91,13 +87,19 @@ VSCode 等の devcontainer 拡張でそのまま起動してよい。prod-run.sh
 
 dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped GH_TOKEN 等）も prod と同じ broker 方式で注入する。従来の `env_file`（`dev/.env.container`）はホスト不揮発ディスク上の恒久平文となるため廃止する。
 
-1. dev 鍵束を Keychain の別項目（例: `prj1-dev-env`）として登録し、ラッパー `prj1-dev-broker` を置く
-2. コンテナ起動後、ホストで `dev-inject.sh` を実行する。broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプし、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く
+1. dev 鍵束を Bitwarden に用意する。個人分は `env/<project>/dev`、チーム共有分は共有コレクションの `env/<project>/shared/dev`
+2. コンテナ起動後、ホストで `dev-inject.sh` を実行する。broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプし、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く。`.zshrc` に関数を置くと 1 コマンドになる:
 
    ```sh
-   DEV_BROKER="$HOME/.local/bin/prj1-dev-broker" \
-     DEV_COMPOSE_PROJECT=dotfiles-dev \
+   # 共有 note を先・個人 note を後（同名キーは後勝ち = 個人が上書き）
+   dev-inject-bw() {
+     BROKER_BW_BIN="$HOME/.local/bin/bw" \
+     BROKER_BW_ITEM="env/$1/shared/dev,env/$1/dev" \
+     DEV_BROKER="$HOME/.local/bin/broker-bitwarden.sh" \
+     DEV_COMPOSE_PROJECT="$1-dev" \
      dev-inject.sh
+   }
+   # 使い方: dev-inject-bw dotfiles
    ```
 
    `DEV_COMPOSE_PROJECT` は `.devcontainer/docker-compose.yml` の `name:` の値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する

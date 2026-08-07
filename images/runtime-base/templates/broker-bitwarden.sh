@@ -60,10 +60,18 @@
 #   BROKER_BW_ITEM=env/radwisp/dev \
 #     DEV_BROKER=~/.local/bin/broker-bitwarden.sh DEV_COMPOSE_PROJECT=... dev-inject.sh
 #
+#   # 複数項目のマージ: カンマ区切りで並べる。unlock は 1 回だけ（マスター
+#   # パスワードのプロンプトも 1 回）で、並び順のまま連結して出力する。
+#   # 取込側は同名の鍵を後から来た値で上書きするため、「チーム共有の鍵束を
+#   # 先に・個人の鍵束を後に」並べると個人側が勝つ:
+#   BROKER_BW_ITEM=env/radwisp/shared/dev,env/radwisp/dev ...
+#   #（この規約上、項目名にカンマは使えない）
+#
 #   # またはプロジェクト別に 1 行のラッパーを置いて固定する
 #   #   ~/.local/bin/radwisp-dev-broker:
 #   #     #!/usr/bin/env bash
-#   #     BROKER_BW_ITEM=env/radwisp/dev exec "$HOME/.local/bin/broker-bitwarden.sh"
+#   #     BROKER_BW_ITEM=env/radwisp/shared/dev,env/radwisp/dev \
+#   #       exec "$HOME/.local/bin/broker-bitwarden.sh"
 #
 set -euo pipefail
 
@@ -91,27 +99,49 @@ session=$("$bw_bin" unlock --raw)
 # lock の失敗で本来の終了コードを上書きしない。
 trap 'BW_SESSION="$session" "$bw_bin" lock >/dev/null 2>&1 || true' EXIT
 
-# bw の失敗（項目が見つからない・同名項目が複数ある、等）を必ず非ゼロで
-# 伝播させる。bw 自身の診断メッセージは stderr へ出るのでそのまま流れる。
-# secret を含みうる stdout だけを変数に取り込む。
-if dotenv="$(BW_SESSION="$session" "$bw_bin" get notes "$BROKER_BW_ITEM")"; then
-	rc=0
-else
-	rc=$?
-fi
-
-if [ "$rc" -ne 0 ]; then
-	echo "broker-bitwarden: bw get notes failed (exit ${rc}) for item '${BROKER_BW_ITEM}'; see the 'bw' diagnostic above, if any" >&2
-	exit "$rc"
-fi
-
-# 空は「項目はあるが中身が空」という事故的な状態。パイプの先の取込側も空を
-# 検出して落ちるが、原因に近いここで先に止めた方が切り分けが早い。
-if [ -z "$dotenv" ]; then
-	echo "broker-bitwarden: bitwarden item '${BROKER_BW_ITEM}' returned an empty note" >&2
+# カンマ区切りの各項目を並び順のまま取得して連結する。1 項目でも失敗
+# （見つからない・同名複数・空）したら全体を非ゼロで止める — 部分的な
+# 鍵束で先へ進むと、欠けた分が下流の認証失敗として遅れて出るだけなので、
+# 原因（どの項目か）を名指しできるここで止める。bw 自身の診断メッセージは
+# stderr へ出るのでそのまま流れる。secret を含みうる stdout だけを変数に
+# 取り込む。
+# 空の項目名（先頭・末尾・連続のカンマ）は分割前の文字列で検査する。
+# read -a は末尾の区切り文字が作る空要素を黙って落とすため、分割後の
+# 検査では「shared,」のような打ち損じを検出できない。
+case "$BROKER_BW_ITEM" in
+,* | *, | *,,*)
+	echo "broker-bitwarden: BROKER_BW_ITEM contains an empty item name (stray comma?): '${BROKER_BW_ITEM}'" >&2
 	exit 1
-fi
+	;;
+esac
+
+dotenv=""
+IFS=',' read -r -a items <<<"$BROKER_BW_ITEM"
+for item in "${items[@]}"; do
+	if chunk="$(BW_SESSION="$session" "$bw_bin" get notes "$item")"; then
+		rc=0
+	else
+		rc=$?
+	fi
+
+	if [ "$rc" -ne 0 ]; then
+		echo "broker-bitwarden: bw get notes failed (exit ${rc}) for item '${item}'; see the 'bw' diagnostic above, if any" >&2
+		exit "$rc"
+	fi
+
+	# 空は「項目はあるが中身が空」という事故的な状態。パイプの先の取込側も
+	# 空を検出して落ちるが、原因に近いここで先に止めた方が切り分けが早い。
+	if [ -z "$chunk" ]; then
+		echo "broker-bitwarden: bitwarden item '${item}' returned an empty note" >&2
+		exit 1
+	fi
+
+	# note の末尾に改行が無くても項目間の境界が消えないよう、必ず改行で
+	# 継ぎ足す（コマンド置換が末尾改行を剥がすので、二重にはならない）。
+	dotenv="${dotenv}${chunk}
+"
+done
 
 # stdout に出すのはここだけ。取り出した値をファイル・ログ・他のディスク
 # リプタへ書く経路は用意しない。
-printf '%s\n' "$dotenv"
+printf '%s' "$dotenv"

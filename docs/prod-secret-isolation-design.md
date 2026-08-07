@@ -146,7 +146,7 @@ security find-generic-password -s "<project>-prod-env" -w | \
 - `export ` 接頭辞は**非対応**
 - 空値（`KEY=`）はエラー。取込件数 0 もエラー（I6）
 
-参照実装: macOS は `security` CLI（Keychain 項目は Secure Enclave 由来の鍵で暗号化され、ACL で毎回確認 / Touch ID / 常時許可を選べる。dotenv 全文を **base64 で 1 項目に**格納する — `-w` の対話登録プロンプトは 1 行しか受け付けず、複数行の dotenv をそのまま渡すと全体が 1 行に潰れて最初の変数の値として取り込まれることを実測した。rev.9。あわせて登録時は `-T ""` で信頼アプリを空にする — 省くと作成アプリが信頼リストに入り、以後の取得が認可プロンプトなしで通り契約 3 が静かに消える。取得時プロンプトが 2 回出る現象は partition list — Sierra 以降の第 2 認可層 — によるもので、`apple-tool:,apple:` を設定すると項目 ACL の 1 回だけになる。いずれも実測済みで、登録ツール `broker-macos-keychain-set.sh` が格納から partition list 設定までを行う）。Windows は Credential Manager 直接よりも 1Password / Bitwarden 等の CLI（生体認証アンロック + dotenv 出力）が実務的。**SOPS は不採用**: 標準の age 運用は復号鍵を `~/.config/sops/age/keys.txt` に平文常駐させるため契約 2 に違反する。KMS / ハードウェアプラグインを足せば回避できるが、鍵束を git 管理しない以上、ファイル暗号化ツールを挟む動機自体がない。
+参照実装: **標準は Bitwarden CLI**（`templates/broker-bitwarden.sh`。rev.9 の実測で確定 — D30。bw は native ビルドを版 pin + SHA-256 照合で固定パスへ置く。カンマ区切りの複数項目マージに対応し、チーム共有の鍵束と個人の鍵束を別項目に分けて「共有→個人」の順で並べると、取込側の後勝ちにより個人側が同名キーを上書きする。unlock は 1 回）。macOS 単独の代替は `security` CLI（Keychain 項目は Secure Enclave 由来の鍵で暗号化され、ACL で毎回確認 / Touch ID / 常時許可を選べる。dotenv 全文を **base64 で 1 項目に**格納する — `-w` の対話登録プロンプトは 1 行しか受け付けず、複数行の dotenv をそのまま渡すと全体が 1 行に潰れて最初の変数の値として取り込まれることを実測した。rev.9。あわせて登録時は `-T ""` で信頼アプリを空にする — 省くと作成アプリが信頼リストに入り、以後の取得が認可プロンプトなしで通り契約 3 が静かに消える。取得時プロンプトが 2 回出る現象は partition list — Sierra 以降の第 2 認可層 — によるもので、`apple-tool:,apple:` を設定すると項目 ACL の 1 回だけになる。いずれも実測済みで、登録ツール `broker-macos-keychain-set.sh` が格納から partition list 設定までを行う）。Windows は Credential Manager 直接よりも 1Password / Bitwarden 等の CLI（生体認証アンロック + dotenv 出力）が実務的。**SOPS は不採用**: 標準の age 運用は復号鍵を `~/.config/sops/age/keys.txt` に平文常駐させるため契約 2 に違反する。KMS / ハードウェアプラグインを足せば回避できるが、鍵束を git 管理しない以上、ファイル暗号化ツールを挟む動機自体がない。
 
 - broker の stdout → パイプ → prod-entrypoint.sh の stdin へ直結し、entrypoint が**コンテナ内 tmpfs**（`/run/secrets/<VAR名>`、umask 077）へ書く（§4.6）。恒久平文ファイル（旧 `~/.config/<project>/.env.container`）は廃止する。
 - 環境変数を一切経由しないため、ホストシェルの environ（I2）にも、compose プロセスの environ にも、`docker inspect` の `Config.Env`（T4）にも現れない。
@@ -646,6 +646,7 @@ dev container は IDE（devcontainer 拡張）が起動するため、prod の�
 | D27 | 他 org からの呼び出しは npm 経由でスキャナを取り、**karakuri 自身の CI は作業ツリーのファイルを直接使う**（rev.8。未実装） | reusable workflow が自分の ref を割り出せない問題（§8.2）は、バージョンを workflow ファイル自身に書ける npm 経由なら**問いごと消える**。ただし karakuri 自身まで npm に寄せると、**スキャナを変更する PR が変更前の公開済みスキャナで検査される** — 緑になるがその PR の変更を一度も通していない。作業ツリー検出の分岐は残し、置き換えるのは第二 checkout の側だけにする。npm から取ったものは SHA256 で照合する（`npx` は取得物のハッシュを検証しない。バージョン固定は改竄への対策にならない） |
 | D28 | dev 鍵の注入も broker 方式にし、ホスト上の恒久平文（`env_file` の `dev/.env.container`）を廃止する（rev.9。機構は実装済み・各プロジェクトの移行は未実施） | 恒久平文は prod 側が廃止した `~/.config/<project>/.env.container` と同じ形であり、environ 常駐は `docker inspect` / コアダンプ / diagnostic report / 全子プロセス継承という書き出し面を開く。broker・shim・`/run/secrets` 規約・git-askpass は既存のまま流用でき、増えるのは起動後の注入 1 ステップと dev compose の `/run` tmpfs 化のみ。**エージェントから鍵を隠す目的ではない** — 同一 UID のため原理的に不可能で、そこは鍵のスコープで守る。この目的の限定を理解した上で複雑性と釣り合うと判断した（§4.9） |
 | D29 | 対話 prod 作業は「二段構え」（broker をパイプした `compose run -dT --rm prod sleep 8h` → `docker exec -it`）を標準手順とする（rev.9） | rev.8 まで第一候補だった非対話一本化は、dryrun → 適用のような対話的運用の実在と衝突する。対話 TTY が使えないのは防衛判断ではなく stdin を搬送路にした技術的帰結（D3）であり、二段構えは entrypoint 完了後に exec するため注入・clone とも 1 回でセッションを維持でき、防御を何も緩めない。`sleep` は `infinity` ではなく時間を切り、stop 忘れを自動回収する。`/src` の tmpfs（D18）は維持し、セッションを跨ぐ再 clone はその代償として受容する（§6.4） |
+| D30 | broker の標準実装を **Bitwarden CLI（native ビルド）** とする（rev.9。実測済み） | (1) macOS 実機の実測で、登録・取得とも Keychain 参照実装より体験が良い — keychain は `-w` が単一行しか受けず base64 迂回が要り、partition list の二重プロンプトも踏んだ（いずれも対処済みだが登録 UX の重さは残る）。(2) クロスプラットフォームであり、Windows 側の broker 選定を同時に閉じる。(3) チーム共有鍵が共有コレクションでそのまま配布でき、鍵束を git 管理しない方針（D17）と噛み合う。(4) CLI は native 実行ファイルを版 pin + SHA-256 照合で固定パスに置く — broker はホスト側で最も特権的な部品（マスターパスワードを握り全鍵束を stdout に出す）であり、npm 版の postinstall 実行・深い依存木・黙った版移動を避ける。**broker 契約は不変** — カンマ区切りの複数項目マージ（unlock 1 回・並び順連結・取込側の後勝ちで個人が共有を上書き）は bitwarden 実装の機能であって契約の拡張ではない。keychain 実装は代替の参照実装として残置する（§4.1 / §11） |
 
 ---
 
@@ -1008,7 +1009,6 @@ rev.7 で追加した項目:
 
 ## 11. 未決事項
 
-- **broker の具体選定**: 契約（§4.1）は確定。macOS は `security` CLI が第一候補（Secure Enclave 束縛が Keychain 実装側で既に担保され、「底の亀」問題は OS に委譲して閉じる）。Windows 側と、チーム共有鍵（`DOTENV_PRIVATE_KEY_PROD`）の受け渡しを考えると 1Password / Bitwarden CLI への統一も候補。stdin 注入により broker はコマンド 1 個の差し替えで移行でき、compose・entrypoint 側は無変更で済む。実測して決定する。
 - **ホスト側 hook の導入コマンド**: 方式は A（simple-git-hooks との併用）で確定した（rev.8）— simple-git-hooks が macOS 実機で動作していることが確認できており、動いている仕組みの上に載せる方が速い。残るのは `@himorogy/env-guard` に冪等な導入コマンドを置くこと。**GUI クライアントの PATH でスキャナを見つけられるかは、測って決める問いではない** — 見つからなければ非ゼロで終わるように書けばよく、それはこちらが書くコードの性質である。実測の役割は「意図どおり落ちること」の確認に変わる。
 - **実行ホストの一本化**: Mac / Windows ミニ PC のどちらで prod 実行を行うか。swap 経由の露出（R7）はメモリに余裕のある側に寄せるのが一貫する。Linux ホストに一本化できるなら `file:` ソース + `/dev/shm` の代替（§4.1）も開ける。**rev.5 でこの判断の重みが増した** — `/src` が tmpfs になったため、repo と `node_modules` と pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G、実測の使用量は karakuri 自身で 131M）。依存の重いプロジェクトを載せるなら実行ホストのメモリ量が直接の制約になる。
 - **署名タグの検証**: rev.6 で `GIT_REF` は完全な commit sha を強制するようにした（D21）。署名タグを使いたい場合は `git tag -v` 相当の検証を entrypoint に入れる必要があり、信頼する公開鍵をどこから持ってくるか（イメージに焼く / broker で渡す）が未決。実装するまでは `PROD_ALLOW_MUTABLE_REF=1` が唯一の逃げ道で、これは検証を伴わないため「危険を理解した上での選択」以上のものにはならない。
@@ -1025,6 +1025,7 @@ rev.7 で追加した項目:
 
 ### rev.9 で決着し、未決から外したもの
 
+- ~~broker の具体選定~~ → **Bitwarden CLI（native ビルド、版 pin + SHA-256 照合）を標準に確定**（D30）。macOS 実機での実測比較の結果。Keychain 参照実装は、単一行しか受けない登録プロンプトの base64 迂回と partition list の二重プロンプトを潰してなお登録の体験が重い。bw は unlock 1 回で複数項目のマージまで完結する。keychain 実装は代替の参照実装として残す。bw はクロスプラットフォームのため Windows 側の選定も同時に閉じる見込み（Windows 実機の実測は未実施）。チーム共有鍵は Bitwarden の共有コレクションに載り、「運用者間の受け渡しはチームのパスワードマネージャで行う」（§4.1）が同一ツール内で閉じる。
 - ~~対話 prod shell の要否~~ → **二段構えを標準手順として確定**（§6.4 / D29）。非対話への一本化案（rev.8 までの第一候補）は撤回。旧選択肢のうち (b)（secret 不要な素の `run` シェル）は二段構えで代替でき、(c)（Linux ホスト一本化 + `file:` ソース / `/dev/shm`）は「実行ホストの一本化」の側に残した。
 
 ### rev.5 で決着し、未決から外したもの
