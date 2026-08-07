@@ -45,7 +45,14 @@
 #          -T "" \
 #          -w
 #
-#   3. クリップボードに base64（= secret 本体）が残っているので空にする。
+#   3. partition list を設定する（キーチェーンのパスワードを 1 回聞かれる）。
+#      これが無いと、取得のたびに認可プロンプトが「項目 ACL」と
+#      「partition list」の 2 層で 2 回出る（実測）:
+#
+#        security set-generic-password-partition-list -S apple-tool:,apple: \
+#          -s "<project>-prod-env" -a "$(whoami)"
+#
+#   4. クリップボードに base64（= secret 本体）が残っているので空にする。
 #      クリップボード履歴ツールを使っている場合はそちらの履歴からも消すこと:
 #
 #        pbcopy < /dev/null
