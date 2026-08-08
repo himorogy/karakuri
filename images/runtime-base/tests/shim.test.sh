@@ -387,6 +387,99 @@ else
 fi
 rm -rf "$t"
 
+# --- 明示呼び名 (_ 付き): npm scripts 経由の PATH 先頭 node_modules/.bin 対策 --
+# pnpm/npm は scripts 実行時に node_modules/.bin を PATH 先頭へ差し込むため、
+# 素の名前の shim はプロジェクトローカルのバイナリに負けて迂回される (実測)。
+# _ 付きの名前 (同一ファイルへのリンク) で shim を明示的に通すと、注入後の
+# 実体解決は PATH に任される — ローカル版があればそれが鍵付きで動き、
+# 無ければ遮蔽 shim 経由で実体に落ちる。ここでは node_modules/.bin 相当の
+# ディレクトリを PATH 先頭に置いてその両方を再現する。
+echo "explicit-name shims (_wrangler / _dotenvx)"
+
+# fake_local <name> <tmpdir> -> $tmpdir/local/<name> に、プロジェクトローカルの
+# バイナリ (node_modules/.bin 相当) を模したフェイクを置く。
+fake_local() {
+	local name="$1" dir="$2"
+	mkdir -p "$dir/local"
+	{
+		printf '#!/bin/sh\n'
+		printf 'echo "REAL:LOCAL-%s"\n' "$name"
+		printf 'env\n'
+	} >"$dir/local/$name"
+	chmod +x "$dir/local/$name"
+}
+
+# 14. _wrangler: ローカル版が PATH 先頭にあれば、それが token 付きで呼ばれる
+t="$(mktemp -d)"
+make_shim wrangler "$t"
+ln -s wrangler "$t/bin/_wrangler"
+fake_real wrangler "$t"
+fake_local wrangler "$t"
+printf 'injected-secret-value' >"$t/secrets/CLOUDFLARE_API_TOKEN"
+out="$(PATH="$t/local:$t/bin:$PATH" "$t/bin/_wrangler" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+	printf '%s\n' "$out" | grep -qx "REAL:LOCAL-wrangler" &&
+	printf '%s\n' "$out" | grep -qx "CLOUDFLARE_API_TOKEN=injected-secret-value"; then
+	ok "_wrangler: ローカル版が token 注入付きで呼ばれる"
+else
+	ng "_wrangler: ローカル版が token 注入付きで呼ばれる (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 15. _wrangler: ローカル版が無ければ遮蔽 shim 経由で実体に落ちる (無限再帰
+#     しない)
+t="$(mktemp -d)"
+make_shim wrangler "$t"
+ln -s wrangler "$t/bin/_wrangler"
+fake_real wrangler "$t"
+printf 'injected-secret-value' >"$t/secrets/CLOUDFLARE_API_TOKEN"
+out="$(PATH="$t/bin:$PATH" "$t/bin/_wrangler" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+	printf '%s\n' "$out" | grep -qx "REAL:wrangler" &&
+	printf '%s\n' "$out" | grep -qx "CLOUDFLARE_API_TOKEN=injected-secret-value"; then
+	ok "_wrangler: ローカル版なしでは実体に落ちる (token 注入付き)"
+else
+	ng "_wrangler: ローカル版なしでは実体に落ちる (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 16. _dotenvx: ローカル版が DOTENV_PRIVATE_KEY_* 注入付きで呼ばれる
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+ln -s dotenvx "$t/bin/_dotenvx"
+fake_real dotenvx "$t"
+fake_local dotenvx "$t"
+printf 'key-development' >"$t/secrets/DOTENV_PRIVATE_KEY_DEVELOPMENT"
+out="$(PATH="$t/local:$t/bin:$PATH" "$t/bin/_dotenvx" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+	printf '%s\n' "$out" | grep -qx "REAL:LOCAL-dotenvx" &&
+	printf '%s\n' "$out" | grep -qx "DOTENV_PRIVATE_KEY_DEVELOPMENT=key-development"; then
+	ok "_dotenvx: ローカル版が鍵注入付きで呼ばれる"
+else
+	ng "_dotenvx: ローカル版が鍵注入付きで呼ばれる (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 17. _ 付きでも三値意味論は同じ: 空 secret は非ゼロ終了し、ローカル版は
+#     呼ばれない
+t="$(mktemp -d)"
+make_shim wrangler "$t"
+ln -s wrangler "$t/bin/_wrangler"
+fake_real wrangler "$t"
+fake_local wrangler "$t"
+: >"$t/secrets/CLOUDFLARE_API_TOKEN"
+out="$(PATH="$t/local:$t/bin:$PATH" "$t/bin/_wrangler" 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q "empty secret"; then
+	ok "_wrangler: 空 secret は非ゼロ終了 (三値意味論を維持)"
+else
+	ng "_wrangler: 空 secret は非ゼロ終了 (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
 # --- result --------------------------------------------------------------------
 
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"

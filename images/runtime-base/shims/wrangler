@@ -11,6 +11,27 @@
 # environmentVariables を含むため、NODE_OPTIONS 経由で意図せず有効化される
 # のを防ぐ対策であり、secret 注入の有無とは無関係に効くべきものだから。
 set -eu
+
+# この shim は 2 つの名前でインストールされる (_wrangler は同一ファイルへの
+# リンク)。呼び名で注入後の実体の解決先を切り替える:
+#
+#   wrangler  … PATH 遮蔽用 (対話シェル等の素の呼び出しを捕まえる)。実体
+#               /opt/tools/bin へ渡す。
+#   _wrangler … npm scripts からの明示呼び用。pnpm/npm は scripts 実行時に
+#               node_modules/.bin を PATH 先頭へ差し込むため、素の名前は
+#               プロジェクトローカルのバイナリに必ず負けて shim が迂回され、
+#               secret が注入されない (実測)。scripts には _wrangler と書いて
+#               shim を明示的に通し、注入後の実体解決を PATH に任せる —
+#               scripts 内ではプロジェクトが pin したローカル版が鍵付きで
+#               動き、ローカル版が無ければ PATH の次 = 遮蔽 shim 経由で
+#               /opt/tools/bin の実体に落ちる (名前が _wrangler → wrangler と
+#               一度だけ変わるので無限再帰にはならない)。
+#               (docs/prod-secret-isolation-design.md §4.3 / D31)
+case "${0##*/}" in
+_*) real=wrangler ;;
+*) real=/opt/tools/bin/wrangler ;;
+esac
+
 f=/run/secrets/CLOUDFLARE_API_TOKEN
 if [ -e "$f" ]; then
   [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
@@ -24,6 +45,6 @@ if [ -e "$f" ]; then
   v=$(cat "$f") || exit 1
   [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
   exec env -u NODE_OPTIONS \
-    CLOUDFLARE_API_TOKEN="$v" /opt/tools/bin/wrangler "$@"
+    CLOUDFLARE_API_TOKEN="$v" "$real" "$@"
 fi
-exec env -u NODE_OPTIONS /opt/tools/bin/wrangler "$@"
+exec env -u NODE_OPTIONS "$real" "$@"

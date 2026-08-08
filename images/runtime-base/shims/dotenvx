@@ -11,6 +11,17 @@
 # dotenvx には raw な鍵ファイルを直接読む仕組みがないため (-fk は dotenv
 # 形式のファイルを要求する)、shim による env 注入が正当な経路になる。
 set -eu
+
+# 2 つの名前 (dotenvx / _dotenvx) でインストールされ、呼び名で実体の解決先を
+# 切り替える。_dotenvx は npm scripts からの明示呼び用 — pnpm/npm が
+# node_modules/.bin を PATH 先頭へ差し込んでも shim を確実に通すための名前で、
+# 注入後の実体解決を PATH に任せることで scripts 内ではプロジェクトが pin
+# したローカル版が鍵付きで動く。詳細は shims/wrangler の同セクションを参照
+# (docs/prod-secret-isolation-design.md §4.3 / D31)。
+case "${0##*/}" in
+_*) real=dotenvx ;;
+*) real=/opt/tools/bin/dotenvx ;;
+esac
 for f in /run/secrets/DOTENV_PRIVATE_KEY_*; do
   [ -e "$f" ] || continue          # glob 不一致 (ファイルなし) は素通し
   [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
@@ -68,4 +79,4 @@ if [ "$has_run" -eq 1 ] && [ "$has_strict" -eq 0 ] && [ "$prod_key" -eq 1 ]; the
   echo "dotenvx:   fails, injecting the ciphertext as the value." >&2
 fi
 
-exec env -u NODE_OPTIONS /opt/tools/bin/dotenvx "$@"
+exec env -u NODE_OPTIONS "$real" "$@"

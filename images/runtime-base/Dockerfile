@@ -139,7 +139,16 @@ RUN mkdir -p /opt/tools/bin \
 
 COPY shims/wrangler shims/gh shims/dotenvx /usr/local/bin/
 RUN chown root:root /usr/local/bin/wrangler /usr/local/bin/gh /usr/local/bin/dotenvx \
-    && chmod 0755 /usr/local/bin/wrangler /usr/local/bin/gh /usr/local/bin/dotenvx
+    && chmod 0755 /usr/local/bin/wrangler /usr/local/bin/gh /usr/local/bin/dotenvx \
+    # _ 付きの明示呼び名 (npm scripts 用)。pnpm/npm は scripts 実行時に
+    # node_modules/.bin を PATH 先頭へ差し込むため、素の名前の shim は
+    # プロジェクトローカルのバイナリに負けて迂回される。scripts には
+    # _dotenvx / _wrangler / _gh と書くことで shim を確実に通す。実体は
+    # 同一ファイルで、shim 側が呼び名 ($0) を見て解決先を切り替える
+    # (shims/wrangler のコメント / docs §4.3 / D31)。
+    && ln -s wrangler /usr/local/bin/_wrangler \
+    && ln -s gh /usr/local/bin/_gh \
+    && ln -s dotenvx /usr/local/bin/_dotenvx
 
 # ビルド時に PATH 解決が shim に当たることを検証する。将来 PATH 順が
 # 入れ替わったり、apt/npm の配置が変わったりして shim が再び素通りされる

@@ -103,6 +103,14 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
    ```
 
    `DEV_COMPOSE_PROJECT` は `.devcontainer/docker-compose.yml` の `name:` の値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する
+
+   注入した鍵を npm scripts から使うツール（dotenvx / wrangler / gh）は、scripts 内では **`_` 付きの名前**で書く。pnpm/npm は scripts 実行時に `node_modules/.bin` を PATH 先頭へ差し込むため、素の名前はプロジェクトローカルのバイナリに解決されて shim（鍵注入）が迂回される。`_dotenvx` 等はコンテナ側が用意する明示呼び名で、鍵を注入したうえでローカル版（あればそれ、なければイメージ同梱版）を実行する:
+
+   ```json
+   "scripts": {
+     "dev": "_dotenvx run -f .env.dev --strict -- next dev"
+   }
+   ```
 3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（compose の `environment:` で設定済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
 
 dev compose 側の前提（本ディレクトリの `docker-compose.yml` に反映済み）:

@@ -11,6 +11,16 @@
 # 経由で意図せず有効化されるのを防ぐが、これは secret 注入の有無と無関係に
 # 効くべきもののため。
 set -eu
+
+# 2 つの名前 (gh / _gh) でインストールされ、呼び名で実体の解決先を切り替える。
+# _gh は npm scripts からの明示呼び用 — pnpm/npm が node_modules/.bin を PATH
+# 先頭へ差し込んでも shim を確実に通すための名前。詳細は shims/wrangler の
+# 同セクションを参照 (docs/prod-secret-isolation-design.md §4.3 / D31)。
+case "${0##*/}" in
+_*) real=gh ;;
+*) real=/opt/tools/bin/gh ;;
+esac
+
 f=/run/secrets/GH_TOKEN
 if [ -e "$f" ]; then
   [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
@@ -24,6 +34,6 @@ if [ -e "$f" ]; then
   v=$(cat "$f") || exit 1
   [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
   exec env -u NODE_OPTIONS \
-    GH_TOKEN="$v" /opt/tools/bin/gh "$@"
+    GH_TOKEN="$v" "$real" "$@"
 fi
-exec env -u NODE_OPTIONS /opt/tools/bin/gh "$@"
+exec env -u NODE_OPTIONS "$real" "$@"
