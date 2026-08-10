@@ -647,7 +647,7 @@ dev container は IDE（devcontainer 拡張）が起動するため、prod の�
 | D26 | イメージへは **named build context** で供給し、ビルドコンテキストは `images/runtime-base` のまま広げない（rev.8） | D25 の帰結。スキャナが `packages/env-guard` へ移ったため、`images/runtime-base` のコンテキストからは見えなくなる。当初はコンテキストをリポジトリルートへ広げる案だったが**却下した** — 除外設定に書かれていない全ファイルが docker デーモンへ転送され、新しい除外設定の網羅性が未確認事項として増える。buildx の named build context なら必要なディレクトリだけを追加供給でき、変更はビルドを行う 2 つの workflow に 1 行ずつで済む。**片方だけに足すともう片方のビルドが `COPY` で落ちる** |
 | D27 | 他 org からの呼び出しは npm 経由でスキャナを取り、**karakuri 自身の CI は作業ツリーのファイルを直接使う**（rev.8。未実装） | reusable workflow が自分の ref を割り出せない問題（§8.2）は、バージョンを workflow ファイル自身に書ける npm 経由なら**問いごと消える**。ただし karakuri 自身まで npm に寄せると、**スキャナを変更する PR が変更前の公開済みスキャナで検査される** — 緑になるがその PR の変更を一度も通していない。作業ツリー検出の分岐は残し、置き換えるのは第二 checkout の側だけにする。npm から取ったものは SHA256 で照合する（`npx` は取得物のハッシュを検証しない。バージョン固定は改竄への対策にならない） |
 | D28 | dev 鍵の注入も broker 方式にし、ホスト上の恒久平文（`env_file` の `dev/.env.container`）を廃止する（rev.9。機構は実装済み・各プロジェクトの移行は未実施） | 恒久平文は prod 側が廃止した `~/.config/<project>/.env.container` と同じ形であり、environ 常駐は `docker inspect` / コアダンプ / diagnostic report / 全子プロセス継承という書き出し面を開く。broker・shim・`/run/secrets` 規約・git-askpass は既存のまま流用でき、増えるのは起動後の注入 1 ステップと dev compose の `/run` tmpfs 化のみ。**エージェントから鍵を隠す目的ではない** — 同一 UID のため原理的に不可能で、そこは鍵のスコープで守る。この目的の限定を理解した上で複雑性と釣り合うと判断した（§4.9） |
-| D29 | 対話 prod 作業は「二段構え」（broker をパイプした `compose run -dT --rm prod sleep 8h` → `docker exec -it`）を標準手順とする（rev.9） | rev.8 まで第一候補だった非対話一本化は、dryrun → 適用のような対話的運用の実在と衝突する。対話 TTY が使えないのは防衛判断ではなく stdin を搬送路にした技術的帰結（D3）であり、二段構えは entrypoint 完了後に exec するため注入・clone とも 1 回でセッションを維持でき、防御を何も緩めない。`sleep` は `infinity` ではなく時間を切り、stop 忘れを自動回収する。`/src` の tmpfs（D18）は維持し、セッションを跨ぐ再 clone はその代償として受容する（§6.4） |
+| D29 | 対話 prod 作業は「二段構え」（broker をパイプした **attached の** `prod-run.sh sleep 8h`（端末 1）→ `docker exec -it`（端末 2））を標準手順とする（rev.9。土台の attached 化は実測起点） | rev.8 まで第一候補だった非対話一本化は、dryrun → 適用のような対話的運用の実在と衝突する。対話 TTY が使えないのは防衛判断ではなく stdin を搬送路にした技術的帰結（D3）であり、二段構えは entrypoint 完了後に exec するため注入・clone とも 1 回でセッションを維持でき、防御を何も緩めない。当初案の `run -dT`（detach、1 端末）は実測で不成立 — detach は stdin の中継者（compose クライアント）を消し、broker は Broken pipe、entrypoint は EOF を待ち続けて取込の行で停止、`sleep` 未実行のため自動回収も消える（§6.4）。`sleep` は `infinity` ではなく時間を切り、stop 忘れを自動回収する。`/src` の tmpfs（D18）は維持し、セッションを跨ぐ再 clone はその代償として受容する（§6.4） |
 | D30 | broker の標準実装を **Bitwarden CLI（native ビルド）** とする（rev.9。実測済み） | (1) macOS 実機の実測で、登録・取得とも Keychain 参照実装より体験が良い — keychain は `-w` が単一行しか受けず base64 迂回が要り、partition list の二重プロンプトも踏んだ（いずれも対処済みだが登録 UX の重さは残る）。(2) クロスプラットフォームであり、Windows 側の broker 選定を同時に閉じる。(3) チーム共有鍵が共有コレクションでそのまま配布でき、鍵束を git 管理しない方針（D17）と噛み合う。(4) CLI は native 実行ファイルを版 pin + SHA-256 照合で固定パスに置く — broker はホスト側で最も特権的な部品（マスターパスワードを握り全鍵束を stdout に出す）であり、npm 版の postinstall 実行・深い依存木・黙った版移動を避ける。**broker 契約は不変** — カンマ区切りの複数項目マージ（unlock 1 回・並び順連結・取込側の後勝ちで個人が共有を上書き）は bitwarden 実装の機能であって契約の拡張ではない。keychain 実装は代替の参照実装として残置する（§4.1 / §11） |
 | D31 | shim に**明示呼び名**（`_dotenvx` / `_wrangler` / `_gh`。同一ファイルへのリンク、`$0` で分岐）を追加し、npm scripts からは `_` 付きで呼ぶ（rev.9。実測起点） | `pnpm run` が `node_modules/.bin` を PATH 先頭へ積む以上、素の名前の shim は npm scripts 内で構造的に負ける（§4.3 rev.5 実測、dev 実機でも再確認）。代替案として検討した「取込側で `.env.keys` を併産し `-fk` で読ませる」は、(1) 出荷物と ingest の面積が増える、(2) 短く書くための wrapper に `--strict` を焼くと D20 が退けた `--convention flow` 破壊を再導入する、の 2 点で退けた。明示呼び名は面積増ゼロ（リンク 3 本 + `$0` 分岐）で、注入後の実体解決を PATH に任せることで npm scripts 内ではプロジェクトが pin したローカル版がそのまま鍵付きで動く — バージョン尊重と shim 通過が両立する。フラグ選択はスクリプト作者に残る |
 
@@ -725,15 +725,21 @@ enclave-env の廃止で 1 つ実害を持ち越している。公開済みの v
 
 stdin が secret の搬送路のため、`run` の対話 TTY とは両立しない（§4.1 / D3）。dryrun → 適用のような対話的な運用は**二段構え**で行う（D29）。
 
+**土台は attached で起動する（2 端末。rev.9 実測で確定）。** rev.9 当初案の `run -dT`（detach）は実測で不成立と判明した: attached モードでは stdin パイプをコンテナへ中継するのは compose クライアント自身であり、`-d` はそのクライアントを即座に終了させる。結果は三重の失敗になる — (1) broker は書き込み先を失い Broken pipe で死ぬ、(2) コンテナ側の stdin は open のまま誰も閉じないため、取込スクリプトが EOF を永遠に待って entrypoint が取込の行で停止する（clone にも `exec "$@"` にも到達しない）、(3) したがって `sleep 8h` は一度も走らず、時間切れによる自動回収も存在しない — `--rm` は正常終了時にしか効かないため、手で `docker rm -f` するまでコンテナが残る。secret はゼロ注入のまま `docker exec` でシェルが取れてしまうが、prod-context が「注入済みの鍵が無い」と警告する（沈黙はしない）。
+
 ```sh
-<broker> | GIT_REPO=<url> GIT_REF=<sha> \
-  docker compose -f compose.prod.yaml run -dT --rm prod sleep 8h
+# 端末 1: 土台を前面（attached）で起動する。broker の認可プロンプトも
+#         entrypoint のログもここに出る。搬送路はクライアントが中継する
+<prod-run ラッパー> ... prod-run.sh sleep 8h
+
+# 端末 2: entrypoint 完了（clone 済み・sleep 稼働）後に入る
+docker ps --filter name=prod-run    # container 特定
 docker exec -it -w /src <container> bash
 ```
 
 - entrypoint 完了後に exec するため `/run/secrets` は注入済み。対話シェルの起動時に注入済み鍵名が表示される（§4.3）
 - 注入 1 回・clone 1 回でセッションを維持でき、その中で dryrun と適用を続けられる
-- `sleep infinity` ではなく時間を切る。退出後の `docker stop` 忘れがそのまま放置され続けない
+- `sleep infinity` ではなく時間を切る。退出後の `docker stop` 忘れがそのまま放置され続けない。即回収するなら退出後に端末 1 を Ctrl-C（または `docker stop`）
 - セッションを跨ぐと `/src`（tmpfs）は消え、再 clone になる。これは D18 の代償であり緩めない — named volume に戻すと、前回実行のコードが打ったローカル ref の汚染と `.git/config` 経由のコード実行（いずれも実測で再現済み。§4.2）が復活する
 
 ---
@@ -953,7 +959,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] prod container: 必要 secret を欠いた状態で下流コマンドが認証失敗として**顕在化**すること（`$HOME` tmpfs により fallback 資格情報が拾われないことを含む）
 - [ ] dev container に `/var/run/docker.sock` がマウントされていないこと（§2.1 の前提。devcontainer 構成変更時の恒常チェック）
 - [ ] `logging: driver: none` でもアタッチ時に stdout が手元に表示されること
-- [ ] 対話二段構え（§11 (a)）: `run -dT --rm` + `docker exec -it` で TTY シェルが得られ、`/run/secrets` が注入済みであること。退出 + `docker stop` で container と secrets が消えること
+- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが prod-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。attached 形での TTY シェル取得・注入済み確認・退出後の回収は未実測
 - [ ] `GIT_REF` 未指定時に compose が失敗すること
 - [ ] `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走すること（`/home/node` の書き込み先、named volume `/src` の所有権を含む）
 - [ ] `/src` 非空・`.git` 無しの状態（前回失敗の残骸）から entrypoint が復帰できること
