@@ -102,14 +102,16 @@ fi
 
 # --- フェイク pnpm ---------------------------------------------------------------
 #
-# entrypoint は checkout 後に `pnpm config set store-dir /src/.pnpm-store`
-# を呼ぶ (rev.5 / D19)。この環境には実 pnpm が存在するため、フェイクを
-# 挟まなければテスト実行のたびに実ユーザーの pnpm グローバル設定
-# (~/.config/pnpm/config.yaml) が書き換わってしまう — 実際にこの変更を
-# 加えた直後の初回実行で踏んだ (store-dir が消えた tmpdir を指したまま
-# 残留した)。PATH の先頭にフェイク pnpm を置いて実 pnpm を素通りさせず、
-# 呼び出された引数だけを FAKE_PNPM_ARGV_FILE に記録する。この環境の実際の
-# pnpm 設定には一切触れない。
+# entrypoint は rev.9 から pnpm を起動しない (store-dir は
+# $HOME/.config/pnpm/config.yaml への直書き。pnpm を cwd=/src で起動すると
+# packageManager による self-switch を踏むため。bin/prod-entrypoint.sh の
+# コメント参照)。このフェイクは「本当に一度も起動していない」ことを検証する
+# tripwire として置く — 呼ばれたら引数が FAKE_PNPM_ARGV_FILE に残り、
+# テスト 14 が検出する。
+# (歴史的経緯: rev.5〜rev.9 途中までは entrypoint が `pnpm config set` を
+# 呼んでおり、フェイク無しで走らせた結果、実ユーザーの pnpm グローバル設定が
+# 消えた tmpdir を指したまま残留する事故を踏んだ。実 pnpm を素通りさせない
+# 建付けはその名残でもある。)
 FAKE_PNPM_DIR="$(mktemp -d)"
 FAKE_PNPM_ARGV_FILE="$FAKE_PNPM_DIR/pnpm-argv.log"
 cat >"$FAKE_PNPM_DIR/pnpm" <<'FAKE_PNPM'
@@ -120,6 +122,16 @@ FAKE_PNPM
 chmod +x "$FAKE_PNPM_DIR/pnpm"
 export FAKE_PNPM_ARGV_FILE
 export PATH="$FAKE_PNPM_DIR:$PATH"
+
+# --- フェイク $HOME --------------------------------------------------------------
+# entrypoint は store-dir 設定を $HOME/.config/pnpm/config.yaml へ直接書く。
+# 実 HOME のまま走らせると、テスト実行のたびに実ユーザーの pnpm グローバル
+# 設定が消える tmpdir を指す値で上書きされる (上記フェイク pnpm の節で踏んだ
+# 事故と同型)。テスト全体で HOME を専用 tmpdir へ差し替える。上の bare repo
+# 群は per-repo で user.email / user.name を明示しており、実 HOME の
+# ~/.gitconfig に依存しない。
+FAKE_HOME="$(mktemp -d)"
+export HOME="$FAKE_HOME"
 
 # --- 1. stdin 空 -> 非ゼロ終了 --------------------------------------------------
 t="$(mktemp -d)"
@@ -435,22 +447,29 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 	rm -rf "$t"
 
 	# 14. entrypoint が pnpm の store を /src (node_modules と同一の
-	#     tmpfs) へ向けている (regression: rev.5 / D19)。フェイク pnpm が
-	#     受け取った引数を検証する。store がこの sed 置換後の /src の下に
-	#     あることまで確認することで、「同一 tmpfs に置く」という要件
-	#     (別マウントだとハードリンクが張れず RAM が倍になる) を、パス
-	#     文字列のレベルで裏付ける。
+	#     tmpfs) へ向けている (regression: rev.5 / D19)。rev.9 からは
+	#     pnpm を起動せず $HOME/.config/pnpm/config.yaml へ直書きする
+	#     (self-switch 対策) ため、ファイル内容を検証し、あわせて pnpm が
+	#     一度も呼ばれないこと (フェイク pnpm が tripwire) を確認する。
+	#     store がこの sed 置換後の /src の下にあることまで確認することで、
+	#     「同一 tmpfs に置く」という要件 (別マウントだとハードリンクが
+	#     張れず RAM が倍になる) を、パス文字列のレベルで裏付ける。
 	t="$(mktemp -d)"
 	make_entrypoint "$t"
 	: >"$FAKE_PNPM_ARGV_FILE"
+	rm -f "$HOME/.config/pnpm/config.yaml"
 	printf 'FOO=bar\n' |
 		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true >/dev/null 2>&1
-	expected_pnpm_argv="$(printf 'config\nset\nstore-dir\n%s\n' "$t/src/.pnpm-store")"
-	actual_pnpm_argv="$(cat "$FAKE_PNPM_ARGV_FILE" 2>/dev/null)"
-	if [ "$actual_pnpm_argv" = "$expected_pnpm_argv" ]; then
-		ok "entrypoint が pnpm config set store-dir <tmpfs 上の /src> を呼ぶ"
+	yaml="$(cat "$HOME/.config/pnpm/config.yaml" 2>/dev/null)"
+	if [ "$yaml" = "storeDir: $t/src/.pnpm-store" ]; then
+		ok "entrypoint が config.yaml 直書きで store を <tmpfs 上の /src> へ向ける"
 	else
-		ng "entrypoint が pnpm config set store-dir <tmpfs 上の /src> を呼ぶ (got: $actual_pnpm_argv)"
+		ng "entrypoint が config.yaml 直書きで store を <tmpfs 上の /src> へ向ける (got: $yaml)"
+	fi
+	if [ ! -s "$FAKE_PNPM_ARGV_FILE" ]; then
+		ok "entrypoint は pnpm を一度も起動しない (self-switch を踏まない)"
+	else
+		ng "entrypoint は pnpm を一度も起動しない (called with: $(tr '\n' ' ' <"$FAKE_PNPM_ARGV_FILE"))"
 	fi
 	rm -rf "$t"
 
@@ -648,7 +667,8 @@ else
 	skip "remote 冪等性: git 不在のため未検証"
 	skip "named volume 再利用時に tracked file の改変が復元される: git 不在のため未検証"
 	skip "存在しない ref -> 明示的なエラーメッセージ: git 不在のため未検証"
-	skip "entrypoint が pnpm config set store-dir を呼ぶ: git 不在のため未検証"
+	skip "entrypoint が config.yaml 直書きで store を /src へ向ける: git 不在のため未検証"
+	skip "entrypoint は pnpm を一度も起動しない: git 不在のため未検証"
 	skip "40 桁 hex でない GIT_REF が既定で拒否される: git 不在のため未検証"
 	skip "PROD_ALLOW_MUTABLE_REF=1 で警告付き続行: git 不在のため未検証"
 	skip "40 桁 hex の GIT_REF は脱出口なしで通る: git 不在のため未検証"

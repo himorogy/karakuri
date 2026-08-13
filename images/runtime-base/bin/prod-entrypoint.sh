@@ -308,26 +308,40 @@ git -C /src clean -xdff
 # 入れ替えてはならない。
 #
 # --- self-check: $HOME が書けること ---------------------------------------------
-# `pnpm config set store-dir` は $HOME/.config/pnpm/config.yaml を書く。$HOME
+# store-dir の設定 (下記) は $HOME/.config/pnpm/config.yaml を書く。$HOME
 # が書けない構成 (tmpfs の /home/node 指定漏れ、コンテナ実行 uid と tmpfs の
-# uid= がずれている、等) だと、直後の `pnpm config set` が set -e で
-# ここが落ちるだけになり、"$HOME" が原因だと画面上は分からない
-# (mkdir/open の ENOENT や EACCES がそのまま出るだけで、期待していた前提
-# が書かれない)。ここで先に検査し、何を期待していて何が実際かを名指しで
-# 出してから落とす。
+# uid= がずれている、等) だと、直後の書き込みが set -e で落ちるだけになり、
+# "$HOME" が原因だと画面上は分からない (mkdir/open の ENOENT や EACCES が
+# そのまま出るだけで、期待していた前提が書かれない)。ここで先に検査し、
+# 何を期待していて何が実際かを名指しで出してから落とす。
 if [ ! -w "$HOME" ] || ! mkdir -p "$HOME/.config/pnpm" 2>/dev/null; then
   echo "prod-entrypoint: \$HOME is not writable: $HOME" >&2
   echo "prod-entrypoint:   expected: a writable tmpfs at \$HOME (compose の /home/node tmpfs 指定、" >&2
   echo "prod-entrypoint:   uid=/gid= が実行 uid と一致していること) so that" >&2
-  echo "prod-entrypoint:   'pnpm config set store-dir' can write \$HOME/.config/pnpm/config.yaml" >&2
+  echo "prod-entrypoint:   the store-dir config (\$HOME/.config/pnpm/config.yaml) can be written" >&2
   echo "prod-entrypoint:   actual: mkdir -p \"\$HOME/.config/pnpm\" failed (see compose tmpfs / uid config)" >&2
   exit 1
 fi
 
-# set -eu 下なのでこのコマンドが失敗すれば entrypoint 全体がここで落ちる。
-# それでよい: store を設定できないまま進めても、後続の pnpm install が
-# ENOENT で落ちるだけなので、ここで早く落ちた方が原因を追いやすい。
-pnpm config set store-dir /src/.pnpm-store
+# store-dir の設定は pnpm を起動せず、設定ファイルへ直接書く。以前は
+# `pnpm config set store-dir` を呼んでいたが、実機で落ちた: pnpm (9.7+) は
+# cwd の package.json の packageManager を見て**自分自身をその版へ切り替える**
+# (self-switch)。この行は clone 後の /src で走るため、プロジェクトが別系列
+# (例: pnpm@10.9.0) を pin していると config set はイメージに焼いた pnpm では
+# なく切替先の版の挙動で走り、read_only の既定 store ($PNPM_HOME/store) を
+# mkdir しようとして ENOENT で死ぬ (実測 2026-08-08。空の /src では再現せず、
+# packageManager 付きの package.json を cwd に置くと再現する)。pnpm を起動
+# しなければ self-switch も起きない。
+#
+# 書き先とファイル形式は `pnpm config set store-dir` の実測結果
+# (docs/prod-secret-isolation-design.md §4.5) をそのまま再現する:
+# $HOME/.config/pnpm/config.yaml に YAML で
+# `storeDir: <path>`。`store-dir=` 形式の $HOME/.npmrc / $HOME/.config/pnpm/rc
+# は**効かないことを実測済み** (ファイル名と形式の両方が違う) なので書かない。
+# 書き込み失敗は set -eu (リダイレクト失敗を含む) でここで落ちる。それで
+# よい: store を設定できないまま進めても、後続の pnpm install が ENOENT で
+# 落ちるだけなので、ここで早く落ちた方が原因を追いやすい。
+printf 'storeDir: /src/.pnpm-store\n' > "$HOME/.config/pnpm/config.yaml"
 
 # clone 用トークンは checkout 後に破棄する。以降 exec で走るのは
 # checkout 済みの信頼しないコードであり、そこから /run/secrets/GH_TOKEN

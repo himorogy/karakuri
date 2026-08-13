@@ -369,7 +369,7 @@ runtime-base には `sudo` が入る。egress-guard の sudoers ルール（`NOP
 
 `read_only: true` の下では `$PNPM_HOME/store`（= `/usr/local/share/pnpm/store`）を作れず、`pnpm install` が `ENOENT` で落ちる。store は書ける場所（tmpfs）へ向ける必要がある。置き場所は **node_modules と同一の tmpfs マウント**でなければならない（D19）。
 
-設定手段は `pnpm config set store-dir <path>` である（実測）。
+設定は `$HOME/.config/pnpm/config.yaml` への**直書き**（`storeDir: /src/.pnpm-store`）で行う。**rev.9 変更（D32）**: 当初は `pnpm config set store-dir <path>`（実測で確認した手段）を entrypoint が呼んでいたが、実機で落ちた — pnpm（9.7+）は cwd の `package.json` の `packageManager` を見て**自分自身をその版へ切り替える**（self-switch）。entrypoint のこの行は clone 後の `/src` で走るため、プロジェクトが別系列（実例: `pnpm@10.9.0`）を pin していると `config set` は切替先の版の挙動で走り、read_only の既定 store（`$PNPM_HOME/store`）を mkdir しようとして ENOENT で死ぬ（実測 2026-08-08。空の `/src` では再現せず、`packageManager` 付き `package.json` を cwd に置くと再現）。pnpm を起動しなければ self-switch も起きない。直書きの内容は `pnpm config set` の書き込み結果（下記実測）の再現である。
 
 - 環境変数 `npm_config_store_dir` は**効かない**
 - 書き込み先は **`$HOME/.config/pnpm/config.yaml`** で、形式は **YAML**（`storeDir: <path>`）。`.npmrc` の `store-dir=` ではない。手で `$HOME/.npmrc` や `$HOME/.config/pnpm/rc` に置いても効かないのは、ファイル名と形式の両方が違うため
@@ -394,7 +394,7 @@ bind mount を廃止し、prod container 内で clone する。secret の取り�
 7. `rev-parse --verify "${GIT_REF}^{commit}"` で解決。**解決先が `GIT_REF` 自身と一致することの検証**（下記）
 8. 解決済み sha を stderr と `/run/prod-ref`（0644）へ記録
 9. `checkout --detach --force` → `reset --hard` → `clean -xdff` の三段構え
-10. `$HOME` が書けることの自己検査 → `pnpm config set store-dir /src/.pnpm-store`（D19。`clean` より**後**でなければならない）
+10. `$HOME` が書けることの自己検査 → store-dir を `$HOME/.config/pnpm/config.yaml` へ直書き（D19 / D32。pnpm は起動しない）
 11. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS`
 12. 引数の存在を検証して `exec "$@"`
 
@@ -650,6 +650,7 @@ dev container は IDE（devcontainer 拡張）が起動するため、prod の�
 | D29 | 対話 prod 作業は「二段構え」（broker をパイプした **attached の** `prod-run.sh sleep 8h`（端末 1）→ `docker exec -it`（端末 2））を標準手順とする（rev.9。土台の attached 化は実測起点） | rev.8 まで第一候補だった非対話一本化は、dryrun → 適用のような対話的運用の実在と衝突する。対話 TTY が使えないのは防衛判断ではなく stdin を搬送路にした技術的帰結（D3）であり、二段構えは entrypoint 完了後に exec するため注入・clone とも 1 回でセッションを維持でき、防御を何も緩めない。当初案の `run -dT`（detach、1 端末）は実測で不成立 — detach は stdin の中継者（compose クライアント）を消し、broker は Broken pipe、entrypoint は EOF を待ち続けて取込の行で停止、`sleep` 未実行のため自動回収も消える（§6.4）。`sleep` は `infinity` ではなく時間を切り、stop 忘れを自動回収する。`/src` の tmpfs（D18）は維持し、セッションを跨ぐ再 clone はその代償として受容する（§6.4） |
 | D30 | broker の標準実装を **Bitwarden CLI（native ビルド）** とする（rev.9。実測済み） | (1) macOS 実機の実測で、登録・取得とも Keychain 参照実装より体験が良い — keychain は `-w` が単一行しか受けず base64 迂回が要り、partition list の二重プロンプトも踏んだ（いずれも対処済みだが登録 UX の重さは残る）。(2) クロスプラットフォームであり、Windows 側の broker 選定を同時に閉じる。(3) チーム共有鍵が共有コレクションでそのまま配布でき、鍵束を git 管理しない方針（D17）と噛み合う。(4) CLI は native 実行ファイルを版 pin + SHA-256 照合で固定パスに置く — broker はホスト側で最も特権的な部品（マスターパスワードを握り全鍵束を stdout に出す）であり、npm 版の postinstall 実行・深い依存木・黙った版移動を避ける。**broker 契約は不変** — カンマ区切りの複数項目マージ（unlock 1 回・並び順連結・取込側の後勝ちで個人が共有を上書き）は bitwarden 実装の機能であって契約の拡張ではない。keychain 実装は代替の参照実装として残置する（§4.1 / §11） |
 | D31 | shim に**明示呼び名**（`_dotenvx` / `_wrangler` / `_gh`。同一ファイルへのリンク、`$0` で分岐）を追加し、npm scripts からは `_` 付きで呼ぶ（rev.9。実測起点） | `pnpm run` が `node_modules/.bin` を PATH 先頭へ積む以上、素の名前の shim は npm scripts 内で構造的に負ける（§4.3 rev.5 実測、dev 実機でも再確認）。代替案として検討した「取込側で `.env.keys` を併産し `-fk` で読ませる」は、(1) 出荷物と ingest の面積が増える、(2) 短く書くための wrapper に `--strict` を焼くと D20 が退けた `--convention flow` 破壊を再導入する、の 2 点で退けた。明示呼び名は面積増ゼロ（リンク 3 本 + `$0` 分岐）で、注入後の実体解決を PATH に任せることで npm scripts 内ではプロジェクトが pin したローカル版がそのまま鍵付きで動く — バージョン尊重と shim 通過が両立する。フラグ選択はスクリプト作者に残る |
+| D32 | entrypoint の store-dir 設定は **pnpm を起動せず `config.yaml` へ直書き**する（rev.9。実測起点） | pnpm 9.7+ の self-switch: cwd の `packageManager` を見て pnpm が自分をその版へ切り替えるため、clone 後の `/src` で `pnpm config set` を呼ぶと「イメージに焼いた pnpm」ではなく「プロジェクトが pin した版」の挙動になり、read_only の既定 store を触って ENOENT で死ぬ（実測）。設定というホスト側の関心事に、プロジェクト側の pin が干渉する構造そのものを断つには pnpm を起動しないしかない。書く内容は `pnpm config set` の書き込み結果として実測済みの形式（`config.yaml` / `storeDir:`。`rc` / `.npmrc` の `store-dir=` は効かないことも実測済み）の再現であり、新しい推測は含まない。**未実測の残り**: 切替先の旧系列（v10 系）が `config.yaml` を読むか — 読まない場合は install 段で同じ ENOENT が再発するため、実測して結果をここに追記する（§4.5 / §11） |
 
 ---
 
@@ -978,7 +979,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] `pnpm run` の内側でローカル依存の dotenvx が呼ばれた場合に鍵が届かず、最上位に `dotenvx run` を置けば届くこと（D5 の訂正の回帰）
 - [ ] **40 桁 hex でない `GIT_REF` が既定で拒否されること**、および `PROD_ALLOW_MUTABLE_REF=1` のときだけ警告付きで続行すること（D21）
 - [ ] **解決済み commit sha が stderr と `/run/prod-ref` に記録されること**。可変 ref を許した場合も記録されること
-- [ ] `$HOME` が書けない構成で `pnpm config set` の前に明示的な診断が出ること
+- [ ] `$HOME` が書けない構成で store-dir 直書きの前に明示的な診断が出ること
 - [ ] `/src` に `exec` が無い構成で、`node_modules/.bin` の実行を待たずに entrypoint が明示的に落ちること
 - [ ] 対話シェルで注入済みの鍵名が表示され、**値は表示されない**こと
 - [ ] entrypoint が secret 書き込み後・トークン破棄前に異常終了した場合、コンテナ停止で tmpfs ごと解放され secret が残らないこと
