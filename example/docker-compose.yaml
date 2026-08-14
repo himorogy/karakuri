@@ -1,5 +1,5 @@
-# プロジェクト側 docker-compose.yml の雛形。
-# .devcontainer/docker-compose.yml としてコピーし、<your-project> と CRIT_PORT を差し替える。
+# プロジェクト側 docker-compose.yaml の雛形。
+# .devcontainer/docker-compose.yaml としてコピーし、<your-project> と CRIT_PORT を差し替える。
 #
 # egress-guard が第一に推奨する構成が Compose。理由はネットワークにある。
 # Compose はプロジェクトごとにユーザー定義ネットワーク (<name>_default) を自動で作り、

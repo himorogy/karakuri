@@ -2,16 +2,16 @@
 // .devcontainer/devcontainer.json としてコピーし、<your-project> を差し替える。
 //
 // egress-guard が第一に推奨する Docker Compose 構成。ネットワーク・cap・ポート転送・
-// 環境変数・マウントは docker-compose.yml 側にある。理由と、Compose を使わない場合の
+// 環境変数・マウントは docker-compose.yaml 側にある。理由と、Compose を使わない場合の
 // 代替 (initializeCommand でユーザー定義ネットワークを用意する案) は
 // packages/egress-guard/README.md の「ネットワーク構成（推奨）」を参照。
 {
 	"name": "<your-project>",
 
-	"dockerComposeFile": "docker-compose.yml",
+	"dockerComposeFile": "docker-compose.yaml",
 	"service": "dev",
 
-	// docker-compose.yml は親ディレクトリを /workspaces に載せているので、
+	// docker-compose.yaml は親ディレクトリを /workspaces に載せているので、
 	// リポジトリ本体はその 1 階層下に現れる。
 	//
 	// **マウント先と食い違わせないこと。** ずれると postCreateCommand が exit 127 で

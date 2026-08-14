@@ -7,8 +7,8 @@ dev container には LLM エージェントが常駐するため信頼しない�
 | 本ディレクトリ | コピー先 | 役割 |
 | --- | --- | --- |
 | `Dockerfile` | `<repo>/.devcontainer/Dockerfile` | dev イメージ（devcontainer-base + egress-guard 設定） |
-| `docker-compose.yml` | `<repo>/.devcontainer/docker-compose.yml` | dev container の定義 |
-| `docker-compose.prod.yml` | `~/.config/<project>/compose.prod.yaml` | prod container の定義（配布テンプレートのコピー） |
+| `docker-compose.yaml` | `<repo>/.devcontainer/docker-compose.yaml` | dev container の定義 |
+| `docker-compose.prod.yaml` | `~/.config/<project>/compose.prod.yaml` | prod container の定義（配布テンプレートのコピー） |
 
 ## 推奨配置
 
@@ -26,7 +26,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
   env-guard.conf
   .devcontainer/
     Dockerfile
-    docker-compose.yml
+    docker-compose.yaml
 ```
 
 prod-run.sh・broker・compose.prod.yaml を workspace の外に置くのは必須。workspace はホストへ bind mount されており、リポジトリ内に置くと dev container 内のエージェントがこれらを書き換えられる（正規 broker の前後に鍵を複製するコードを仕込む、compose から `read_only` / tmpfs を外す等）。
@@ -70,16 +70,19 @@ macOS Keychain を使う代替もある（`broker-macos-keychain.sh`。登録・
 
 ### 対話作業（dryrun → 適用など）
 
-stdin が secret の搬送路のため `run` の対話 TTY とは両立しない（`-T`）。対話が必要な場合は二段構えにする:
+stdin が secret の搬送路のため `run` の対話 TTY とは両立しない（`-T`）。対話が必要な場合は**二段構え（2 端末、土台は attached）**にする:
 
 ```sh
-"$HOME/.local/bin/prj1-broker" | \
-  GIT_REPO=... GIT_REF=... \
-  docker compose -f "$PROD_COMPOSE_FILE" run -dT --rm prod sleep 8h
-docker exec -it -w /src <container> bash
+# 端末 1: 土台を前面で起動する。broker の認可プロンプトも entrypoint のログもここに出る
+prod-run.sh sleep 8h        # PROD_BROKER / GIT_REPO / GIT_REF 等は一発コマンドと同じ
+
+# 端末 2: entrypoint 完了（clone 済み・sleep 稼働）後に入る
+docker exec -it -w /src "$(docker ps -q --filter name=prod-run | head -1)" bash
 ```
 
-entrypoint 完了後に exec するため `/run/secrets` は注入済み。1 回の注入・clone でセッションを維持でき、その中で dryrun と適用を続けられる。`sleep infinity` ではなく時間を切っておくと、stop 忘れがそのまま放置されない。
+entrypoint 完了後に exec するため `/run/secrets` は注入済み。1 回の注入・clone でセッションを維持でき、その中で dryrun と適用を続けられる。退出後は端末 1 の Ctrl-C で終了・回収（`--rm`）。`sleep infinity` ではなく時間を切っておくと、stop 忘れがそのまま放置されない。
+
+土台を `run -d`（detach）で起動してはならない。stdin パイプをコンテナへ中継しているのは compose クライアント自身なので、detach した瞬間に搬送路が消える — broker は Broken pipe で死に、entrypoint は EOF を待って取込の行で永久に停止する（実測）。また Ctrl-C / `docker stop` が効くのは compose の `init: true`（`docker-compose.prod.yaml` に設定済み）が前提 — 無いと pid 1 = `sleep` がシグナルを無視する。
 
 ## dev の起動
 
@@ -102,7 +105,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
    # 使い方: dev-inject-bw dotfiles
    ```
 
-   `DEV_COMPOSE_PROJECT` は `.devcontainer/docker-compose.yml` の `name:` の値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する
+   `DEV_COMPOSE_PROJECT` は `.devcontainer/docker-compose.yaml` の `name:` の値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する
 
    注入した鍵を npm scripts から使うツール（dotenvx / wrangler / gh）は、scripts 内では **`_` 付きの名前**で書く。pnpm/npm は scripts 実行時に `node_modules/.bin` を PATH 先頭へ差し込むため、素の名前はプロジェクトローカルのバイナリに解決されて shim（鍵注入）が迂回される。`_dotenvx` 等はコンテナ側が用意する明示呼び名で、鍵を注入したうえでローカル版（あればそれ、なければイメージ同梱版）を実行する:
 
@@ -113,7 +116,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
    ```
 3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（compose の `environment:` で設定済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
 
-dev compose 側の前提（本ディレクトリの `docker-compose.yml` に反映済み）:
+dev compose 側の前提（本ディレクトリの `docker-compose.yaml` に反映済み）:
 
 - `/run` が tmpfs（`tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]`）。**これが無いと `/run/secrets` はコンテナの writable layer = ホスト側の不揮発ディスクへ書かれ、平文廃止の意味が消える。** オプション無しの短縮形は root:root 所有になり node ユーザーが `/run/secrets` を作れない点も prod と同じ
 - `environment:` に `GIT_ASKPASS: /usr/local/bin/git-askpass`（パスは秘匿情報ではない）
@@ -129,4 +132,4 @@ dev compose 側の前提（本ディレクトリの `docker-compose.yml` に反�
 2. **対話 prod 作業** — 二段構えを標準手順とする。`/src` の tmpfs（毎回 clone）は維持する。named volume 化は、前回実行のコードが打ったローカル ref の汚染と `.git/config` 経由のコード実行（いずれも実測で再現済み）を復活させるため行わない。
 3. **GH_TOKEN の checkout 後破棄** — 維持する。破棄は prod-entrypoint.sh 内の処理であり、dev は entrypoint を通らないため dev の git 操作には影響しない。
 
-設計書（`docs/prod-secret-isolation-design.md`）への反映は rev.9 として未実施。
+いずれも設計書（`docs/prod-secret-isolation-design.md`）rev.9 に反映済み。

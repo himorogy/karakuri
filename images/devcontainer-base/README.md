@@ -73,7 +73,7 @@ base に入れる条件は次のいずれか。
 ```
 .devcontainer/
 ├── Dockerfile             ← examples/Dockerfile
-├── docker-compose.yml     ← examples/docker-compose.yml
+├── docker-compose.yaml     ← examples/docker-compose.yaml
 ├── devcontainer.json      ← examples/devcontainer.json
 ├── post-create.sh         ← examples/post-create.sh
 ├── firewall.json          ← プロジェクトの許可ドメイン
@@ -89,7 +89,7 @@ Docker の埋め込みリゾルバ `127.0.0.11` が使えるため。デフォ�
 
 ### 忘れると時間を溶かす設定
 
-**`docker-compose.yml` の `build.pull`。**
+**`docker-compose.yaml` の `build.pull`。**
 
 ```yaml
 build:
@@ -104,7 +104,7 @@ build:
 無視される。`cap_add` を `runArgs` に書き戻すと、効かないまま egress-guard の適用だけが
 失敗する。
 
-**`docker-compose.yml` のマウント先と `devcontainer.json` の `workspaceFolder` を
+**`docker-compose.yaml` のマウント先と `devcontainer.json` の `workspaceFolder` を
 一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
 側に出るため、原因がマウント先の不一致だと気づきにくい。
 

@@ -961,7 +961,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] prod container: 必要 secret を欠いた状態で下流コマンドが認証失敗として**顕在化**すること（`$HOME` tmpfs により fallback 資格情報が拾われないことを含む）
 - [ ] dev container に `/var/run/docker.sock` がマウントされていないこと（§2.1 の前提。devcontainer 構成変更時の恒常チェック）
 - [ ] `logging: driver: none` でもアタッチ時に stdout が手元に表示されること
-- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが prod-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。**attached 形は実測で成立**（2026-08-14: TTY シェル取得・prod-context の鍵名表示・`/run/prod-ref`・`pnpm install` 完走・`_wrangler` / `_dotenvx` 動作）。回収のみ追加実測が要る: pid 1 = `sleep` が Ctrl-C / SIGTERM を無視するため `init: true` を compose に追加した（§6.4）— init 有りで Ctrl-C 一発 → `--rm` 回収まで通ることの確認が残り
+- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが prod-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。**attached 形は実測で成立**（2026-08-14: TTY シェル取得・prod-context の鍵名表示・`/run/prod-ref`・`pnpm install` 完走・`_wrangler` / `_dotenvx` 動作）。回収も実測済み: pid 1 = `sleep` が Ctrl-C / SIGTERM を無視することを実測 → `init: true` を compose に追加（§6.4）→ init 有りで Ctrl-C 一発 → 終了・回収まで通ることを確認（2026-08-14）。**対話二段構えは attached 2 端末形で完了**
 - [ ] `GIT_REF` 未指定時に compose が失敗すること
 - [ ] `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走すること（`/home/node` の書き込み先、named volume `/src` の所有権を含む）
 - [ ] `/src` 非空・`.git` 無しの状態（前回失敗の残骸）から entrypoint が復帰できること

@@ -155,7 +155,7 @@ USER node
 **Compose はプロジェクトごとのユーザー定義ネットワーク（`<project>_default`）を自動で作ります。** `initializeCommand` も `--network` も不要で、`docker compose down` でネットワークも消えます。
 
 ```yaml
-# .devcontainer/docker-compose.yml
+# .devcontainer/docker-compose.yaml
 services:
   dev:
     build:
@@ -173,7 +173,7 @@ services:
 // .devcontainer/devcontainer.json
 {
   "name": "my project",
-  "dockerComposeFile": "docker-compose.yml",
+  "dockerComposeFile": "docker-compose.yaml",
   "service": "dev",
   "workspaceFolder": "/workspaces/my-project",
   "remoteUser": "node",

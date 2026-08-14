@@ -3,12 +3,12 @@
 // packages/egress-guard/docs/verification-record.md §6.22。
 //
 // 案 B から消えたもの: initializeCommand / runArgs / mounts / workspaceMount /
-// containerEnv。いずれも docker-compose.yml 側へ移した。
+// containerEnv。いずれも docker-compose.yaml 側へ移した。
 // **dockerComposeFile を使うと runArgs は黙って無視される。** ここに書き戻しても
 // cap_add は効かないため、egress-guard が起動に失敗する。
 {
 	"name": "@himorogy/karakuri development container",
-	"dockerComposeFile": "docker-compose.yml",
+	"dockerComposeFile": "docker-compose.yaml",
 	"service": "dev",
 	"features": {
 		"ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}

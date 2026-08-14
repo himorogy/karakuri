@@ -155,7 +155,7 @@ base image は `node:24` なのでコンテナ側は問題ない。**CI の `set
 「更新したのに反映されない」の原因になる。**書く場所は構成で変わる。**
 
 ```yaml
-# Docker Compose 構成（雛形はこちら）— docker-compose.yml
+# Docker Compose 構成（雛形はこちら）— docker-compose.yaml
 services:
   dev:
     build:
@@ -189,7 +189,7 @@ services:
 ### 4.3 プロジェクト側に残るもの
 
 - `firewall.json`（実効設定。プロジェクトごとに異なるため base には入らない）
-- `NET_ADMIN` / `NET_RAW`。**Compose 構成では `docker-compose.yml` の `cap_add` に書く。**
+- `NET_ADMIN` / `NET_RAW`。**Compose 構成では `docker-compose.yaml` の `cap_add` に書く。**
   `dockerComposeFile` を使うと `runArgs` は黙って無視されるため、`devcontainer.json` に
   書き戻しても効かず、egress-guard の適用だけが失敗する
 - `postStartCommand` と `waitFor`
@@ -197,11 +197,11 @@ services:
 
 ### 4.4 Compose 構成へ移す場合に一緒に動かすもの
 
-雛形は Compose 構成（[`examples/docker-compose.yml`](./examples/docker-compose.yml)）に
-なっている。`runArgs` 方式から移すなら、次はすべて `docker-compose.yml` 側へ移す。
+雛形は Compose 構成（[`examples/docker-compose.yaml`](./examples/docker-compose.yaml)）に
+なっている。`runArgs` 方式から移すなら、次はすべて `docker-compose.yaml` 側へ移す。
 `devcontainer.json` に残しても効かない。
 
-| `devcontainer.json`（効かなくなる） | `docker-compose.yml`（移す先） |
+| `devcontainer.json`（効かなくなる） | `docker-compose.yaml`（移す先） |
 |---|---|
 | `runArgs: ["--name=..."]` | `container_name` |
 | `runArgs: ["--cap-add=..."]` | `cap_add` |
@@ -218,7 +218,7 @@ services:
 要る。** 引き継ぎたい場合は `docker volume ls` で実名を調べ、`external: true` で名前を
 合わせる。
 
-**`docker-compose.yml` のマウント先と `devcontainer.json` の `workspaceFolder` を
+**`docker-compose.yaml` のマウント先と `devcontainer.json` の `workspaceFolder` を
 一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
 側に出るため、原因がマウント先の不一致だと気づきにくい。
 
@@ -232,7 +232,7 @@ services:
 **雛形はリポジトリ本体ではなく親ディレクトリを載せる。**
 
 ```yaml
-# docker-compose.yml — ../.. は .devcontainer から見て「リポジトリの親」
+# docker-compose.yaml — ../.. は .devcontainer から見て「リポジトリの親」
 volumes:
   - ../..:/workspaces:cached
 ```
