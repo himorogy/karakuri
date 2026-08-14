@@ -985,7 +985,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] 対話シェルで注入済みの鍵名が表示され、**値は表示されない**こと
 - [ ] entrypoint が secret 書き込み後・トークン破棄前に異常終了した場合、コンテナ停止で tmpfs ごと解放され secret が残らないこと
 - [ ] `dotenvx get -f .env.prod` がファイルを生成しないこと
-- [ ] ホストの `/proc/sys/kernel/core_pattern` の内容と、`ulimits: core: 0` 下でコアが生成されないこと
+- [x] ホストの `core_pattern` とコアダンプ抑止（2026-08-14、macOS / Docker Desktop 実機）: `ulimits: core: 0` 下で `node -e 'process.abort()'` は `Aborted`（`core dumped` 表示なし）でコアファイル無し。否定対照 — `--ulimit core=-1` の素のコンテナで同じ abort → **`Aborted (core dumped)` + cwd に 321MB の `core`**（VM の実効 core_pattern は相対名で、行き先はプロセスの cwd。writable layer の cwd なら VM の不揮発ディスクに落ちる）。抑止が唯一かつ実効の防波堤であることを両方向で確認
 - [ ] `core.hooksPath` 設定下で、平文 `.env` のコミットが実際に拒否されること
 - [ ] husky を使うプロジェクトで、チェーン先の hook が引き続き実行されること
 - [ ] **ホストの GUI クライアント（Fork）から平文** `.env` **を commit しようとして実際に拒否されること**(現行の simple-git-hooks 構成で今どうなっているかの確認を含む)
@@ -1020,7 +1020,6 @@ rev.7 で追加した項目:
 
 ## 11. 未決事項
 
-- **ホスト側 hook の導入コマンド**: 方式は A（simple-git-hooks との併用）で確定した（rev.8）— simple-git-hooks が macOS 実機で動作していることが確認できており、動いている仕組みの上に載せる方が速い。残るのは `@himorogy/env-guard` に冪等な導入コマンドを置くこと。**GUI クライアントの PATH でスキャナを見つけられるかは、測って決める問いではない** — 見つからなければ非ゼロで終わるように書けばよく、それはこちらが書くコードの性質である。実測の役割は「意図どおり落ちること」の確認に変わる。
 - **実行ホストの一本化**: Mac / Windows ミニ PC のどちらで prod 実行を行うか。swap 経由の露出（R7）はメモリに余裕のある側に寄せるのが一貫する。Linux ホストに一本化できるなら `file:` ソース + `/dev/shm` の代替（§4.1）も開ける。**rev.5 でこの判断の重みが増した** — `/src` が tmpfs になったため、repo と `node_modules` と pnpm store が全て RAM に載る。tmpfs の既定サイズはホスト RAM の 50%（CI ランナーで 7.9G、実測の使用量は karakuri 自身で 131M）。依存の重いプロジェクトを載せるなら実行ホストのメモリ量が直接の制約になる。**rev.9 実機実測（macOS / Docker Desktop VM 7.65G）**: 1137 パッケージのモノレポ（biotech-grid）の `pnpm install` はコンテナのメモリピーク実測 1.07G（cgroup memory.peak）で、dev container 群と同居した VM（大口は 4.9G + 1.0G）では **VM 全体の OOM で `Killed`** になった（コンテナ側の cgroup 上限は無し = 犯人はコンテナでなく VM の頭数）。tmpfs 使用量自体は途中時点で 214M / 3.9G と余裕。dev 同居運用なら VM への割当は 12G 級が必要。
 - **署名タグの検証**: rev.6 で `GIT_REF` は完全な commit sha を強制するようにした（D21）。署名タグを使いたい場合は `git tag -v` 相当の検証を entrypoint に入れる必要があり、信頼する公開鍵をどこから持ってくるか（イメージに焼く / broker で渡す）が未決。実装するまでは `PROD_ALLOW_MUTABLE_REF=1` が唯一の逃げ道で、これは検証を伴わないため「危険を理解した上での選択」以上のものにはならない。
 - **prod container への egress-guard 適用**: `compose.prod.yaml` は `cap_add: [NET_ADMIN, NET_RAW]` も firewall 起動も持たない。したがって**この構成のままでは prod に egress 制限は掛からない**。適用するには capability 追加と root での firewall 初期化が必要で、「能力は最小に」（§4.5 の配置規約）と緊張関係にある。prod は信頼境界の内側（§2.1）だが、依存パッケージの supply chain に対する多層防御としての価値はある。エージェント不在の prod で egress 制御に払うコスト（caps + entrypoint の root 化）が見合うか、実装時に判断する。
@@ -1035,6 +1034,8 @@ rev.7 で追加した項目:
 - **他 org 展開時のイメージ配布**: `ghcr.io/himorogy/runtime-base` を各 org から pull させるか、org ごとにミラーするか。
 
 ### rev.9 で決着し、未決から外したもの
+
+- ~~ホスト側 hook の導入コマンド~~ → **`env-guard install` として実装済み・macOS 実機で実測済み**（2026-08-14）。方式は rev.8 で確定した A（simple-git-hooks との併用）のまま — `env-guard install` が package.json の `simple-git-hooks.pre-commit` に冪等に書き、`--check` が導入状態を検査する。実測: ホスト（ターミナル・Fork GUI）から平文 `.env` の commit が hook で拒否され、スキャナを欠いた状態では無害ファイルの commit も「Refusing to commit while this check cannot run」で fail-closed に落ちる。副産物として、dev container 内で `--check` が偽陰性を出すバグ（core.hooksPath のイメージ hook はスキャナを直接呼ぶ設計で、node_modules 経路だけを正としていた）を実測で発見し修正した。
 
 - ~~broker の具体選定~~ → **Bitwarden CLI（native ビルド、版 pin + SHA-256 照合）を標準に確定**（D30）。macOS 実機での実測比較の結果。Keychain 参照実装は、単一行しか受けない登録プロンプトの base64 迂回と partition list の二重プロンプトを潰してなお登録の体験が重い。bw は unlock 1 回で複数項目のマージまで完結する。keychain 実装は代替の参照実装として残す。bw はクロスプラットフォームのため Windows 側の選定も同時に閉じる見込み（Windows 実機の実測は未実施）。チーム共有鍵は Bitwarden の共有コレクションに載り、「運用者間の受け渡しはチームのパスワードマネージャで行う」（§4.1）が同一ツール内で閉じる。
 - ~~対話 prod shell の要否~~ → **二段構えを標準手順として確定**（§6.4 / D29）。非対話への一本化案（rev.8 までの第一候補）は撤回。旧選択肢のうち (b)（secret 不要な素の `run` シェル）は二段構えで代替でき、(c)（Linux ホスト一本化 + `file:` ソース / `/dev/shm`）は「実行ホストの一本化」の側に残した。
