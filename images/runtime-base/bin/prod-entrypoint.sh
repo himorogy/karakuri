@@ -333,15 +333,24 @@ fi
 # packageManager 付きの package.json を cwd に置くと再現する)。pnpm を起動
 # しなければ self-switch も起きない。
 #
-# 書き先とファイル形式は `pnpm config set store-dir` の実測結果
-# (docs/prod-secret-isolation-design.md §4.5) をそのまま再現する:
-# $HOME/.config/pnpm/config.yaml に YAML で
-# `storeDir: <path>`。`store-dir=` 形式の $HOME/.npmrc / $HOME/.config/pnpm/rc
-# は**効かないことを実測済み** (ファイル名と形式の両方が違う) なので書かない。
-# 書き込み失敗は set -eu (リダイレクト失敗を含む) でここで落ちる。それで
-# よい: store を設定できないまま進めても、後続の pnpm install が ENOENT で
-# 落ちるだけなので、ここで早く落ちた方が原因を追いやすい。
+# 同じ値を 2 形式へ書く。読む側が版で割れているためで、どちらも実測起点
+# (docs/prod-secret-isolation-design.md §4.5):
+#
+#   - config.yaml (YAML, storeDir:) … v11 系が読む。`pnpm config set` の
+#     書き込み結果の再現。v11 系は rc を読まない (実測)
+#   - rc (ini, store-dir=) … self-switch した v10 系の install が読む。
+#     v10 系の `pnpm store path` は config.yaml を読んで正しい値を返すのに、
+#     install の store controller は rc しか読まず既定 store の mkdir で
+#     ENOENT 死する (実機 install で実測。`store path` の観測を根拠に
+#     config.yaml 単独へ削って一度失敗した — 権威は install 自身)
+#
+# 値は同一なので、どちらを読む実装が来ても答えは一つ (判定の 2 実装には
+# ならない)。書き込み失敗は set -eu (リダイレクト失敗を含む) でここで
+# 落ちる。それでよい: store を設定できないまま進めても、後続の pnpm
+# install が ENOENT で落ちるだけなので、ここで早く落ちた方が原因を追い
+# やすい。
 printf 'storeDir: /src/.pnpm-store\n' > "$HOME/.config/pnpm/config.yaml"
+printf 'store-dir=/src/.pnpm-store\n' > "$HOME/.config/pnpm/rc"
 
 # clone 用トークンは checkout 後に破棄する。以降 exec で走るのは
 # checkout 済みの信頼しないコードであり、そこから /run/secrets/GH_TOKEN

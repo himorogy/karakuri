@@ -457,7 +457,7 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 	t="$(mktemp -d)"
 	make_entrypoint "$t"
 	: >"$FAKE_PNPM_ARGV_FILE"
-	rm -f "$HOME/.config/pnpm/config.yaml"
+	rm -f "$HOME/.config/pnpm/config.yaml" "$HOME/.config/pnpm/rc"
 	printf 'FOO=bar\n' |
 		env GIT_REPO="$BARE_REPO" GIT_REF="$COMMIT_SHA" "$t/entrypoint.sh" true >/dev/null 2>&1
 	yaml="$(cat "$HOME/.config/pnpm/config.yaml" 2>/dev/null)"
@@ -465,6 +465,15 @@ if [ "$HAVE_GIT" -eq 1 ]; then
 		ok "entrypoint が config.yaml 直書きで store を <tmpfs 上の /src> へ向ける"
 	else
 		ng "entrypoint が config.yaml 直書きで store を <tmpfs 上の /src> へ向ける (got: $yaml)"
+	fi
+	# self-switch した v10 系の install は config.yaml ではなく rc (ini) を
+	# 読む (実機 install で実測。regression: config.yaml 単独に削って
+	# 実機の pnpm install が既定 store の ENOENT で死んだ)。
+	rcfile="$(cat "$HOME/.config/pnpm/rc" 2>/dev/null)"
+	if [ "$rcfile" = "store-dir=$t/src/.pnpm-store" ]; then
+		ok "entrypoint が rc (ini) にも同じ store を書く (v10 系 install 用)"
+	else
+		ng "entrypoint が rc (ini) にも同じ store を書く (got: $rcfile)"
 	fi
 	if [ ! -s "$FAKE_PNPM_ARGV_FILE" ]; then
 		ok "entrypoint は pnpm を一度も起動しない (self-switch を踏まない)"
