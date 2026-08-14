@@ -377,6 +377,13 @@ function verifyHook(root, hooksDir) {
 				`${file} runs ${HOOK_PATH}, but there is no such file: install the dependencies of this project`,
 			);
 		}
+	} else if (content.includes("env-guard-scan")) {
+		// 検査の実体は共有スキャナ env-guard-scan であり、この hook 経由で
+		// 呼ぶことは要件ではない。dev container のイメージが core.hooksPath に
+		// 置く hook はスキャナを直接呼ぶ設計で、そこを「node_modules の hook を
+		// 呼んでいない」と落とすのは偽陰性になる (コンテナ内で --check を
+		// 実行した実測で発覚)。スキャナへの言及があれば検査は繋がっていると
+		// みなす。
 	} else {
 		problems.push(`${file} does not run ${HOOK_PATH}`);
 	}

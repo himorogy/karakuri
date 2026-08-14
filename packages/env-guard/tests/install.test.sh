@@ -403,6 +403,44 @@ else
 fi
 rm -rf "$t"
 
+# --- 10. core.hooksPath がスキャナ直呼びの hook (イメージ方式) を指すとき --------
+#
+# dev container のイメージは core.hooksPath に置いた hook から共有スキャナ
+# env-guard-scan を直接呼ぶ。検査の実体はスキャナであり、node_modules の
+# hook ファイルを経由することは要件ではないので、--check はこれを「検査が
+# 繋がっている」として通す (コンテナ内で --check が ❌ になる偽陰性を
+# 実測で踏んだ regression)。node_modules 経路もイメージ hook も呼ばない
+# ファイルは従来どおり落とす (否定対照)。
+
+t="$(mktemp -d)"
+make_repo "$t"
+printf '%s' "$PKG_WITH_SGH" >"$t/repo/package.json"
+fake_simple_git_hooks "$t/repo"
+link_package "$t/repo"
+run_cli "$t/repo" install >/dev/null 2>&1
+mkdir -p "$t/imagehooks"
+printf '#!/bin/sh\ngit diff --cached --name-only | /usr/local/bin/env-guard-scan\n' >"$t/imagehooks/pre-commit"
+chmod +x "$t/imagehooks/pre-commit"
+git -C "$t/repo" config core.hooksPath "$t/imagehooks"
+run_cli "$t/repo" install --check >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "core.hooksPath がスキャナ直呼び hook を指す -> --check は 0"
+else
+	ng "core.hooksPath がスキャナ直呼び hook を指す -> --check は 0 (rc=$rc)"
+fi
+
+# 否定対照: スキャナにも node_modules の hook にも触れないファイルは落ちる。
+printf '#!/bin/sh\nexit 0\n' >"$t/imagehooks/pre-commit"
+run_cli "$t/repo" install --check >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	ok "否定対照: 検査に繋がらない hooksPath ファイル -> --check は非ゼロ"
+else
+	ng "否定対照: 検査に繋がらない hooksPath ファイル -> --check は非ゼロ"
+fi
+rm -rf "$t"
+
 # --- result ----------------------------------------------------------------------
 
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
