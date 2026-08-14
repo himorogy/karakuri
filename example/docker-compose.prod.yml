@@ -31,6 +31,15 @@ services:
     image: ghcr.io/himorogy/runtime-base@sha256:f4b561fb7917d1eec1a5ddce7d39406b7ac55e34e422011171c30de4e07cce25 # v1.2.1
 
     entrypoint: ["/usr/local/bin/prod-entrypoint.sh"]
+
+    # pid 1 に docker の init (tini) を立てる。entrypoint は最後に "$@" を
+    # exec するため、これが無いとコンテナの pid 1 は実行コマンドそのもの
+    # (対話二段構えなら sleep) になる。pid 1 にはハンドラ未設定のシグナルが
+    # カーネルによって配達されないため、attached の Ctrl-C も docker stop の
+    # SIGTERM も無視され、stop は 10 秒後の SIGKILL 頼みになる (実測)。
+    # init を挟むとシグナルが子へ転送され、Ctrl-C 一発で終了 → --rm の
+    # 回収まで届く。
+    init: true
     working_dir: /src
 
     # GIT_REPO / GIT_REF は秘匿情報ではないため通常の環境変数で渡してよい。

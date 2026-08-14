@@ -741,6 +741,7 @@ docker exec -it -w /src <container> bash
 - entrypoint 完了後に exec するため `/run/secrets` は注入済み。対話シェルの起動時に注入済み鍵名が表示される（§4.3）
 - 注入 1 回・clone 1 回でセッションを維持でき、その中で dryrun と適用を続けられる
 - `sleep infinity` ではなく時間を切る。退出後の `docker stop` 忘れがそのまま放置され続けない。即回収するなら退出後に端末 1 を Ctrl-C（または `docker stop`）
+- Ctrl-C / `docker stop` が効くのは compose の **`init: true` が前提**（rev.9 実測）。entrypoint は最後に `"$@"` を exec するため、init なしではコンテナの pid 1 が実行コマンド（二段構えでは `sleep`）そのものになり、pid 1 にはハンドラ未設定のシグナルが配達されない — Ctrl-C も SIGTERM も無視され、`docker stop` は 10 秒後の SIGKILL 頼み、`--rm` の自動回収にも届かず `docker rm -f` が要る状態を実測した。`init: true`（tini が pid 1）でシグナルが子へ転送され、Ctrl-C 一発で `--rm` の回収まで通る
 - セッションを跨ぐと `/src`（tmpfs）は消え、再 clone になる。これは D18 の代償であり緩めない — named volume に戻すと、前回実行のコードが打ったローカル ref の汚染と `.git/config` 経由のコード実行（いずれも実測で再現済み。§4.2）が復活する
 
 ---
@@ -960,7 +961,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] prod container: 必要 secret を欠いた状態で下流コマンドが認証失敗として**顕在化**すること（`$HOME` tmpfs により fallback 資格情報が拾われないことを含む）
 - [ ] dev container に `/var/run/docker.sock` がマウントされていないこと（§2.1 の前提。devcontainer 構成変更時の恒常チェック）
 - [ ] `logging: driver: none` でもアタッチ時に stdout が手元に表示されること
-- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが prod-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。attached 形での TTY シェル取得・注入済み確認・退出後の回収は未実測
+- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが prod-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。**attached 形は実測で成立**（2026-08-14: TTY シェル取得・prod-context の鍵名表示・`/run/prod-ref`・`pnpm install` 完走・`_wrangler` / `_dotenvx` 動作）。回収のみ追加実測が要る: pid 1 = `sleep` が Ctrl-C / SIGTERM を無視するため `init: true` を compose に追加した（§6.4）— init 有りで Ctrl-C 一発 → `--rm` 回収まで通ることの確認が残り
 - [ ] `GIT_REF` 未指定時に compose が失敗すること
 - [ ] `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走すること（`/home/node` の書き込み先、named volume `/src` の所有権を含む）
 - [ ] `/src` 非空・`.git` 無しの状態（前回失敗の残骸）から entrypoint が復帰できること
