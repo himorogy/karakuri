@@ -43,8 +43,10 @@ export PROD_COMPOSE_FILE=~/.config/prj1/compose.prod.yaml
 alias prj1-prod-deploy='PROD_BROKER=$HOME/.local/bin/prj1-broker \
   GIT_REPO=https://github.com/acme/app.git \
   GIT_REF=1234567890abcdef1234567890abcdef12345678 \
-  prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy'
+  prod-run.sh sh -c "pnpm install --frozen-lockfile && dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy"'
 ```
+
+`pnpm install` を毎回連結するのは `/src` が tmpfs だから — 一発コマンドは常に clone 直後の素の working tree で走り、node_modules は存在しない。プロジェクト側に `"release:prod": "pnpm i --frozen-lockfile && pnpm deploy:prod"` のような script を切って `prod-run.sh pnpm release:prod` とする方が読みやすい。
 
 broker の標準は Bitwarden CLI（`templates/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
 
