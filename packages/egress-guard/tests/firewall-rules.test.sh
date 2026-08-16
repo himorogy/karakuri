@@ -359,6 +359,70 @@ assert_before() { # <label> <haystack> <first> <second>
 	fi
 }
 
+# Identifies the panic table.
+#
+# The panic table has no rule of its own to grep for: it is defined by what it
+# leaves out, and every accept it does carry (the two loopback rules) is also in
+# the bootstrap and final tables. So a single assert_contains cannot tell "the
+# panic table is live" from "the run stopped one table earlier" - it can only be
+# told apart by the things no other table this script generates is without.
+#
+# This used to be done by looking for the sshd rule, which the panic table
+# carried and the bootstrap table did not. That marker is gone: sshd is opt-in
+# now, and the panic table applied before the configuration has been read cannot
+# have it at all. The properties below replace it and do not depend on any
+# configuration:
+#
+#   - the bootstrap table pins DNS and keeps ESTABLISHED,RELATED; panic has
+#     neither, so a container in the panic table cannot even resolve a name
+#   - the final table carries the allowlist, the recorder, the LOG rules and the
+#     REJECT; panic has none of them
+#
+# Anything the configuration can add to the panic table (the sshd rules) is
+# checked separately, so this stays usable for both cases.
+assert_is_panic_table() { # <label> <table>
+	[ "$#" -eq 2 ] || {
+		ng "assert_is_panic_table got $# arguments, expected 2: ${1:-?}"
+		return
+	}
+	local label="$1" table="$2" pattern problems=""
+
+	for pattern in \
+		'^:INPUT DROP' \
+		'^:FORWARD DROP' \
+		'^:OUTPUT DROP' \
+		'^-A INPUT -i lo -j ACCEPT' \
+		'^-A OUTPUT -o lo -j ACCEPT'; do
+		printf '%s\n' "$table" | grep -q -- "$pattern" ||
+			problems="$problems missing '$pattern';"
+	done
+
+	# Each of these belongs to a table the run could have stopped at instead.
+	for pattern in \
+		'--dport 53' \
+		'ctstate ESTABLISHED,RELATED' \
+		'match-set' \
+		'SET --add-set' \
+		'-j LOG' \
+		'-j REJECT'; do
+		printf '%s\n' "$table" | grep -q -- "$pattern" &&
+			problems="$problems not the panic table, it carries '$pattern';"
+	done
+
+	if [ -z "$table" ]; then
+		ng "$label (no table was restored)"
+	elif [ -n "$problems" ]; then
+		ng "$label ($problems)"
+	else
+		ok "$label"
+	fi
+}
+
+# The rule shape, not the port number. "port 22 is absent" would still pass if a
+# default came back on some other port, which is the failure this has to catch.
+SSHD_IN_RULE='^-A INPUT -p tcp --dport [0-9][0-9]* '
+SSHD_OUT_RULE='^-A OUTPUT -p tcp --sport [0-9][0-9]* '
+
 # --- enforce mode ------------------------------------------------------------
 
 echo "enforce mode"
@@ -413,7 +477,13 @@ assert_contains "the DNS drop log is scoped to udp/53" "$T4" \
 	'-A OUTPUT -p udp --dport 53 -m limit .* --log-prefix "fw-dns-drop: "'
 assert_contains "the DNS drop log is scoped to tcp/53" "$T4" \
 	'-A OUTPUT -p tcp --dport 53 -m limit .* --log-prefix "fw-dns-drop: "'
-assert_contains "the sshd port is reachable" "$T4" '-A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT'
+# sshdPort is opt-in and this configuration does not ask for it, so no inbound
+# port may be opened - not port 22, not any other. An accepted inbound
+# connection also makes the replies on it ESTABLISHED, and the OUTPUT accept
+# above lets those out without consulting the allowlist, so an unasked-for
+# listening port would be a way out of the container as much as a way in.
+assert_absent "no inbound port is opened when sshdPort is omitted" "$T4" "$SSHD_IN_RULE"
+assert_absent "no inbound reply channel is opened either" "$T4" "$SSHD_OUT_RULE"
 assert_contains "the configured host port is allowed" "$T4" '-A OUTPUT -d 172.17.0.1/32 -p tcp --dport 5432 -j ACCEPT'
 # Docker Desktop answers on an address that is not the default gateway, so the
 # gateway alone would leave a host-local database unreachable.
@@ -468,6 +538,11 @@ assert_absent "the bootstrap table does not open the host gateway" "$TB" '172.17
 # fallback for a rejected transaction; a rejected bootstrap is fatal, so it must
 # not carry the rule at all.
 assert_absent "the bootstrap table has no recorder" "$TB" 'SET --add-set'
+# The bootstrap table is installed before the configuration has been read on the
+# failure paths, but on this one it is emitted after - either way an omitted
+# sshdPort has to leave it without an inbound port.
+assert_absent "the bootstrap table opens no inbound port when sshdPort is omitted" \
+	"$TB" "$SSHD_IN_RULE"
 
 LOG="$WORK/log.enforce"
 assert_contains "the staging set is built, not the live one" "$(cat "$LOG")" \
@@ -639,8 +714,11 @@ else
 fi
 assert_contains "the unlisted host check is what failed" "$(cat "$WORK/out.verifyfail")" \
 	'verify FAILED: unlisted host is blocked'
-assert_contains "a failed self verification falls back to the panic table" \
-	"$(v4_table verifyfail)" '^:OUTPUT DROP'
+# Not `^:OUTPUT DROP`: this failure happens with the final table already live,
+# and the final table drops by default too, so that assertion held whether or
+# not the panic table was ever applied.
+assert_is_panic_table "a failed self verification falls back to the panic table" \
+	"$(v4_table verifyfail)"
 
 echo "recorder fallback"
 healthy_net_stubs
@@ -677,17 +755,27 @@ else
 fi
 assert_contains "the rejection is reported" "$(cat "$WORK/out.restorefail")" \
 	'iptables-restore rejected the generated filter table'
-assert_contains "a rejected filter table falls back to the panic table" \
-	"$(v4_table restorefail)" '^-A OUTPUT -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED -j ACCEPT'
+assert_is_panic_table "a rejected filter table falls back to the panic table" \
+	"$(v4_table restorefail)"
 # The panic table is the fourth restore of the run (bootstrap, final with
-# recorder, final without, panic). Naming the count keeps the case above honest:
-# if the panic restore stopped being attempted, the assertion would still find
-# an sshd rule in whatever table happened to be last.
+# recorder, final without, panic), and the stub only advances the effective
+# table on a restore it accepted - so restores 2 and 3 are refused and 4 is the
+# one that took. Naming the count keeps the case above honest in the one way the
+# table content cannot: if the panic restore stopped being attempted altogether,
+# the effective table would be the bootstrap table, which the assertion above
+# does reject - but a fifth restore appearing, or the fallback firing a table
+# earlier than it should, would leave the content looking correct.
 if [ "$(cat "$WORK/state/v4count")" = "4" ]; then
 	ok "the panic table is a restore of its own, not the last rejected one"
 else
 	ng "the panic table is a restore of its own (v4count=$(cat "$WORK/state/v4count"))"
 fi
+# And the panic table the run fell back to is the bare one: nothing asked for an
+# sshd port, so nothing opened one on the way down either.
+assert_absent "the panic table opens no inbound port when sshdPort is omitted" \
+	"$(v4_table restorefail)" "$SSHD_IN_RULE"
+assert_absent "the panic table opens no reply channel either" \
+	"$(v4_table restorefail)" "$SSHD_OUT_RULE"
 
 echo "a rejected panic table leaves the bootstrap table in place"
 # The panic restore can be refused too - it is piped into iptables-restore with
@@ -709,8 +797,11 @@ else
 fi
 assert_contains "the effective table is still the bootstrap table" \
 	"$(v4_table panicfail)" '^-A OUTPUT -p udp --dport 53 -j DROP'
-assert_absent "the refused panic table did not take effect" \
-	"$(v4_table panicfail)" 'sport 22'
+# The resolver accept is the cleanest way to say "this is not the panic table":
+# the panic table pins no DNS at all, so a table that still lets the assigned
+# resolver be queried cannot be it.
+assert_contains "the refused panic table did not take effect" \
+	"$(v4_table panicfail)" '-d 192.168.65.7/32 -p udp --dport 53 -j ACCEPT'
 # Closed is the point, not merely "not the panic table".
 assert_contains "the bootstrap table still drops by default" \
 	"$(v4_table panicfail)" '^:OUTPUT DROP'
@@ -739,6 +830,14 @@ assert_contains "the panic table drops INPUT" "$TP" '^:INPUT DROP'
 assert_absent "the panic table keeps no outbound ESTABLISHED" "$TP" \
 	'^-A OUTPUT -m conntrack'
 assert_absent "the panic table has no allowlist" "$TP" 'match-set'
+# The panic table is the one place an inbound port would be hardest to notice,
+# because nothing in it is expected to be reachable. This configuration named no
+# sshdPort, so neither half of the sshd pair may be there.
+assert_absent "the panic table opens no inbound port when sshdPort is omitted" \
+	"$TP" "$SSHD_IN_RULE"
+assert_absent "the panic table opens no reply channel when sshdPort is omitted" \
+	"$TP" "$SSHD_OUT_RULE"
+assert_is_panic_table "the panic table is the one this run ended on" "$TP"
 assert_contains "the panic table is applied to IPv6 too" "$(v6_table panic)" '^:OUTPUT DROP'
 # Deliberately different from the final table: the panic tables drop silently on
 # both families. Fast failure is worth an explicit refusal in normal operation,
@@ -906,10 +1005,88 @@ FW_NO_GATEWAY=1
 FW_NO_HOST_INTERNAL=1
 run_firewall nohostpanic '{"version":1,"allowHostPorts":[5432]}'
 unset FW_NO_GATEWAY FW_NO_HOST_INTERNAL
-assert_contains "an unresolvable host falls back to the panic table" \
-	"$(v4_table nohostpanic)" '^-A OUTPUT -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED -j ACCEPT'
-assert_absent "that panic table has no allowlist" \
-	"$(v4_table nohostpanic)" 'match-set'
+assert_is_panic_table "an unresolvable host falls back to the panic table" \
+	"$(v4_table nohostpanic)"
+
+# --- sshdPort is opt-in ----------------------------------------------------------
+#
+# There is no built-in port any more. A configuration that says nothing gets no
+# inbound port in any table, which is asserted alongside each of those tables
+# above; what is left is the other half of the contract - a port that WAS asked
+# for has to appear in all three tables the container can end up in, because all
+# three are states it can be reached in and losing the port in any one of them
+# loses the way back into a container whose network is already closed.
+#
+# 4588 rather than 22 throughout. 22 was the old built-in default, so a rule
+# written against it could not tell "the configuration was honoured" from "the
+# default came back".
+
+echo "sshdPort"
+healthy_net_stubs
+
+run_firewall sshdport '{"version":1,"sshdPort":4588}'
+if [ "$(cat "$WORK/rc.sshdport")" = "0" ]; then
+	ok "a configuration that names an sshdPort exits 0"
+else
+	ng "a configuration that names an sshdPort exits 0 (got $(cat "$WORK/rc.sshdport"))"
+	sed 's/^/    /' "$WORK/out.sshdport" >&2
+fi
+# The bootstrap table counts: it is live for the whole rebuild, which is the
+# window in which a run that goes wrong is most likely to need a way in.
+assert_contains "the bootstrap table opens the configured port" \
+	"$(v4_table_n sshdport 1)" \
+	'^-A INPUT -p tcp --dport 4588 -m conntrack --ctstate NEW -j ACCEPT'
+assert_contains "the final table opens the configured port" \
+	"$(v4_table sshdport)" \
+	'^-A INPUT -p tcp --dport 4588 -m conntrack --ctstate NEW -j ACCEPT'
+assert_absent "the retired default port is not opened alongside it" \
+	"$(v4_table sshdport)" 'port 22 '
+assert_well_formed_table "the table with an sshd rule is still well formed" \
+	"$(v4_table sshdport)"
+
+# The panic table is where the port matters most: the run has failed, everything
+# else is shut, and this is the only inbound path left. Reached here through a
+# failure inside the apply phase, which is after the configuration has been read
+# and therefore after there is a port to open at all.
+FW_NO_GATEWAY=1
+FW_NO_HOST_INTERNAL=1
+run_firewall sshdpanic '{"version":1,"sshdPort":4588,"allowHostPorts":[5432]}'
+unset FW_NO_GATEWAY FW_NO_HOST_INTERNAL
+if [ "$(cat "$WORK/rc.sshdpanic")" != "0" ]; then
+	ok "a failure after the configuration was read still exits non-zero"
+else
+	ng "a failure after the configuration was read still exits non-zero"
+fi
+assert_is_panic_table "that failure ends on the panic table" "$(v4_table sshdpanic)"
+assert_contains "the panic table opens the configured port" \
+	"$(v4_table sshdpanic)" '^-A INPUT -p tcp --dport 4588 -j ACCEPT'
+# Without this the port is open and unusable: the panic table keeps no outbound
+# ESTABLISHED at all, so the replies of the session would be dropped on the way
+# back out. It is scoped to that one source port precisely so that it does not
+# become the general outbound ESTABLISHED accept the panic table refuses to have.
+assert_contains "the panic table lets the replies of that session back out" \
+	"$(v4_table sshdpanic)" \
+	'^-A OUTPUT -p tcp --sport 4588 -m conntrack --ctstate ESTABLISHED -j ACCEPT'
+assert_absent "the panic table does not fall back to the retired default port" \
+	"$(v4_table sshdpanic)" 'port 22 '
+
+# The one case where naming a port does not produce an sshd rule, and it is
+# deliberate: this panic table is applied before read_config has run, so the
+# port in the file has not been read, let alone validated. Opening a port the
+# script has not yet agreed to would mean trusting a number straight out of an
+# unvalidated file.
+run_firewall sshdrejected '{"version":1,"sshdPort":4588,"allowCidrs":["0.0.0.0/0"]}'
+if [ "$(cat "$WORK/rc.sshdrejected")" != "0" ]; then
+	ok "a refused configuration that names an sshdPort exits non-zero"
+else
+	ng "a refused configuration that names an sshdPort exits non-zero"
+fi
+assert_is_panic_table "a refused configuration still ends on the panic table" \
+	"$(v4_table sshdrejected)"
+assert_absent "a port named by a refused configuration is not opened" \
+	"$(v4_table sshdrejected)" "$SSHD_IN_RULE"
+assert_absent "nor is the reply channel that would go with it" \
+	"$(v4_table sshdrejected)" "$SSHD_OUT_RULE"
 
 # --- configuration source -------------------------------------------------------
 
@@ -1355,8 +1532,10 @@ fi
 assert_contains "the liveness failure names the anchor that was tried" \
 	"$(cat "$WORK/out.anchordead")" \
 	'the anchor domain did not resolve (registry.npmjs.org)'
-assert_contains "a dead network falls back to the panic table" \
-	"$(v4_table anchordead)" '^:OUTPUT DROP'
+# Same reason as the self verification case: this one fails with the bootstrap
+# table live, and that table drops by default as well.
+assert_is_panic_table "a dead network falls back to the panic table" \
+	"$(v4_table anchordead)"
 
 # --- --print-allowlist -----------------------------------------------------------
 

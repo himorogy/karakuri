@@ -1,5 +1,26 @@
 # @himorogy/egress-guard
 
+## 0.2.0
+
+### Minor Changes
+
+- **`sshdPort` を opt-in にした。既定値 `22` を廃止。**（**破壊的変更**。0.x のため minor で上げている）
+
+  0.1.x では `sshdPort` の既定値が `22` で、`firewall.json` に書かなくても 22 番の inbound が開いていた。0.2.0 では**指定したときだけ** sshd 規則（INPUT の `NEW` 許可 + 対になる OUTPUT の `ESTABLISHED` 応答）を bootstrap・最終・panic の全テーブルに出す。**書かなければどのテーブルにも出ない。**
+
+  **移行手順:**
+
+  - **listen する sshd を運用している場合** — `firewall.json` に `"sshdPort": 22`（実際に使っているポート番号）を明示する。明示すれば挙動は 0.1.x と同一
+  - **`docker exec` で入る運用（`sshd -i` の inetd モードを含む）の場合** — 何もしなくてよい。その経路は iptables を通らない
+  - 無効化のために `"sshdPort": 0` と書くことはできない（従来どおり拒否される）。無効化はキーを書かないことで表現する
+  - `0`・負値・非整数・文字列・65536 以上を拒否する挙動は従来どおり
+
+  **なぜ:** sshd 規則が bootstrap・panic テーブルにまで入る唯一の inbound 許可として特別扱いされてきた理由は「firewall 適用のどの中間状態でもオペレータの制御チャネルを切らない」ことだった。その制御チャネルが `docker exec` 上の `sshd -i` へ移行し、iptables の管轄外になったため根拠が消滅した。
+
+  加えて、INPUT の default DROP は独立したサービス保護機能ではなく **egress 規制の従属規則**である。inbound 接続を 1 本許すと、以後その接続上の送信は conntrack の `ESTABLISHED` として扱われ、**OUTPUT の allowlist を経由せずにデータを外へ出せる**（逆方向チャネル）。既定で開いていてよい性質のものではない。詳細は `docs/design.md` §2.22。
+
+  **副次的な変更:** `sshdPort` 未指定時の panic テーブルは loopback の 2 行だけになる。設定の読み込みより前に panic へ倒れた場合（所有権違反・スキーマ違反など）は、`sshdPort` を指定していても値が未確定のため sshd 行は入らない。`docker exec` は iptables を経由しないため、どちらの場合もコンテナには入れる。
+
 ## 0.1.1
 
 ### Patch Changes

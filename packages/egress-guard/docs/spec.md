@@ -188,7 +188,7 @@ live set（`egress-allow-v4`）に禁止レンジ（§3.2 の表）のアドレ�
 
 パスは環境変数からも導出しません（sudo 下の環境変数は信用できないため）。
 
-全フィールドを埋めた記入例は [`../README.md`](../README.md) の「記入例」。`allowDomains` により多くの値を入れたものが `templates/firewall.example.json` にあります。
+全フィールドを挙げた記入例は [`../README.md`](../README.md) の「記入例」。`allowDomains` により多くの値を入れたものが `templates/firewall.example.json` にあります。
 
 | フィールド | 型 | 必須 | 説明 |
 |---|---|---|---|
@@ -198,7 +198,7 @@ live set（`egress-allow-v4`）に禁止レンジ（§3.2 の表）のアドレ�
 | `allowDomains` | string[] | — | 追加許可ドメイン。**ワイルドカードは使用不可**（§9.1）。具体的なホスト名を列挙する |
 | `allowCidrs` | string[] | — | 追加許可 CIDR |
 | `allowHostPorts` | int[] | — | ホスト宛に許可する TCP ポート（§4.8） |
-| `sshdPort` | int | — | コンテナ内 sshd のポート。既定 `22`（§4.9） |
+| `sshdPort` | int | — | listen する sshd のポート。**指定したときだけ**そのポートの inbound を許可する（§4.9）。**既定値は無く、省略すると sshd 規則は一切出ない** |
 
 ファイルサイズの上限は 64 KiB です。JSON にコメントは書けません（`jq` でパースするため）。
 
@@ -407,9 +407,11 @@ panic テーブル:
 :INPUT DROP / :FORWARD DROP / :OUTPUT DROP
 -A INPUT  -i lo -j ACCEPT
 -A OUTPUT -o lo -j ACCEPT
--A INPUT  -p tcp --dport <sshdPort> -j ACCEPT
--A OUTPUT -p tcp --sport <sshdPort> -m conntrack --ctstate ESTABLISHED -j ACCEPT
+-A INPUT  -p tcp --dport <sshdPort> -j ACCEPT                                     ← sshdPort 指定時のみ
+-A OUTPUT -p tcp --sport <sshdPort> -m conntrack --ctstate ESTABLISHED -j ACCEPT  ← sshdPort 指定時のみ
 ```
+
+**sshd の 2 行は `sshdPort` が指定されているときだけ入ります**（§4.9）。**設定を読み終える前に panic に倒れた場合**（所在・所有者・スキーマの違反）**は値が確定していないため、指定の有無にかかわらず入りません。** panic テーブルは loopback だけになります。これは意図した挙動で、対話アクセスは下の理由により失われません。
 
 **OUTPUT の汎用 ESTABLISHED は含めません。** 含めると、失敗前に確立された exfil 接続が動き続けます。`docker exec` による接続はネットワークスタックを経由しないため、対話アクセスは維持されます。
 
@@ -467,7 +469,20 @@ DROP のままだと、AAAA も持つ許可先への接続が**タイムアウ�
 
 ### 4.9 INPUT 側
 
-default DROP + loopback + `ESTABLISHED,RELATED` + sshd ポートの NEW を許可。sshd のポートは `firewall.json` の `sshdPort` で上書きできます（既定 22）。
+default DROP + loopback + `ESTABLISHED,RELATED` を許可します。**inbound の `NEW` は既定でひとつも通しません。**
+
+INPUT 側の default DROP は、独立したサービス保護機能ではなく **egress 規制の従属規則**です。inbound 接続を 1 本許すと、以後その接続の上を流れる送信は conntrack の `ESTABLISHED` として扱われ、**OUTPUT の allowlist を経由せずにデータを外へ出せます**（逆方向チャネル）。INPUT を閉じているのは、この抜け道を塞ぐためです。
+
+`firewall.json` に `sshdPort` を指定したときだけ、次の 2 行を bootstrap テーブル・最終テーブル・panic テーブル（§4.6）のすべてに入れます。
+
+```
+-A INPUT  -p tcp --dport <sshdPort> -m conntrack --ctstate NEW -j ACCEPT
+-A OUTPUT -p tcp --sport <sshdPort> -m conntrack --ctstate ESTABLISHED -j ACCEPT
+```
+
+**`sshdPort` の指定は、上記の逆方向チャネルを 1 本開けることの受け入れ宣言です。** 省略すればどのテーブルにも sshd 規則は出ません。既定値はありません（listen する sshd を運用する場合は `"sshdPort": 22` のように明示します）。
+
+外から内へ入る必要が実際に生じる用途は事実上 SSH だけなので、**汎用の inbound 許可リストは持ちません。** 決定の経緯と、既定 22 を廃止した理由は [`design.md`](./design.md) §2.22。
 
 ### 4.10 遮断先の記録
 
@@ -591,8 +606,9 @@ sudoers 上、agent 自身も再実行できますが、読むのは root 所有
 5. **DNS を全開放にしない**（I4） — 割り当てられたリゾルバへの固定が本仕様の核。緩めるとトンネリングで全体が無意味化する
 6. **IPv6 を忘れない**（§4.7）
 7. **fail-closed の一貫性**（I2） — 適用フェーズに入って以降のあらゆる失敗（設定エラーを含む）は panic + exit≠0。ルール未適用で終わってよいのは、`iptables` が使えると確認する前だけ。「エラーだが全開で起動」は作らない（§4.6）
-8. **受容した残余リスク**は [`design.md`](./design.md) §3 にまとめてある。レビュー時はそこに載っていないものが新たに増えていないかを見る
-9. **不変条件を弱める変更は仕様変更としてのみ行う** — 実装・構成の変更をレビューするときは、I1〜I7 それぞれが保存されているかを確認する。保存されない変更は、この仕様書の不変条件の書き換えを伴う明示的な決定として design.md に記録する
+8. **inbound を増やす変更は egress を緩める変更として見る**（§4.9） — 許可した inbound 接続の上で返す送信は `ESTABLISHED` として OUTPUT を通り、allowlist を経由しない。`sshdPort` を既定で開く方向へ戻さないこと、用途を限定しない汎用の inbound 許可リストを足さないこと（[`design.md`](./design.md) §2.22）
+9. **受容した残余リスク**は [`design.md`](./design.md) §3 にまとめてある。レビュー時はそこに載っていないものが新たに増えていないかを見る
+10. **不変条件を弱める変更は仕様変更としてのみ行う** — 実装・構成の変更をレビューするときは、I1〜I7 それぞれが保存されているかを確認する。保存されない変更は、この仕様書の不変条件の書き換えを伴う明示的な決定として design.md に記録する
 
 ### 7.1 実装上の落とし穴（回帰させないこと）
 

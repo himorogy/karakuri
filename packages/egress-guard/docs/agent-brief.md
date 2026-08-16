@@ -162,14 +162,14 @@ Claude Code の 2 つの Web ツールは、egress から見て性質が違い�
 	"mode": "enforce",
 	"allowDomains": ["registry.example.com"],
 	"allowCidrs": ["203.0.113.0/24"],
-	"allowHostPorts": [5432],
-	"sshdPort": 22
+	"allowHostPorts": [5432]
 }
 ```
 
 守るべき制約:
 
-* **フィールドは上の 7 つだけです。** 未知のキーがあると設定全体が拒否され、コンテナは panic テーブル（loopback 以外すべて遮断）で起動します
+* **使えるフィールドは `version` / `profile` / `mode` / `allowDomains` / `allowCidrs` / `allowHostPorts` / `sshdPort` の 7 つだけです。** 未知のキーがあると設定全体が拒否され、コンテナは panic テーブル（loopback 以外すべて遮断）で起動します
+* **`sshdPort` を足す提案はしないでください。** これは inbound を 1 本開ける宣言で、開けた接続の上では allowlist を経由せずにデータを外へ出せます（逆方向チャネル）。listen する sshd を運用するかどうかは人間が決めることです
 * **`profile` は減らす方向にしか触らないでください。** 既に入っているバンドルを外すと、それに依存していた作業が止まります。増やす提案も、必要な理由を添えてください
 * **JSON にコメントは書けません。** `jq` でパースするため、JSON5 / JSONC は不正な JSON として拒否されます
 * **ワイルドカードは書けません**（`*.example.com` は拒否されます）。必要なホスト名を具体的に列挙してください

@@ -213,8 +213,6 @@ bundle_domains() {
 	return 0
 }
 
-readonly BASE_SSHD_PORT=22
-
 # The default gateway is not always the address the host answers on. Docker
 # Desktop routes host.docker.internal to a separate address, so allowHostPorts
 # has to permit both or a local database on the host stays unreachable.
@@ -319,17 +317,37 @@ declare -a PROFILE_DOMAINS=()
 declare -a CFG_DOMAINS=()
 declare -a CFG_CIDRS=()
 declare -a CFG_HOST_PORTS=()
-SSHD_PORT="$BASE_SSHD_PORT"
+# Empty means no listening sshd, which is the default and what an omitted
+# `sshdPort` means. There is no built-in port any more: SSH into this container
+# goes through `docker exec sshd -i`, which owns no listening socket and is not
+# reachable through the network stack, so nothing needs an inbound port opened
+# for it.
+#
+# An inbound port is not a small concession. A permitted inbound connection
+# becomes an ESTABLISHED conntrack entry, and the OUTPUT chain accepts
+# ESTABLISHED before it consults the allowlist - so every byte the container
+# writes back on that connection leaves without passing the allowlist at all.
+# That is a reverse channel out of the container, which is precisely what this
+# script exists to prevent. Setting `sshdPort` is the declaration that this one
+# hole is wanted; the default is not to have it.
+SSHD_PORT=""
 HOST_GATEWAY=""
 declare -a HOST_TARGETS=()
 
 # --- fail closed -------------------------------------------------------------
 
-# Panic table: everything dropped except loopback and the replies of an already
-# established inbound sshd session. Outbound ESTABLISHED is NOT kept - that
-# would let an exfil connection opened before the failure keep running, which is
-# exactly what this script exists to prevent. Interactive access through
-# `docker exec` does not use the network stack and survives regardless.
+# Panic table: everything dropped except loopback, plus - only when the
+# configuration asked for a listening sshd - the replies of an already
+# established inbound session on that port. Outbound ESTABLISHED is NOT kept -
+# that would let an exfil connection opened before the failure keep running,
+# which is exactly what this script exists to prevent. Interactive access
+# through `docker exec` does not use the network stack and survives regardless.
+#
+# This table is also applied on failures that happen BEFORE the configuration
+# has been read (a rejected schema, for instance), and there SSHD_PORT is still
+# empty, so no sshd rule is emitted. That is deliberate: at that point no port
+# has been agreed on, and inventing one would open an inbound hole the
+# configuration never asked for.
 emit_panic_filter() {
 	printf '%s\n' "*filter"
 	printf '%s\n' ":INPUT DROP [0:0]"
@@ -337,8 +355,10 @@ emit_panic_filter() {
 	printf '%s\n' ":OUTPUT DROP [0:0]"
 	printf '%s\n' "-A INPUT -i lo -j ACCEPT"
 	printf '%s\n' "-A OUTPUT -o lo -j ACCEPT"
-	printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT"
-	printf '%s\n' "-A OUTPUT -p tcp --sport $SSHD_PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT"
+	if [ -n "$SSHD_PORT" ]; then
+		printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -j ACCEPT"
+		printf '%s\n' "-A OUTPUT -p tcp --sport $SSHD_PORT -m conntrack --ctstate ESTABLISHED -j ACCEPT"
+	fi
 	printf '%s\n' "COMMIT"
 }
 
@@ -681,7 +701,8 @@ read_config() {
 		and ((.allowCidrs // []) | (type == "array") and all(.[]; type == "string"))
 		and ((.allowHostPorts // []) | (type == "array")
 			and all(.[]; (type == "number") and (floor == .)))
-		and ((.sshdPort // 22) | (type == "number") and (floor == .))
+		and ((.sshdPort == null)
+			or (((.sshdPort | type) == "number") and ((.sshdPort | floor) == .sshdPort)))
 	' "$CONFIG_FILE" >/dev/null || die "$CONFIG_FILE does not match the schema"
 
 	local version
@@ -728,8 +749,15 @@ read_config() {
 		CFG_HOST_PORTS+=("$entry")
 	done < <(jq -r '(.allowHostPorts // [])[]' "$CONFIG_FILE")
 
-	SSHD_PORT="$(jq -r '.sshdPort // 22' "$CONFIG_FILE")"
-	validate_port "$SSHD_PORT" || die "rejected sshdPort: $SSHD_PORT"
+	# `empty` rather than a default: an omitted field leaves SSHD_PORT empty and
+	# no inbound port is opened at all. Only a port that was actually written
+	# down is validated, and it is validated exactly as before - 0 is not a way
+	# to spell "disabled", it is a port number that does not exist, and it is
+	# refused. Leaving the field out is how the port is disabled.
+	SSHD_PORT="$(jq -r '.sshdPort // empty' "$CONFIG_FILE")"
+	if [ -n "$SSHD_PORT" ]; then
+		validate_port "$SSHD_PORT" || die "rejected sshdPort: $SSHD_PORT"
+	fi
 
 	# Last, so that a bundle name nobody recognises is reported after the fields
 	# that can be checked without knowing what a bundle is.
@@ -1111,7 +1139,9 @@ emit_bootstrap_v4() {
 	emit_dns_pinning 0
 	printf '%s\n' "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 	printf '%s\n' "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
-	printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -m conntrack --ctstate NEW -j ACCEPT"
+	if [ -n "$SSHD_PORT" ]; then
+		printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -m conntrack --ctstate NEW -j ACCEPT"
+	fi
 	printf '%s\n' "COMMIT"
 }
 
@@ -1135,9 +1165,15 @@ emit_filter_v4() {
 	printf '%s\n' "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 	printf '%s\n' "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
 
-	# Inbound: container sshd only, everything else is covered by the
-	# established rule above.
-	printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -m conntrack --ctstate NEW -j ACCEPT"
+	# Inbound: nothing new is accepted unless the configuration named an sshd
+	# port, in which case that one port is opened; everything else is covered by
+	# the established rule above. An accepted inbound connection also makes the
+	# container's replies on it ESTABLISHED, and the OUTPUT accept above lets
+	# those out without consulting the allowlist, so the open port is a channel
+	# out as much as in. That is why it has to be asked for.
+	if [ -n "$SSHD_PORT" ]; then
+		printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -m conntrack --ctstate NEW -j ACCEPT"
+	fi
 
 	# Host gateway is closed by default; the host carries the Tailscale network
 	# so a blanket allow would be a lateral movement path.
