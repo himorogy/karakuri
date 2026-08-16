@@ -21,7 +21,7 @@ ghcr.io/himorogy/devcontainer-base:1
 |---|---|---|---|
 | A | OS パッケージ、root 権限が要るもの、エージェントが直接使うもの | **この base image** | `FROM` の更新 |
 | B | プロジェクト別の設定ファイル（egress-guard の `firewall.json` 等） | プロジェクトの Dockerfile | プロジェクト側で更新 |
-| C | 個人の対話的体験にしか効かないもの | ホスト側 `~/.config/devc-personal/setup.sh`（compose 雛形が `/personal` へ ro mount、postStart が firewall 適用後に自動実行） | ホスト側で編集するだけ |
+| C | 個人の対話的体験にしか効かないもの | ホスト側 `~/.config/devc-personal/setup.sh`（compose 雛形が `/personal` へ ro mount、postCreate が自動実行） | ホスト側で編集するだけ |
 | D | npm で入るもの（Biome, dprint 等） | プロジェクトの devDependency | `package.json` |
 
 ### 収録判定
@@ -35,8 +35,10 @@ base に入れる条件は次のいずれか。
 
 - 人間の対話体験にしか効かない → C（個人フック `/personal/setup.sh`）。ホスト側に置いて
   ro mount するのは、ワークスペース内の gitignored スクリプトだとコンテナ内の主体が
-  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行が firewall
-  適用後なのも同じ理由（適用前に置くと無制限 egress の窓が延びる）。守備範囲は
+  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行は postCreate
+  （firewall 適用前）— 個人セットアップの実体はツール取得で、firewall 後では宛先が
+  許可されておらずブロックされる。firewall 前でも、フックを書けるのはホスト側の
+  開発者本人だけで、tracked な post-create.sh と信頼水準は同じ。守備範囲は
   対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると環境の同一性が崩れる
 - npm で入る → D（devDependency）。base に焼くとバージョンがプロジェクトの
   `package.json` と乖離し、ローカルと CI でフォーマット結果が変わる

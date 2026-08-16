@@ -54,15 +54,19 @@
 	// 注意: features も postCreateCommand も egress-guard が適用される「前」に、
 	// 復号キーが注入済みのコンテナ内で走る。egress-guard はコンテナ作成中の通信を
 	// 保護しない。詳細は README の「保護範囲」を参照。
-	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
+	//
+	// 個人設定フック（/personal は docker-compose.yaml がホスト側ディレクトリを
+	// ro mount している）もここで実行する。個人セットアップの実体はツール取得で、
+	// firewall 適用後では宛先が許可されておらずブロックされるため、他の取得を伴う
+	// セットアップと同じくこの段に置く。作成時 1 回という postCreate の意味論も
+	// インストール系に合う。firewall 前の実行だが、フック本体はホスト側 ro で
+	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルや
+	// post-create.sh と同じく開発者本人だけ。信頼水準は変わらない。
+	"postCreateCommand": "bash ./.devcontainer/post-create.sh && if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。
-	//
-	// 個人設定フック（/personal は docker-compose.yaml がホスト側ディレクトリを
-	// ro mount している）は firewall の「後」に実行する。前に置くと、個人スクリプトの
-	// 分だけ無制限 egress の窓が延びる。&& なので firewall の適用失敗時は実行されない。
-	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh && if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
+	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
 
 	// エディタが接続を報告するまでに firewall の適用を終わらせる。
 	// これは UI がどの lifecycle command を待つかの指定であって、

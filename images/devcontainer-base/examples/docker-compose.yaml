@@ -90,12 +90,13 @@ services:
       - ../..:/workspaces:cached
 
       # 個人設定フック。ホスト側の共通ディレクトリを read-only で見せ、
-      # /personal/setup.sh があれば postStartCommand が egress-guard 適用後に実行する
-      # (devcontainer.json 側)。ホスト側に置くのは、ワークスペース内の gitignored
-      # スクリプトだと「コンテナ内の主体 (エージェント・依存の postinstall) が書ける
-      # 自動実行フック」になり、git に映らないまま次回 rebuild で走る穴が開くため。
-      # ro なのでコンテナ内からは書けない。ホスト側ディレクトリはプロジェクト間で
-      # 共通。無ければ Docker が空ディレクトリを作るだけで、無害。
+      # /personal/setup.sh があれば postCreateCommand が実行する (devcontainer.json 側。
+      # 作成時 1 回・firewall 適用前 — ツール取得を伴うため)。ホスト側に置くのは、
+      # ワークスペース内の gitignored スクリプトだと「コンテナ内の主体 (エージェント・
+      # 依存の postinstall) が書ける自動実行フック」になり、git に映らないまま
+      # 次回 rebuild で走る穴が開くため。ro なのでコンテナ内からは書けない。
+      # ホスト側ディレクトリはプロジェクト間で共通。無ければ Docker が
+      # 空ディレクトリを作るだけで、無害。
       - ~/.config/devc-personal:/personal:ro
 
       # mounts の置き換え。**${devcontainerId} は Compose では使えない**ため固定名にする。
