@@ -315,8 +315,9 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
 - **crit のバージョン検証**。`crit --version` は `dev` を返すため、
   `ARG CRIT_VERSION` で指定した版が実際に入ったかをイメージ側から確認できない。
   ビルダー段で `go version -m /out/crit` を `${CRIT_VERSION}` と突き合わせれば
-  ビルド時に落とせる。あわせて
-  [monitor.yml](../../.github/workflows/monitor.yml) に crit の追従チェックがない
+  ビルド時に落とせる。追従漏れの検知は
+  [monitor.yml](../../.github/workflows/monitor.yml) が毎日 GitHub releases と照合して
+  Slack に出す（導入済み）
 - **`examples/post-create.sh` が `pnpm lint:sh` の対象外**。`lint:sh` は
   `pnpm -r` でワークスペースのパッケージだけを回るため、`images/` 以下は
   shellcheck にかからない

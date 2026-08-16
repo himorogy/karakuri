@@ -3,8 +3,8 @@ name: Registry Monitor
 # レジストリ上の版とリポジトリの状態を毎日照合し、経路を通らずに
 # 公開された版を検出する。判定の意味は docs/secure-publish.md §6 を参照。
 #
-# あわせて devcontainer base image が pin している egress-guard の版が
-# レジストリの最新から遅れていないかも見る。base の再ビルドは手動のため、
+# あわせて devcontainer base image が pin している egress-guard / crit の版が
+# 上流の最新から遅れていないかも見る。base の再ビルドは手動のため、
 # 上げ忘れをここで拾う。
 on:
   schedule:
@@ -28,6 +28,9 @@ jobs:
         shell: bash
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_MONITOR_WEBHOOK_URL }}
+          # crit の最新リリース取得 (gh api) 用。無認証だと共有ランナーの IP で
+          # レート制限に当たる。
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
 
@@ -143,6 +146,29 @@ jobs:
               escalate warn
             else
               TEXT="${TEXT}✅ egress-guard ${PINNED} は最新\n\n"
+            fi
+
+            # --- 4. base image が pin している crit の版 ---
+            # crit は無認証でリポジトリを読め agent_cmd を起動しうるため、
+            # latest 追従にはせず ARG で pin している（侵害リリースの自動流入を
+            # 防ぐ。egress-guard の pin と同じ判断）。かわりに追従漏れをここで見る。
+            CRIT_REPO="tomasz-tomczyk/crit"
+
+            CRIT_PINNED=$(sed -n 's/^ARG CRIT_VERSION=//p' "$BASE_DOCKERFILE" | head -1)
+            CRIT_LATEST=$(gh api "repos/${CRIT_REPO}/releases/latest" \
+              --jq .tag_name 2>/dev/null) || CRIT_LATEST=""
+
+            if [ -z "$CRIT_PINNED" ]; then
+              TEXT="${TEXT}⚠️ ${BASE_DOCKERFILE} から ARG CRIT_VERSION を読めない\n\n"
+              escalate warn
+            elif [ -z "$CRIT_LATEST" ]; then
+              TEXT="${TEXT}⚠️ ${CRIT_REPO} の最新リリースを取得できない\n\n"
+              escalate warn
+            elif [ "$CRIT_PINNED" != "$CRIT_LATEST" ]; then
+              TEXT="${TEXT}⚠️ crit の pin が ${CRIT_PINNED}、最新は ${CRIT_LATEST}。base の再ビルドが要る\n\n"
+              escalate warn
+            else
+              TEXT="${TEXT}✅ crit ${CRIT_PINNED} は最新\n\n"
             fi
           fi
 
