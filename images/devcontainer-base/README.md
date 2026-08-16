@@ -7,7 +7,7 @@
 ベースイメージに集約し、各プロジェクトは `FROM` で参照する。
 
 ```
-ghcr.io/himorogy/devcontainer-base:1
+ghcr.io/himorogy/devcontainer-base:2
 ```
 
 本 README は運用手順を扱う。個々の判断の根拠は、それが効いている場所（`Dockerfile` の
@@ -38,8 +38,9 @@ base に入れる条件は次のいずれか。
   書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行は postCreate
   （firewall 適用前）— 個人セットアップの実体はツール取得で、firewall 後では宛先が
   許可されておらずブロックされる。firewall 前でも、フックを書けるのはホスト側の
-  開発者本人だけで、tracked な post-create.sh と信頼水準は同じ。守備範囲は
-  対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると環境の同一性が崩れる
+  開発者本人だけで、tracked な devcontainer.json / Dockerfile と信頼水準は同じ。
+  守備範囲は対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると
+  環境の同一性が崩れる
 - npm で入る → D（devDependency）。base に焼くとバージョンがプロジェクトの
   `package.json` と乖離し、ローカルと CI でフォーマット結果が変わる
 - プロジェクト固有 → プロジェクトの Dockerfile
@@ -81,7 +82,7 @@ base に入れる条件は次のいずれか。
 
 ## プロジェクトからの使い方
 
-[examples/](./examples/) の 4 ファイルを `.devcontainer/` にコピーし、
+[examples/](./examples/) の 3 ファイルを `.devcontainer/` にコピーし、
 `<your-project>` を差し替える。
 
 ```
@@ -89,10 +90,15 @@ base に入れる条件は次のいずれか。
 ├── Dockerfile             ← examples/Dockerfile
 ├── docker-compose.yaml     ← examples/docker-compose.yaml
 ├── devcontainer.json      ← examples/devcontainer.json
-├── post-create.sh         ← examples/post-create.sh
 ├── firewall.json          ← プロジェクトの許可ドメイン
 └── devcontainer-lock.json ← Feature の版を固定。初回ビルドで生成される。コミットすること
 ```
+
+雛形に post-create.sh は無い。コンテナ作成時のセットアップは Claude Code の
+Feature（版が lock に固定される）と個人フック（`/personal/setup.sh`、層 C）の
+2 つで、プロジェクト共通のスクリプトを置く必然が無くなったため。git の認証も
+base の `GIT_ASKPASS` 焼き込みが担うので、`gh auth setup-git` のような
+セットアップは要らない。必要になったプロジェクトだけ自前で足す。
 
 雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
 プロジェクトごとにユーザー定義ネットワーク（`<name>_default`）を自動で作り、その上でだけ
@@ -139,7 +145,8 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 - **コンテナ作成中の通信**。devcontainer の lifecycle は
   `initializeCommand`（ホスト側）→ **Feature の導入** → `postCreateCommand` →
   `postStartCommand` の順。firewall を適用するのは `postStartCommand` なので、
-  Feature の取得も `post-create.sh` の `npm install` も制限なしで実行される。
+  Feature の取得も `postCreateCommand`（個人フック含む）の取得系コマンドも
+  制限なしで実行される。
   この時点で復号キーは既にコンテナ内にある。Feature を使うと版は
   `devcontainer-lock.json` に固定されるが、**固定されるのは取得物であって通信ではない**
 - **`waitFor` は待機指定であって境界ではない**。エディタが接続を報告するタイミングを
@@ -170,9 +177,9 @@ firewall を張る設計が必要になる。現状はそこまで踏み込ん�
 
 | タグ | 内容 |
 |---|---|
-| `:1` | メジャー内の最新。**利用側が参照するのはこれ** |
-| `:1.4` | マイナー内の最新 |
-| `:1.4.2` | 特定バージョン |
+| `:2` | メジャー内の最新。**利用側が参照するのはこれ** |
+| `:2.4` | マイナー内の最新 |
+| `:2.4.2` | 特定バージョン |
 | `sha-<commit>` | ビルド元コミット |
 | `:edge` | `workflow_dispatch` からの任意ビルド |
 
@@ -183,8 +190,8 @@ firewall を張る設計が必要になる。現状はそこまで踏み込ん�
 
 ```sh
 # images/devcontainer-base/ の変更を main にマージしたあと
-git tag -a devcontainer-base-v1.0.0 -m "devcontainer-base 1.0.0"
-git push origin devcontainer-base-v1.0.0
+git tag -a devcontainer-base-v2.0.0 -m "devcontainer-base 2.0.0"
+git push origin devcontainer-base-v2.0.0
 ```
 
 タグ名は `devcontainer-base-v<MAJOR>.<MINOR>.<PATCH>`。形式が違うとワークフローが
@@ -199,7 +206,7 @@ npm パッケージのリリースタグ（`@himorogy/egress-guard@0.1.0`、
 `@himorogy/devcontainer-base@1.0.0` のように npm 側の形式へ寄せないのは、npm に存在
 しないパッケージ名を騙ることになるため。タグ名を見て npm を探す人が出る。
 
-push すると `:1` / `:1.0` / `:1.0.0` / `sha-xxxxxxx` が同時に更新される。
+push すると `:2` / `:2.0` / `:2.0.0` / `sha-xxxxxxx` が同時に更新される。
 
 ### トリガーの使い分け
 
@@ -235,7 +242,7 @@ public にしておくと利用側の `docker pull` に認証が不要になる�
 確認する。手元でより詳しく見る場合は以下。
 
 ```sh
-IMAGE=ghcr.io/himorogy/devcontainer-base:1
+IMAGE=ghcr.io/himorogy/devcontainer-base:2
 
 # 1. vi が使えるか（vim-tiny が alternatives を登録しているか）
 docker run --rm "$IMAGE" vi --version
@@ -318,9 +325,6 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   ビルド時に落とせる。追従漏れの検知は
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 GitHub releases と照合して
   Slack に出す（導入済み）
-- **`examples/post-create.sh` が `pnpm lint:sh` の対象外**。`lint:sh` は
-  `pnpm -r` でワークスペースのパッケージだけを回るため、`images/` 以下は
-  shellcheck にかからない
 - **`ARG EGRESS_GUARD_VERSION` の更新運用**。egress-guard を上げるには base の再ビルドが
   要る。Renovate は入れていないので、上げる操作自体は手動のまま。上げ忘れは
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 npm と照合して Slack に出す

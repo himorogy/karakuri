@@ -14,9 +14,10 @@ pnpm 10 を使っている devcontainer を、この base image（pnpm 11）へ�
 
 ## 前提
 
-**base image はまだ GHCR に存在しない。** [`.github/workflows/devcontainer-base.yml`](../../.github/workflows/devcontainer-base.yml)
-が一度も実行されていない。移行の第一歩は、このワークフローを走らせて
-`ghcr.io/himorogy/devcontainer-base:1` を作ること。
+**本書の雛形が前提とする base は v2 系。** sshd 同梱・`GIT_ASKPASS` /
+`CRIT_PORT` の焼き込み・個人フックは v2 からで、v1 系（公開済み）には無い。
+`devcontainer-base-v2.0.0` のタグ push（[README.md](./README.md) の「リリース」）が
+まだなら、移行の第一歩はそれ。
 
 以下、**実測済み**と**リリースノート由来（未実測）**を分けて記す。実測は 2026-08-04 に
 karakuri monorepo（pnpm 11.20.0 / Node 24 / linux-arm64）で行ったもの。
@@ -261,10 +262,14 @@ volumes:
 - **Claude Code は Feature**（`ghcr.io/anthropics/devcontainer-features/claude-code`）。
   `curl | bash` と違い、版が `devcontainer-lock.json` に固定される。**このロックファイルは
   コミットすること**
-- **それ以外は `post-create.sh`**（[`examples/post-create.sh`](./examples/post-create.sh)）。
-  `postCreateCommand` から呼ぶ。codex の導入と `gh auth setup-git` を置いてある
+- **それ以外は個人フック**（ホスト側 `~/.config/devc-personal/setup.sh`。雛形の
+  compose が `/personal:ro` に mount し、`postCreateCommand` が実行する）。codex 等の
+  個人ツールはここへ。git の認証は base が焼く `GIT_ASKPASS` が
+  `/run/secrets/GH_TOKEN` から取るため、旧雛形にあった `gh auth setup-git` は不要になった
 
-`postCreateCommand` に長いワンライナーを書いていた構成からは、中身をこのスクリプトへ移す。
+`postCreateCommand` に長いワンライナーを書いていた構成からは、中身を個人フックへ移す。
+プロジェクト共通で必要なセットアップが残る場合だけ、自前の post-create.sh を作って
+`postCreateCommand` に連結する。
 
 **どちらも egress-guard が適用される前に走る。** Feature の取得も `npm install` も
 制限されない。逆に言えば、firewall の適用後に外から取ってくる作業は成立しないので、

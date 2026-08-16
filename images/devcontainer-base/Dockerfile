@@ -41,7 +41,7 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # prod-entrypoint.sh、egress-guard 本体、git hook (core.hooksPath) が
 # 既に入っている。ここでの収録方針:
 #   入れる  … npm で入らないもの、または エージェントが直接使うもの
-#   入れない… 人間の対話体験にしか効かないもの   -> 後付けスクリプト
+#   入れない… 人間の対話体験にしか効かないもの   -> 個人フック (/personal/setup.sh)
 #             npm で入るもの (Biome, dprint 等) -> プロジェクトの devDependency
 #             プロジェクト固有のもの (psql 等)  -> プロジェクトの Dockerfile
 #             prod container でも使うもの       -> images/runtime-base 側
@@ -63,7 +63,7 @@ ENV DEVCONTAINER=true
 
 # --- OS パッケージ (devcontainer 固有) -----------------------------------------
 # vim-tiny は git commit / rebase -i がエディタ不在で失敗しないための最小保険。
-# 実際に使うエディタ (micro 等) は後付けスクリプトが入れて EDITOR を上書きする。
+# 実際に使うエディタ (micro 等) は個人フックが入れて EDITOR を上書きする。
 #
 # git / gh / sudo / jq / iptables / ipset / iproute2 / dnsutils / aggregate は
 # prod container でも使うため images/runtime-base 側で既に入っている。ここで
@@ -161,7 +161,7 @@ RUN mkdir -p /commandhistory \
 
 # --- zsh 最小設定 --------------------------------------------------------------
 # /etc/zsh/zshrc は interactive shell でのみ読まれる。
-# プロンプト装飾 (starship) と fzf keybinding は後付けスクリプトが ~/.zshrc に置く。
+# プロンプト装飾 (starship) と fzf keybinding は個人フックが ~/.zshrc に置く。
 #
 # prod-context (images/runtime-base 由来) は /etc/bash.bashrc からは既に
 # source されているが、zsh は devcontainer-base 側にしかない (prod

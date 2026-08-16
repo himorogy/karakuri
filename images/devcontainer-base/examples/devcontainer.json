@@ -14,8 +14,10 @@
 	// docker-compose.yaml は親ディレクトリを /workspaces に載せているので、
 	// リポジトリ本体はその 1 階層下に現れる。
 	//
-	// **マウント先と食い違わせないこと。** ずれると postCreateCommand が exit 127 で
-	// 落ちる。エラーはコマンドの側に出るので、原因がマウント先の不一致だと気づきにくい。
+	// **マウント先と食い違わせないこと。** ずれてもエラーでは止まらず、エディタが
+	// 空の（存在しない）フォルダを開く形で現れる。かつては postCreateCommand の
+	// 相対パス実行が exit 127 で落ちて検出器になっていたが、その形の実行は
+	// 無くなったので、症状から原因に辿り着きにくい。
 	"workspaceFolder": "/workspaces/<your-project>",
 
 	"remoteUser": "node",
@@ -60,9 +62,9 @@
 	// firewall 適用後では宛先が許可されておらずブロックされるため、他の取得を伴う
 	// セットアップと同じくこの段に置く。作成時 1 回という postCreate の意味論も
 	// インストール系に合う。firewall 前の実行だが、フック本体はホスト側 ro で
-	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルや
-	// post-create.sh と同じく開発者本人だけ。信頼水準は変わらない。
-	"postCreateCommand": "bash ./.devcontainer/post-create.sh && if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
+	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルと同じく
+	// 開発者本人だけ。信頼水準は変わらない。
+	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。

@@ -24,7 +24,7 @@ services:
       # このファイルからの相対。firewall.json も .devcontainer/ にある前提。
       context: .
       dockerfile: Dockerfile
-      # **必須。** 浮動タグ :1 を参照するので、これがないとローカルに残った古い base が
+      # **必須。** 浮動タグ :2 を参照するので、これがないとローカルに残った古い base が
       # 使われ続け、リビルドしても更新が反映されない。
       # devcontainer.json の "build": { "options": ["--pull"] } は dockerComposeFile を
       # 使うと効かないため、Compose 側のこれが代わりになる。
@@ -85,8 +85,9 @@ services:
       # 解決できずに壊れる。同居する兄弟ディレクトリがコンテナから見えるのは
       # 引き換え。worktree を使わないなら ..:/workspaces/<your-project> でよい。
       #
-      # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれると
-      # postCreateCommand が exit 127 で落ち、原因に辿り着きにくい。
+      # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれても
+      # エラーでは止まらず、エディタが空のフォルダを開く形で現れる
+      # (devcontainer.json 側のコメントを参照)。
       - ../..:/workspaces:cached
 
       # 個人設定フック。ホスト側の共通ディレクトリを read-only で見せ、
