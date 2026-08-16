@@ -58,7 +58,11 @@
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。
-	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
+	//
+	// 個人設定フック（/personal は docker-compose.yaml がホスト側ディレクトリを
+	// ro mount している）は firewall の「後」に実行する。前に置くと、個人スクリプトの
+	// 分だけ無制限 egress の窓が延びる。&& なので firewall の適用失敗時は実行されない。
+	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh && if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
 
 	// エディタが接続を報告するまでに firewall の適用を終わらせる。
 	// これは UI がどの lifecycle command を待つかの指定であって、

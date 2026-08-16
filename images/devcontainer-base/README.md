@@ -21,7 +21,7 @@ ghcr.io/himorogy/devcontainer-base:1
 |---|---|---|---|
 | A | OS パッケージ、root 権限が要るもの、エージェントが直接使うもの | **この base image** | `FROM` の更新 |
 | B | プロジェクト別の設定ファイル（egress-guard の `firewall.json` 等） | プロジェクトの Dockerfile | プロジェクト側で更新 |
-| C | 個人の対話的体験にしか効かないもの | dotfiles の後付けスクリプト | 実行するだけ |
+| C | 個人の対話的体験にしか効かないもの | ホスト側 `~/.config/devc-personal/setup.sh`（compose 雛形が `/personal` へ ro mount、postStart が firewall 適用後に自動実行） | ホスト側で編集するだけ |
 | D | npm で入るもの（Biome, dprint 等） | プロジェクトの devDependency | `package.json` |
 
 ### 収録判定
@@ -33,7 +33,11 @@ base に入れる条件は次のいずれか。
 
 入れない条件。
 
-- 人間の対話体験にしか効かない → C（後付けスクリプト）
+- 人間の対話体験にしか効かない → C（個人フック `/personal/setup.sh`）。ホスト側に置いて
+  ro mount するのは、ワークスペース内の gitignored スクリプトだとコンテナ内の主体が
+  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行が firewall
+  適用後なのも同じ理由（適用前に置くと無制限 egress の窓が延びる）。守備範囲は
+  対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると環境の同一性が崩れる
 - npm で入る → D（devDependency）。base に焼くとバージョンがプロジェクトの
   `package.json` と乖離し、ローカルと CI でフォーマット結果が変わる
 - プロジェクト固有 → プロジェクトの Dockerfile
@@ -48,7 +52,15 @@ base に入れる条件は次のいずれか。
   （`curl` と `jq` は上の行と `node:24` に含まれる）
 - egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`ARG EGRESS_GUARD_VERSION` で pin）と
   `/etc/sudoers.d/node-firewall`
-- `crit`（`CRIT_HOST=0.0.0.0`、更新チェック無効）
+- `crit`（bind は crit 既定の `127.0.0.1` のまま。`CRIT_PORT=4588` をイメージが固定、
+  更新チェック無効。根拠と上書き方法は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
+- `openssh-server` + `/usr/local/sbin/sshd-inetd`（ホストからの SSH port forwarding 用。
+  listen する sshd は起動せず、`docker exec` の ProxyCommand から inetd モードで使う。
+  ホスト鍵は初回接続時にコンテナごとに生成。認可鍵は dev-inject が注入する
+  `/run/secrets/SSH_AUTHORIZED_KEYS` と `~/.ssh/authorized_keys` の両対応。
+  [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
+- `GIT_ASKPASS=/usr/local/bin/git-askpass`（ENV と `/etc/environment` の両方。
+  SSH セッションには ENV が届かないため）
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
   `WORKDIR` は `/workspaces`（複数形。devcontainer の既定に合わせている）
@@ -59,7 +71,7 @@ base に入れる条件は次のいずれか。
   `COPY` 元がプロジェクトのビルドコンテキストにあり base のビルド時には存在しない。
   プロジェクトの Dockerfile で入れる（[examples/Dockerfile](./examples/Dockerfile)）。
   egress-guard のうち base に入らないのはこれだけ
-- `starship` / `helix` / `micro` / `eza` / `bat` / `fzf` / `delta` / `herdr` / `ax` … dotfiles の後付けスクリプト
+- `starship` / `helix` / `micro` / `eza` / `bat` / `fzf` / `delta` / `herdr` / `ax` … 個人フック（`/personal/setup.sh`）
 - Biome / dprint … devDependency
 - `postgresql-client` 等のプロジェクト固有パッケージ … プロジェクトの Dockerfile
 
@@ -68,7 +80,7 @@ base に入れる条件は次のいずれか。
 ## プロジェクトからの使い方
 
 [examples/](./examples/) の 4 ファイルを `.devcontainer/` にコピーし、
-`<your-project>` と `CRIT_PORT` を差し替える。
+`<your-project>` を差し替える。
 
 ```
 .devcontainer/
@@ -333,6 +345,6 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   話すのに `AF_INET SOCK_RAW` を開くため、そもそも `CAP_NET_RAW` を要求するはずだが、
   これは未検証。イメージができたら
   `--cap-drop=NET_RAW --cap-add=NET_ADMIN` で起動し、init が失敗することで確かめられる
-- **dotfiles の後付けスクリプトへの移管は行わない。** base の守備範囲外として整理した
+- **個人フックへ移管したツール群は base に戻さない。** base の守備範囲外として整理した
   ツール群（`starship` / `helix` / `micro` / `eza` / `bat` / `fzf` / `delta` / `herdr` /
-  `ax`）は、base から外したままにする
+  `ax`）は、`/personal/setup.sh` 側に置いたままにする

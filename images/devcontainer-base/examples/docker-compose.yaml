@@ -1,5 +1,5 @@
 # プロジェクト側 docker-compose.yaml の雛形。
-# .devcontainer/docker-compose.yaml としてコピーし、<your-project> と CRIT_PORT を差し替える。
+# .devcontainer/docker-compose.yaml としてコピーし、<your-project> を差し替える。
 #
 # egress-guard が第一に推奨する構成が Compose。理由はネットワークにある。
 # Compose はプロジェクトごとにユーザー定義ネットワーク (<name>_default) を自動で作り、
@@ -41,12 +41,13 @@ services:
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
       CLAUDE_CONFIG_DIR: /home/node/.claude
-      # 下の ports と同じ値にする。
-      CRIT_PORT: "4517"
-      # git の認証を /run/secrets/GH_TOKEN から取る（注入されていなければ、認証が
-      # 要る操作が非ゼロ終了して顕在化する）。パス自体は秘匿情報ではないので、
-      # 環境変数で渡してよい。
-      GIT_ASKPASS: /usr/local/bin/git-askpass
+      # CRIT_PORT (既定 4588) と GIT_ASKPASS は base イメージが ENV と
+      # /etc/environment の両方で設定済み。ここには書かない — compose の
+      # environment: は docker exec 経由のシェルにしか届かず、SSH セッション
+      # (PAM が /etc/environment から環境を組み立てる) には効かないため、
+      # ここで上書きすると経路によって値が食い違う。プロジェクトで CRIT_PORT を
+      # ずらす場合はプロジェクトの Dockerfile で両方を上書きする
+      # (base の PORT-FORWARDING.md 参照)。
 
     # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
     # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと
@@ -61,11 +62,19 @@ services:
     # かわりに、コンテナ起動後にホスト側の dev-inject スクリプトで上の tmpfs
     # （/run/secrets）へ注入する。
 
-    # runArgs の -p の置き換え。crit のポート転送。
-    # プロジェクトごとに重複しない値を割り当てる。base で CRIT_HOST=0.0.0.0 を
-    # 設定済みのため、この転送が実際に届く。127.0.0.1 に固定してホスト外へ露出させない。
-    ports:
-      - "127.0.0.1:4517:4517"
+    # ports: は置かない。
+    #
+    # egress-guard が INPUT を DROP しており、許可されるのは lo と
+    # ESTABLISHED,RELATED と sshd ポートだけ。publish してもパケットはコンテナ
+    # まで届いた時点で落ちるため、ホストからは接続が pending のまま返らない。
+    #
+    # コンテナ内のサービスへはホスト側の SSH port forwarding で到達する。
+    # ProxyCommand が docker exec 経由で sshd -i (inetd モード、listen ソケット
+    # を持たない) を起動するため、転送先への接続はコンテナ内 loopback から出る。
+    # これが lo の ACCEPT に当たるので firewall に触れない。VS Code の自動転送も
+    # 同じ経路で、いずれの場合も compose の publish は使われない。
+    #
+    # 設定例は base の PORT-FORWARDING.md を参照。
 
     volumes:
       # workspaceMount の置き換え。このファイルからの相対なので、../.. は
@@ -79,6 +88,15 @@ services:
       # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれると
       # postCreateCommand が exit 127 で落ち、原因に辿り着きにくい。
       - ../..:/workspaces:cached
+
+      # 個人設定フック。ホスト側の共通ディレクトリを read-only で見せ、
+      # /personal/setup.sh があれば postStartCommand が egress-guard 適用後に実行する
+      # (devcontainer.json 側)。ホスト側に置くのは、ワークスペース内の gitignored
+      # スクリプトだと「コンテナ内の主体 (エージェント・依存の postinstall) が書ける
+      # 自動実行フック」になり、git に映らないまま次回 rebuild で走る穴が開くため。
+      # ro なのでコンテナ内からは書けない。ホスト側ディレクトリはプロジェクト間で
+      # 共通。無ければ Docker が空ディレクトリを作るだけで、無害。
+      - ~/.config/devc-personal:/personal:ro
 
       # mounts の置き換え。**${devcontainerId} は Compose では使えない**ため固定名にする。
       # 名前が固定なので、プロジェクトをまたいで衝突しないよう <your-project> を含める。

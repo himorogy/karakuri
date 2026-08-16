@@ -78,8 +78,40 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ripgrep \
       fd-find \
       vim-tiny \
+      openssh-server \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && rm -f /etc/ssh/ssh_host_* \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- sshd (inetd モード専用) ----------------------------------------------------
+# ホストからの SSH port forwarding 用。listen する sshd デーモンは起動しない。
+# ホスト側 ~/.ssh/config の ProxyCommand が
+#   docker exec -i -u root <container> /usr/local/sbin/sshd-inetd
+# でこのラッパーを起動し、SSH セッションは docker exec のパイプ上を流れる。
+# コンテナに TCP の口は開かない。詳細は PORT-FORWARDING.md。
+#
+# openssh-server の postinst はビルド時にホスト鍵を生成してしまう。上の RUN で
+# 削除しているのは、鍵がイメージに焼かれて全コンテナ同一鍵になるのを防ぐため。
+# ラッパーが初回接続時にコンテナごとの鍵を生成する。
+#
+# mkdir -p /run/sshd は privilege separation ディレクトリ。/run を tmpfs にする
+# 構成 (examples/docker-compose.yaml) では起動のたびに消えるため、毎回作る。
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      '# sshd を inetd モードで起動する。ProxyCommand (docker exec) 専用。' \
+      'set -eu' \
+      'mkdir -p /run/sshd' \
+      'ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1 || ssh-keygen -A' \
+      'exec /usr/sbin/sshd -i -e "$@"' \
+    > /usr/local/sbin/sshd-inetd \
+    && chmod 0755 /usr/local/sbin/sshd-inetd \
+    && printf '%s\n' \
+         '# 認可鍵は dev-inject (broker) が /run/secrets へ注入したものを第一に読む。' \
+         '# 専用の注入スクリプトを不要にするため。GH_TOKEN 等の secret と同じ 1 回の' \
+         '# dev-inject で SSH も有効になる (公開鍵は秘密ではない。搬送の一本化が目的)。' \
+         '# ~/.ssh/authorized_keys は broker を使わない導入形態向けに残す。' \
+         'AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys' \
+       > /etc/ssh/sshd_config.d/60-authorized-keys.conf
 
 # --- crit ---------------------------------------------------------------------
 # Claude Code 連携がコンテナ内の crit CLI とローカル daemon を前提とするため、
@@ -87,11 +119,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # (設計書 §2.1)、crit は devcontainer-base 側だけの「能力」である。
 COPY --from=crit-builder /out/crit /usr/local/bin/crit
 
-# 0.0.0.0 で待ち受けないと devcontainer.json の runArgs (-p) による転送が届かない。
+# CRIT_HOST は設定しない (crit の既定 127.0.0.1 に委ねる)。crit は認証を持たず、
+# リポジトリのファイルを読め、設定された agent_cmd を起動しうるため、意図的に
+# loopback のみへ bind する設計になっている。到達経路は VS Code の自動転送も
+# SSH port forwarding もコンテナ内 loopback から接続するため、これで足りる。
+# compose の ports: publish は egress-guard の INPUT DROP でそもそも届かない
+# (PORT-FORWARDING.md)。旧来の 0.0.0.0 上書きは publish 前提の名残であり廃止した。
+#
+# CRIT_PORT: crit の既定はランダムポート。ホスト側 ~/.ssh/config の LocalForward
+# を静的に書けるよう、イメージが既定値を固定する。プロジェクト側の上書き方法は
+# PORT-FORWARDING.md (compose の environment: では SSH セッションに届かない)。
+#
 # 更新チェックは起動の決定性と egress の予測可能性のために無効化する。
-# プロジェクトごとの CRIT_PORT は devcontainer.json 側で設定する。
-ENV CRIT_HOST=0.0.0.0 \
-    CRIT_NO_UPDATE_CHECK=1
+#
+# GIT_ASKPASS: git の認証を /run/secrets/GH_TOKEN から取る (注入されていなければ、
+# 認証が要る操作が非ゼロ終了して顕在化する)。スクリプト本体は runtime-base が焼く。
+ENV CRIT_PORT=4588 \
+    CRIT_NO_UPDATE_CHECK=1 \
+    GIT_ASKPASS=/usr/local/bin/git-askpass
+
+# Dockerfile の ENV は docker exec 経由のシェル (VS Code 含む) にしか届かない。
+# sshd はクライアント側の environ を引き継がず、セッションの環境は PAM (pam_env)
+# が /etc/environment から組み立てる。SSH セッションにも同じ値を届けるため、
+# ENV と /etc/environment の両方に書く (値の原本は上の ENV。ここは転記)。
+RUN printf '%s\n' \
+      "CRIT_PORT=\"${CRIT_PORT}\"" \
+      "CRIT_NO_UPDATE_CHECK=\"${CRIT_NO_UPDATE_CHECK}\"" \
+      "GIT_ASKPASS=\"${GIT_ASKPASS}\"" \
+    >> /etc/environment
 
 RUN crit --version
 
