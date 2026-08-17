@@ -14,10 +14,9 @@ pnpm 10 を使っている devcontainer を、この base image（pnpm 11）へ�
 
 ## 前提
 
-**本書の雛形が前提とする base は v2 系。** sshd 同梱・`GIT_ASKPASS` /
-`CRIT_PORT` の焼き込み・個人フックは v2 からで、v1 系（公開済み）には無い。
-`devcontainer-base-v2.0.0` のタグ push（[README.md](./README.md) の「リリース」）が
-まだなら、移行の第一歩はそれ。
+**本書の雛形が前提とする base は v2 系（`devcontainer-base-v2.0.0` として公開済み）。**
+sshd 同梱・`GIT_ASKPASS` / `CRIT_PORT` の焼き込み・個人フックは v2 からで、
+v1 系には無い。
 
 以下、**実測済み**と**リリースノート由来（未実測）**を分けて記す。実測は 2026-08-04 に
 karakuri monorepo（pnpm 11.20.0 / Node 24 / linux-arm64）で行ったもの。

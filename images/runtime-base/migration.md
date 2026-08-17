@@ -63,7 +63,7 @@ git status --porcelain --ignored | grep -E '\.env'
 
 ## 2. devcontainer を新しい base へ載せ替える
 
-`.devcontainer/Dockerfile` の `FROM` を `ghcr.io/himorogy/devcontainer-base:1` に向ける。
+`.devcontainer/Dockerfile` の `FROM` を `ghcr.io/himorogy/devcontainer-base:2` に向ける。
 devcontainer-base は runtime-base を継承しているので、この時点で shim・git hook・
 `prod-entrypoint.sh` が dev container にも入る。
 

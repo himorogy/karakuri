@@ -1,10 +1,10 @@
 # プロジェクト側 Dockerfile の雛形。
 # .devcontainer/Dockerfile としてコピーし、<your-project> と firewall.json を差し替える。
 
-# 浮動タグ :1 を参照する。メジャー内の改善は再ビルドで自動的に取り込まれる。
+# 浮動タグ :2 を参照する。メジャー内の改善は再ビルドで自動的に取り込まれる。
 # 再現性の要求が強いプロジェクト（規制対応など）だけ digest pin に切り替える。
 #   FROM ghcr.io/himorogy/devcontainer-base@sha256:...
-FROM ghcr.io/himorogy/devcontainer-base:1
+FROM ghcr.io/himorogy/devcontainer-base:2
 
 # --- egress-guard ---------------------------------------------------------------
 # OS パッケージ・スクリプト本体 (/usr/local/bin/init-project-firewall.sh)・sudoers は

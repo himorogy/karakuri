@@ -119,12 +119,14 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
      "dev": "_dotenvx run -f .env.dev --strict -- next dev"
    }
    ```
-3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（compose の `environment:` で設定済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
+3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（devcontainer-base v2 が ENV と `/etc/environment` の両方に焼き込み済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
 
 dev compose 側の前提（本ディレクトリの `docker-compose.yaml` に反映済み）:
 
 - `/run` が tmpfs（`tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]`）。**これが無いと `/run/secrets` はコンテナの writable layer = ホスト側の不揮発ディスクへ書かれ、平文廃止の意味が消える。** オプション無しの短縮形は root:root 所有になり node ユーザーが `/run/secrets` を作れない点も prod と同じ
-- `environment:` に `GIT_ASKPASS: /usr/local/bin/git-askpass`（パスは秘匿情報ではない）
+- `GIT_ASKPASS` は compose に書かない。devcontainer-base v2 が焼き込み済みで、compose の
+  `environment:` は SSH セッションに届かず経路間で値が食い違うため（base の
+  PORT-FORWARDING.md）。base を使わないイメージでは従来どおり compose で設定する
 - `env_file` 節は使わない
 
 注入を忘れた場合は下流の認証失敗として顕在化する（shim は不在なら素通し。ただし dotenvx だけは `--strict` が無いと復号失敗が沈黙する）。`/run` は tmpfs なので、コンテナの再作成だけでなく停止 → 再起動でも消える。**コンテナを起動するたびに、起動後 dev-inject を 1 回**が運用になる（dev-inject は起動ラッパーではない — 起動は従来どおり IDE が行う）。

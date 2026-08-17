@@ -24,7 +24,7 @@ services:
       # このファイルからの相対。firewall.json も .devcontainer/ にある前提。
       context: .
       dockerfile: Dockerfile
-      # **必須。** 浮動タグ :1 を参照するので、これがないとローカルに残った古い base が
+      # **必須。** 浮動タグ :2 を参照するので、これがないとローカルに残った古い base が
       # 使われ続け、リビルドしても更新が反映されない。
       # devcontainer.json の "build": { "options": ["--pull"] } は dockerComposeFile を
       # 使うと効かないため、Compose 側のこれが代わりになる。
@@ -41,12 +41,10 @@ services:
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
       CLAUDE_CONFIG_DIR: /home/node/.claude
-      # 下の ports と同じ値にする。
-      CRIT_PORT: "4518"
-      # git の認証を /run/secrets/GH_TOKEN から取る（注入されていなければ、認証が
-      # 要る操作が非ゼロ終了して顕在化する）。パス自体は秘匿情報ではないので、
-      # 環境変数で渡してよい。
-      GIT_ASKPASS: /usr/local/bin/git-askpass
+      # CRIT_PORT (既定 4588) と GIT_ASKPASS は base v2 が ENV と /etc/environment の
+      # 両方で設定済み。ここには書かない — compose の environment: は docker exec
+      # 経由のシェルにしか届かず、SSH セッションには効かないため、上書きすると
+      # 経路によって値が食い違う (base の PORT-FORWARDING.md 参照)。
 
     # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
     # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと
@@ -61,11 +59,9 @@ services:
     # かわりに、コンテナ起動後にホスト側の dev-inject スクリプトで上の tmpfs
     # （/run/secrets）へ注入する。
 
-    # runArgs の -p の置き換え。crit のポート転送。
-    # プロジェクトごとに重複しない値を割り当てる。base で CRIT_HOST=0.0.0.0 を
-    # 設定済みのため、この転送が実際に届く。127.0.0.1 に固定してホスト外へ露出させない。
-    ports:
-      - "127.0.0.1:4518:4518"
+    # ports: は置かない。egress-guard が INPUT を DROP しており publish は届かない。
+    # コンテナ内のサービスへは VS Code の自動転送か SSH port forwarding
+    # (どちらもコンテナ内 loopback 発) で到達する。base の PORT-FORWARDING.md 参照。
 
     volumes:
       # workspaceMount の置き換え。このファイルからの相対なので、../.. は
@@ -76,9 +72,14 @@ services:
       # 解決できずに壊れる。同居する兄弟ディレクトリがコンテナから見えるのは
       # 引き換え。worktree を使わないなら ..:/workspaces/<your-project> でよい。
       #
-      # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれると
-      # postCreateCommand が exit 127 で落ち、原因に辿り着きにくい。
+      # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれても
+      # エラーでは止まらず、エディタが空のフォルダを開く形で現れる。
       - ../..:/workspaces:cached
+
+      # 個人設定フック。ホスト側の共通ディレクトリを read-only で見せ、
+      # /personal/setup.sh があれば postCreateCommand が実行する。
+      # 根拠は base の examples/docker-compose.yaml のコメントを参照。
+      - ~/.config/devc-personal:/personal:ro
 
       # mounts の置き換え。**${devcontainerId} は Compose では使えない**ため固定名にする。
       # 名前が固定なので、プロジェクトをまたいで衝突しないよう <your-project> を含める。

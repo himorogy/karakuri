@@ -610,8 +610,9 @@ dev container は IDE（devcontainer 拡張）が起動するため、prod の�
 - **取込スクリプトは entrypoint から切り出して共通化する。** prod-entrypoint.sh から dotenv 取込部（方言パース + `/run/secrets` への書き込み + 件数・非空の検証）を `/usr/local/bin/secrets-ingest.sh`（正典は `images/runtime-base/bin/secrets-ingest.sh`）へ切り出してイメージに焼き、entrypoint と `docker exec` の両方が同じファイルを呼ぶ。方言パーサの実装を 1 つに保つ — 2 実装になると、D24 が潰した「判定が 2 つ」と同じ形が搬送路側に生まれる。取込完了時に書き込んだ**鍵名だけ**（値は出さない）を stderr へ出す — §4.3 の「名前だけなら安全に出せる」と同じ判断
 - **コンテナは compose project 名から引く**（`docker compose -p <name> ps -q dev` 相当）。`container_name` 決め打ちは、プロジェクト複製時の直し忘れがそのまま「別プロジェクトへの注入」事故になるため採らない
 - **再注入は「コンテナを起動するたびに 1 回」が運用になる。** `/run` は tmpfs であり、再作成だけでなく停止 → 再起動でも消える（tmpfs はコンテナ起動ごとに新規マウント）。dev-inject は冪等（再実行は上書き）とし、完了時に書き込んだ鍵名（値は出さない）を stderr へ出す。未注入のまま使った場合は shim の素通しにより下流の認証失敗として顕在化し、対話シェルの注入済み鍵名表示（§4.3）でも確認できる。なお dev-inject は**起動ラッパーではない** — 起動は従来どおり IDE が行い、dev-inject は起動後に打つ注入コマンドである（prod-run.sh が起動そのものを包むのとは役割が違う）
-- **plain git の認証**: dev compose の `environment:` に `GIT_ASKPASS: /usr/local/bin/git-askpass` を置く（パスは秘匿情報ではないため env で渡してよい）。GH_TOKEN 不在で認証が要求された場合は非ゼロ終了で顕在化する
-- **移行手順**: 鍵束の Keychain 登録 → dev compose の `/run` tmpfs 化 + `GIT_ASKPASS` 追加 → dev-inject 運用へ切替 → `env_file` 行と `dev/.env.container` の削除、の順。切替と削除を分けるのは、注入漏れの切り分けを env_file が生きているうちに済ませるため（shim はファイルを environ より優先するので、両方が有る期間も動作は file 側で検証できる）
+- **plain git の認証**: dev compose の `environment:` に `GIT_ASKPASS: /usr/local/bin/git-askpass` を置く（パスは秘匿情報ではないため env で渡してよい）。GH_TOKEN 不在で認証が要求された場合は非ゼロ終了で顕在化する。
+  （2026-08-16 更新: devcontainer-base v2 以降は ENV と `/etc/environment` の両方へ焼き込み済みで、compose には**書かない** — compose の `environment:` は sshd セッションへ届かず（sshd は environ を引き継がず PAM が `/etc/environment` を読む）、経路間で値が食い違うため。base を使わないイメージでは従来どおり compose で設定する。`images/devcontainer-base/PORT-FORWARDING.md` 参照）
+- **移行手順**: 鍵束の Keychain 登録 → dev compose の `/run` tmpfs 化 + `GIT_ASKPASS` 追加（devcontainer-base v2 以降は焼き込み済みのため追加不要。上の 2026-08-16 更新を参照） → dev-inject 運用へ切替 → `env_file` 行と `dev/.env.container` の削除、の順。切替と削除を分けるのは、注入漏れの切り分けを env_file が生きているうちに済ませるため（shim はファイルを environ より優先するので、両方が有る期間も動作は file 側で検証できる）
 
 ---
 
