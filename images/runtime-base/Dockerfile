@@ -209,9 +209,46 @@ RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" 
 # 呼ぶ (方言パーサを 1 実装に保つ)。
 # GH_TOKEN は checkout 直後に破棄するため、git-askpass は clone/fetch の間
 # だけ使われる (設計書 §4.6)。
-COPY bin/prod-entrypoint.sh bin/secrets-ingest.sh bin/git-askpass /usr/local/bin/
-RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass \
-    && chmod 0755 /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass
+COPY bin/prod-entrypoint.sh bin/secrets-ingest.sh bin/git-askpass bin/git-auth-check /usr/local/bin/
+RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass /usr/local/bin/git-auth-check \
+    && chmod 0755 /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass /usr/local/bin/git-auth-check
+
+# --- git: github.com の認証を GIT_ASKPASS 経路へ固定する ------------------------
+# git は credential helper を設定順 (system -> global -> local) に呼び、最初に
+# 資格情報を返した helper で解決を確定する。GIT_ASKPASS は「どの helper も
+# 返さなかった場合」のフォールバックでしかない。dev container では VS Code の
+# Dev Containers 拡張が global の gitconfig へ helper を書き込むため、何もしな
+# ければ github.com への https 認証は /run/secrets/GH_TOKEN ではなくホスト側の
+# 資格情報で通る。しかも認証は成功するので、失敗としては現れない
+# (実測。docs/prod-secret-isolation-design.md §4.6)。
+#
+# GIT_CONFIG_COUNT 系は全ての設定ファイルを読んだ後に適用されるため、gitconfig
+# 内の記述順に依存せず打ち消せる。空文字の helper は「それまでに積まれた helper
+# を捨てる」git の作法で、URL 限定なので github.com 以外のホストの helper は
+# そのまま残る。/etc/gitconfig へ同じ reset を書いても効かない — system を読んだ
+# 後に global の helper が積み直されるためで、これも実測で確認している。
+#
+# 「helper を打ち消す」のであって「自前の helper を先に置く」のではない。後者も
+# 順序では勝てるが、認証成功後に git が **全ての** helper の store を呼ぶため、
+# /run/secrets の fine-scoped なトークンが VS Code の helper 経由でホストの資格
+# 情報ストアへ書き戻される (実測)。打ち消しなら helper が 1 本も残らないので、
+# この書き戻し先ごと消える。
+#
+# prod にも効く: 打ち消しは repo local の .git/config が置いた helper にも及ぶ
+# ため、checkout 済みの信頼しないコードが仕込んだ credential.helper が entrypoint
+# 自身の fetch で呼ばれて GH_TOKEN を受け取る経路が、github.com について閉じる
+# (実測。docs/prod-secret-isolation-design.md §4.6)。
+#
+# 留意: GIT_CONFIG_COUNT は git が持つ唯一のカウンタである。イメージが 0 番を
+# 占有するので、同じ仕組みで設定を足したい利用側と衝突する。占有が黙って外れる
+# ことだけは避けたいので、git-auth-check が対話シェルの起動時に打ち消しの生死を
+# 確認する。
+#
+# sshd 経由のセッションには Dockerfile の ENV が届かない。devcontainer-base が
+# /etc/environment へ同じ 3 つを転記する (値の原本はここ)。
+ENV GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=credential.https://github.com.helper \
+    GIT_CONFIG_VALUE_0=""
 
 # --- prod-context: 注入済み鍵名の表示 (rev.6 / §4.3) ----------------------------
 # 対話シェルの起動時に、/run/secrets の「ファイル名」(= 環境変数名) と

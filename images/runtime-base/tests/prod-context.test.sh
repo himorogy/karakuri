@@ -39,6 +39,7 @@ make_prod_context() {
 	sed \
 		-e "s#/run/secrets#$dir/secrets#g" \
 		-e "s#/run/prod-ref#$dir/prod-ref#g" \
+		-e "s#/usr/local/bin/git-auth-check#$dir/git-auth-check#g" \
 		"$PROD_CONTEXT_SRC" >"$dir/prod-context"
 	chmod +x "$dir/prod-context"
 }
@@ -199,6 +200,53 @@ if ! printf '%s\n' "$out" | grep -qi "GIT_REF"; then
 	ok "/run/prod-ref が無ければ GIT_REF 行は出ない"
 else
 	ng "/run/prod-ref が無ければ GIT_REF 行は出ない (out=$out)"
+fi
+rm -rf "$t"
+
+# --- 4c. git-auth-check への配線 ---------------------------------------------------
+#     git の認証経路の検査は別ファイル (bin/git-auth-check) にあり、対話シェルの
+#     起動ごとに一度走る場所として prod-context から呼んでいる。検査の中身は
+#     git-credential.test.sh が見るので、ここで見るのは「呼ばれること」と
+#     「その失敗が対話シェルへ漏れないこと」の 2 点だけ。
+t="$(mktemp -d)"
+make_prod_context "$t"
+printf '#!/bin/sh\necho AUTH_CHECK_RAN\n' >"$t/git-auth-check"
+chmod +x "$t/git-auth-check"
+out="$(bash -i -c ". $t/prod-context" 2>/dev/null)"
+if printf '%s\n' "$out" | grep -q "AUTH_CHECK_RAN"; then
+	ok "対話シェルの起動で git-auth-check が呼ばれる"
+else
+	ng "対話シェルの起動で git-auth-check が呼ばれる (out=$out)"
+fi
+rm -rf "$t"
+
+# 否定対照: 実行可能な検査が置かれていなければ呼ばない (置き場が変わったときに
+# 上の ok が「たまたま何も出ない」で緑にならないことの裏取り)。
+t="$(mktemp -d)"
+make_prod_context "$t"
+printf '#!/bin/sh\necho AUTH_CHECK_RAN\n' >"$t/git-auth-check"
+chmod -x "$t/git-auth-check"
+out="$(bash -i -c ". $t/prod-context" 2>/dev/null)"
+if ! printf '%s\n' "$out" | grep -q "AUTH_CHECK_RAN"; then
+	ok "否定対照: 実行可能でなければ git-auth-check は呼ばれない"
+else
+	ng "否定対照: 実行可能でなければ git-auth-check は呼ばれない (out=$out)"
+fi
+rm -rf "$t"
+
+# 検査が落ちても、対話シェルの起動と prod-context 本来の出力は止まらない。
+t="$(mktemp -d)"
+make_prod_context "$t"
+printf 'x\n' >"$t/secrets/FOO"
+printf '#!/bin/sh\necho boom >&2\nexit 1\n' >"$t/git-auth-check"
+chmod +x "$t/git-auth-check"
+out="$(bash -i -c "set -e; . $t/prod-context; echo AFTER_SOURCE_OK" 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "AFTER_SOURCE_OK" &&
+	printf '%s\n' "$out" | grep -q "FOO"; then
+	ok "git-auth-check が非ゼロで終わってもシェルと本来の出力を壊さない"
+else
+	ng "git-auth-check が非ゼロで終わってもシェルと本来の出力を壊さない (rc=$rc out=$out)"
 fi
 rm -rf "$t"
 

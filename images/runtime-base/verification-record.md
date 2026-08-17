@@ -920,6 +920,80 @@ fail-closed ではあるので安全側だが、**「その ref は存在しな�
 
 ---
 
+## 0.14 credential helper が `GIT_ASKPASS` を先取りする（2026-08-16。docker 不要の実測）
+
+プロジェクト側での使用で発覚した。`GIT_ASKPASS` を設定してあれば git の認証がそこを通る、と
+いうのが誤りだった。git は credential helper を設定順（system → global → local → 環境変数）に
+呼び、**最初に資格情報を返した helper で解決を確定する**。askpass はどの helper も答えなかった
+場合のフォールバックにすぎない。dev container では VS Code の Dev Containers 拡張が接続の
+たびに global gitconfig へ helper を書くため、github.com への https 認証は
+`/run/secrets/GH_TOKEN` ではなくホスト側の資格情報で通る。**認証は成功するので気づけない。**
+
+実測は git 2.39.5（Debian）で行った。ネットワークは使わず、`git credential fill` / `approve` と、
+Basic 認証を要求するローカル HTTP サーバへの実 clone（dumb HTTP。python3 の
+`http.server` に 401 を返させ、正しい資格情報でだけ配る）で確認した。
+
+**(a) helper が askpass を先取りする。** global に generic な helper を置き、`GIT_ASKPASS` も
+設定した状態で `git credential fill`:
+
+```
+VSCODE_HELPER_RAN(get) → username=vsc      # askpass は呼ばれない
+```
+
+**(b) 環境変数の打ち消しで askpass 経路に落ちる。** `GIT_CONFIG_COUNT=1` /
+`GIT_CONFIG_KEY_0=credential.https://github.com.helper` / `GIT_CONFIG_VALUE_0=`（空）:
+
+```
+ASKPASS_RAN(Username for 'https://github.com': )
+ASKPASS_RAN(Password for 'https://x-access-token@github.com': )
+```
+
+否定対照として gitlab.com で同じことをすると helper が呼ばれる（打ち消しが URL 限定である
+ことの確認）。
+
+**(c) `/etc/gitconfig` への打ち消しは効かない。** system に URL スコープの reset を書き、global に
+helper を置くと `VSCODE_HELPER_RAN` が出る。system → global の順に読むため、空値で捨てた後に
+global の helper が積み直される。system より後に読まれる設定ファイルはイメージから固定でき
+ないので、環境変数以外に順序で勝つ手段がない。
+
+**(d) system に「自前の helper」を置けば順序では勝てる。** system の URL スコープ helper は
+global の generic helper より先に呼ばれ、そこで確定する（`SYS_HELPER_RAN(get)` のみ）。
+**しかしこの案は採れない** — 次の (e) による。
+
+**(e) 認証に成功すると、git は資格情報を `store` で全ての helper に配る。** これが (d) を退けた
+決定的な観測である。ローカル HTTP サーバへ実際に clone した際のフェイク helper のログ:
+
+```
+OURS(get)
+OURS(store)
+VSCODE(store)
+VSCODE_IN: protocol=http
+VSCODE_IN: host=127.0.0.1:8731
+VSCODE_IN: username=x-access-token
+VSCODE_IN: password=TOKEN_FROM_SECRETS
+```
+
+`/run/secrets` から読んだトークンが、VS Code の helper へそのまま渡っている。dev では書き戻り
+先がホストの資格情報ストアになるため、コンテナ内 tmpfs に閉じるはずのトークンがホストへ出る。
+打ち消しなら helper が 1 本も残らないので、この書き戻し先ごと消える。
+
+**(f) 打ち消しは repo local の `.git/config` にも及ぶ。** `.git/config` に `credential.helper` を
+書いたうえで打ち消しありで fetch すると、helper は呼ばれず askpass が使われる。否定対照
+（打ち消しなし）では helper が呼ばれる。N-2 で「機構は同一」として残していた
+`credential.helper` 経由の `GH_TOKEN` 窃取は、github.com について構造的に消える。
+
+**(g) helper の失敗はフォールスルーする。** 出力なしで `exit 0`、`exit 1`、username だけ返す、
+のいずれでも git は次の helper へ進み、そこで成功する。helper 方式で「トークンが無ければ
+顕在化させる」を実現するには `quit=1` を返すしかない（`fatal: credential helper ... told us to
+quit`、rc=128）。打ち消し + askpass ならこの作り込みが要らない。
+
+**採った形**: runtime-base が `GIT_CONFIG_COUNT` 系を焼き、devcontainer-base が
+`/etc/environment` へ転記する（sshd 経由のセッションに ENV は届かないため）。打ち消しが黙って
+外れることへの備えとして `git-auth-check` を置き、`prod-context` から対話シェルの起動ごとに
+呼ぶ。回帰は `tests/git-credential.test.sh`（docker 不要）と `verify-docker.sh` の M6（実イメージ）。
+
+---
+
 ## 1. 自動テストで恒常的に確認しているもの
 
 `pnpm test` が回帰として毎回検証する。テストは docker 不要で、shim / entrypoint を一時
@@ -949,6 +1023,14 @@ fail-closed ではあるので安全側だが、**「その ref は存在しな�
 | 20 | 起動ラッパー: 必須環境変数の欠落を名指しで報告し非ゼロ終了 | ✅ | 同上 |
 | 21 | 起動ラッパー: 非 40 桁 `GIT_REF` で警告を出しつつ続行 | ✅ | 同上 |
 | 22 | 起動ラッパー: `-T` と引数が docker へ正しく渡り、stdin が素通しされる | ✅ | 同上 |
+| 23 | 打ち消しの値が Dockerfile の ENV と一致している | ✅ | `tests/git-credential.test.sh`（テスト側に値を持たず Dockerfile から読む） |
+| 24 | 打ち消しあり: github.com で helper が呼ばれず askpass が使われる（否定対照込み） | ✅ | 同上 |
+| 25 | 打ち消しは URL 限定（gitlab.com では helper が残る） | ✅ | 同上 |
+| 26 | 打ち消しあり: 認証成功後の `store` がどの helper にも渡らない（否定対照込み） | ✅ | 同上 |
+| 27 | 打ち消しは `.git/config` の helper にも及ぶ（否定対照込み） | ✅ | 同上（N-2 の一角） |
+| 28 | system gitconfig への打ち消しは global の helper に負ける | ✅ | 同上（環境変数を選んだ理由の回帰） |
+| 29 | `git-askpass`: トークンあり / 不在 / 空 の三値 | ✅ | 同上 |
+| 30 | `git-auth-check`: 正常時は黙り、打ち消しが外れたら名指しで警告する | ✅ | 同上 + `tests/prod-context.test.sh`（配線） |
 
 ---
 

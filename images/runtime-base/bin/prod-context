@@ -104,4 +104,12 @@ esac
 			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit"
 		fi
 	fi
+
+	# git の認証経路の検査。何も言わないのが正常で、github.com の credential
+	# helper が生き残っているときだけ喋る。ここから呼ぶのは、対話シェルの起動
+	# ごとに一度だけ走る場所がここしかないため (対話判定と失敗の握り潰しは上で
+	# 済んでいる)。検査の中身は /usr/local/bin/git-auth-check のコメント。
+	if [ -x /usr/local/bin/git-auth-check ]; then
+		/usr/local/bin/git-auth-check
+	fi
 ) || true

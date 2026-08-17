@@ -10,6 +10,7 @@ bash "$SCRIPT_DIR/shim.test.sh"
 bash "$SCRIPT_DIR/entrypoint.test.sh"
 bash "$SCRIPT_DIR/secrets-ingest.test.sh"
 bash "$SCRIPT_DIR/prod-context.test.sh"
+bash "$SCRIPT_DIR/git-credential.test.sh"
 
 # .github/workflows/env-guard.yml の検査ロジックが平文 env を実際に検出
 # できることの自己検証。スキャナと pre-commit hook の実体は
