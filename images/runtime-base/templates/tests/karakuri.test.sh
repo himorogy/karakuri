@@ -120,12 +120,55 @@ chmod +x "$FAKE_BIN_DIR/docker"
 # --- フェイク ssh ---------------------------------------------------------------
 # 呼ばれた引数を追記していく（port forwarding は「落としてから張る」ので
 # 1 回の操作で複数回呼ばれる。順序も見たい）。
+#
+# `ssh -G` だけは別のファイルへ記録する。あれは接続も転送もせず設定を解決
+# するだけの呼び出しで、karakuri-pf が「張る／落とす」ために呼ぶ ssh とは
+# 役目が違う。同じログに混ぜると、既存の「1 本目は -O exit である」「-fN が
+# 出た」という検査が呼ばれ方の変化で崩れ、逆に「検査そのものが走っていない」
+# ことを見たい側は -G の行を数え直す羽目になる。
+#
+# FAKE_SSH_STDERR は `ssh -fN` が背面へ回った後に吐く転送エラーの代役。
+# karakuri-pf はこれをログファイルへ逃がすので、端末に出ないことと、
+# ログに残ることの両方をこれで見る。
 cat >"$FAKE_BIN_DIR/ssh" <<'FAKE_SSH'
 #!/usr/bin/env bash
+if [ "${1:-}" = "-G" ]; then
+	printf '%s\n' "$*" >>"${FAKE_SSH_G_LOG:?}"
+	if [ -n "${FAKE_SSH_G_STDOUT:-}" ]; then
+		printf '%s\n' "$FAKE_SSH_G_STDOUT"
+	fi
+	exit "${FAKE_SSH_G_EXIT_CODE:-0}"
+fi
 printf '%s\n' "$*" >>"${FAKE_SSH_LOG:?}"
+if [ -n "${FAKE_SSH_STDERR:-}" ]; then
+	printf '%s\n' "$FAKE_SSH_STDERR" >&2
+fi
 exit "${FAKE_SSH_EXIT_CODE:-0}"
 FAKE_SSH
 chmod +x "$FAKE_BIN_DIR/ssh"
+
+# --- フェイク uname / ifconfig ----------------------------------------------------
+# loopback alias の事前検査が働くのは macOS だけである（Linux は 127.0.0.0/8 の
+# 全体が最初から bind でき、alias を足す作業自体が無い）。テストが走るのは
+# Linux の dev container なので、uname を差し替えないと検査の中身は 1 行も
+# 通らない。ifconfig も同じ理由で差し替える（ここに lo0 は無い）。
+#
+# karakuri.sh は uname も ifconfig も絶対パスでは呼ばないので、PATH 先頭への
+# 差し替えがそのまま効く。
+cat >"$FAKE_BIN_DIR/uname" <<'FAKE_UNAME'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_UNAME_S:-Linux}"
+FAKE_UNAME
+chmod +x "$FAKE_BIN_DIR/uname"
+
+cat >"$FAKE_BIN_DIR/ifconfig" <<'FAKE_IFCONFIG'
+#!/usr/bin/env bash
+if [ -n "${FAKE_IFCONFIG_STDOUT:-}" ]; then
+	printf '%s\n' "$FAKE_IFCONFIG_STDOUT"
+fi
+exit "${FAKE_IFCONFIG_EXIT_CODE:-0}"
+FAKE_IFCONFIG
+chmod +x "$FAKE_BIN_DIR/ifconfig"
 
 # --- フェイク dock.sh / loopback-setup.sh -------------------------------------------
 # karakuri-dock / karakuri-loopback は引数を素通しするだけの薄いラッパーなので、
@@ -227,6 +270,24 @@ BASE_SHA="1234567890abcdef1234567890abcdef12345678"
 BASE_CID="cafe0123deadbeef"
 
 FAKE_HOME="$WORKDIR/home"
+# ログの置き場所。XDG_STATE_HOME をここへ向けて、実際の ~/.local/state を
+# 汚さない（reset_env が FAKE_HOME ごと作り直すので、テストの間で残らない）。
+FAKE_STATE_HOME="$FAKE_HOME/state"
+
+# --- 検査対象の ifconfig lo0 の出力 -------------------------------------------------
+# macOS の `ifconfig lo0` の形をそのまま写したもの。karakuri.sh は「inet <addr>
+# の後ろに空白がある」で照合するので、行の前後の空白まで含めて実物に寄せる。
+LO0_BASE_LINE='lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384'
+
+# 127.0.0.1 だけ。alias を 1 本も足していない素の状態。
+LO0_BARE="$(printf '%s\n\tinet 127.0.0.1 netmask 0xff000000' "$LO0_BASE_LINE")"
+
+# 転送が bind したい 127.0.1.1 が alias として載っている状態。
+LO0_WITH_ALIAS="$(printf '%s\n\tinet 127.0.0.1 netmask 0xff000000\n\tinet 127.0.1.1 netmask 0xff000000' "$LO0_BASE_LINE")"
+
+# 前方一致で誤って通さないことを見るための fixture。127.0.1.10 は載っているが
+# 127.0.1.1 は載っていない（文字列としては前者が後者を含む）。
+LO0_NEAR_MISS="$(printf '%s\n\tinet 127.0.0.1 netmask 0xff000000\n\tinet 127.0.1.10 netmask 0xff000000' "$LO0_BASE_LINE")"
 
 # --- 走らせる --------------------------------------------------------------------
 
@@ -247,6 +308,7 @@ reset_env() {
 	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
 	export FAKE_BUILDX_ARGV_FILE="$WORKDIR/buildx-argv.$$.$RANDOM"
 	export FAKE_SSH_LOG="$WORKDIR/ssh-log.$$.$RANDOM"
+	export FAKE_SSH_G_LOG="$WORKDIR/ssh-g-log.$$.$RANDOM"
 
 	export FAKE_PS_STDOUT="$BASE_CID"
 	export FAKE_PS_EXIT_CODE=0
@@ -254,8 +316,20 @@ reset_env() {
 	export FAKE_DIGEST="$BASE_DIGEST"
 	export FAKE_BUILDX_EXIT_CODE=0
 
+	# 既定は「Linux・ssh は全部成功・端末へ何も吐かない」。loopback alias の
+	# 検査とログ分離を見るテストが、必要なものだけを個別に張る。
+	export FAKE_UNAME_S=Linux
+	unset FAKE_SSH_EXIT_CODE FAKE_SSH_STDERR
+	unset FAKE_SSH_G_STDOUT FAKE_SSH_G_EXIT_CODE
+	unset FAKE_IFCONFIG_STDOUT FAKE_IFCONFIG_EXIT_CODE
+
 	rm -rf "$FAKE_HOME"
 	mkdir -p "$FAKE_HOME/.ssh"
+
+	# karakuri-pf の転送エラーログの置き場所。実際の ~/.local/state を
+	# 触らせないために、毎回 FAKE_HOME の下へ向け直す（未設定時の既定を見る
+	# テストだけがこれを unset する）。
+	export XDG_STATE_HOME="$FAKE_STATE_HOME"
 }
 
 # run_case <function> [args...] — karakuri.sh を source して、渡した関数を
@@ -913,6 +987,185 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 		ok "[$s] clean-pf <name> removes just that socket"
 	else
 		ng "[$s] clean-pf <name> removes just that socket"
+	fi
+
+	# --- 転送エラーをログへ逃がす --------------------------------------------------
+	# `ssh -fN` は背面へ回った後も端末の stderr を掴み続けるので、転送先の dev
+	# サーバが落ちていると `connect_to ...: failed.` が端末に出続ける。転送
+	# そのものは壊れていないため畳むのは過剰で、出力先を端末から外すしかない。
+	# ただし黙らせきると失敗の理由まで消えるので、失敗時だけは末尾を見せる。
+	echo "[$s] pf keeps the ssh -fN stderr in a per-host log file"
+	local pf_log
+	pf_log="$FAKE_STATE_HOME/karakuri/pf-devc-app.log"
+
+	# 成功したときは端末に何も出さない。実機で困るのは「ssh -fN は成功した
+	# のに、背面へ回った後の転送エラーが端末に出続ける」という形なので、
+	# 成功側でも stderr を吐かせて黙ることを見る。
+	reset_env
+	export FAKE_SSH_STDERR="connect_to localhost port 4301: failed."
+	run_case karakuri-pf app
+
+	assert_rc_zero "[$s] pf succeeds when ssh -fN succeeds"
+	assert_stdout_is "" "[$s] a successful pf prints nothing on stdout"
+	if [ -z "$CASE_STDERR" ]; then
+		ok "[$s] a successful pf prints nothing on stderr"
+	else
+		ng "[$s] a successful pf prints nothing on stderr (stderr: $CASE_STDERR)"
+	fi
+	if has_line "$pf_log" "$FAKE_SSH_STDERR"; then
+		ok "[$s] the stderr of a successful forward is kept in the log instead"
+	else
+		ng "[$s] the stderr of a successful forward is kept in the log instead (log: $(cat "$pf_log" 2>/dev/null))"
+	fi
+
+	reset_env
+	export FAKE_SSH_EXIT_CODE=1
+	export FAKE_SSH_STDERR="connect_to localhost port 4301: failed."
+	run_case karakuri-pf app
+
+	assert_rc_nonzero "[$s] pf fails when ssh -fN fails"
+	if has_line "$pf_log" "$FAKE_SSH_STDERR"; then
+		ok "[$s] the ssh -fN stderr lands in the per-host log file"
+	else
+		ng "[$s] the ssh -fN stderr lands in the per-host log file (log: $(cat "$pf_log" 2>/dev/null))"
+	fi
+	assert_stderr_has "connect_to localhost port 4301: failed." \
+		"[$s] the tail of the log is shown to the caller on failure"
+	assert_stderr_has "karakuri-pf: 'ssh -fN devc-app' failed." \
+		"[$s] the general error message is printed after the log tail"
+
+	# 2 回目は追記であること。上書きだと、転送が転び続けている間の経緯
+	# （どのポートが何回失敗したか）が毎回消える。reset_env は FAKE_HOME ごと
+	# 作り直すので、ここでは意図的に挟まない。
+	run_case karakuri-pf app
+	if [ "$(grep -cF -- "$FAKE_SSH_STDERR" "$pf_log" 2>/dev/null)" = "2" ]; then
+		ok "[$s] a second failure is appended to the log, not written over it"
+	else
+		ng "[$s] a second failure is appended to the log, not written over it (log: $(cat "$pf_log" 2>/dev/null))"
+	fi
+
+	# XDG_STATE_HOME が無い環境では XDG の既定（~/.local/state）へ落とす。
+	reset_env
+	unset XDG_STATE_HOME
+	export FAKE_SSH_EXIT_CODE=1
+	export FAKE_SSH_STDERR="bind: Can't assign requested address"
+	run_case karakuri-pf app
+
+	if has_line "$FAKE_HOME/.local/state/karakuri/pf-devc-app.log" "$FAKE_SSH_STDERR"; then
+		ok "[$s] the log falls back to \$HOME/.local/state when XDG_STATE_HOME is unset"
+	else
+		ng "[$s] the log falls back to \$HOME/.local/state when XDG_STATE_HOME is unset"
+	fi
+
+	# --- loopback alias の事前検査 ---------------------------------------------------
+	# macOS は 127.0.0.1 以外の loopback アドレスを alias で明示的に足さないと
+	# bind できず、その状態で出る ssh のメッセージからは何を直せばよいかが
+	# 分からない。足りない alias を名指しするのがこの検査で、外し方（fail
+	# open）まで含めて見る。
+	echo "[$s] pf checks the loopback aliases before it tears anything down"
+	reset_env
+	run_case karakuri-pf app
+
+	assert_rc_zero "[$s] pf succeeds on a non-Darwin host"
+	assert_not_invoked "$FAKE_SSH_G_LOG" "[$s] the loopback check does not even run 'ssh -G' outside Darwin"
+	if has_line "$FAKE_SSH_LOG" "-fN devc-app"; then
+		ok "[$s] the forward is started on a non-Darwin host"
+	else
+		ng "[$s] the forward is started on a non-Darwin host"
+	fi
+
+	reset_env
+	export FAKE_UNAME_S=Darwin
+	export FAKE_SSH_G_STDOUT="localforward 127.0.1.1:4519 localhost:4519"
+	export FAKE_IFCONFIG_STDOUT="$LO0_WITH_ALIAS"
+	run_case karakuri-pf app
+
+	assert_rc_zero "[$s] pf succeeds on Darwin when the alias is on lo0"
+	if has_line "$FAKE_SSH_LOG" "-fN devc-app"; then
+		ok "[$s] the forward is started once every bind address is present"
+	else
+		ng "[$s] the forward is started once every bind address is present"
+	fi
+
+	# 足りないときは失敗する。合わせて「落としてから失敗していない」ことも
+	# 見る: 検査を後ろに置くと、張り直しに失敗しただけのつもりが、それまで
+	# 生きていた転送まで巻き添えで消える。
+	reset_env
+	: >"$FAKE_HOME/.ssh/cm-devc-app"
+	export FAKE_UNAME_S=Darwin
+	export FAKE_SSH_G_STDOUT="localforward 127.0.1.1:4519 localhost:4519"
+	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
+	run_case karakuri-pf app
+
+	assert_rc_nonzero "[$s] pf fails on Darwin when the bind address is missing from lo0"
+	assert_stderr_has "127.0.1.1" "[$s] the error names the address that is missing"
+	assert_stderr_has "karakuri-loopback add 127.0.1.1" "[$s] the error says how to add it"
+	# ssh はこの経路では 1 度も呼ばれない（-G は別ファイルに記録している）。
+	# これが「-fN が走っていない」と「-O exit で古い master を落としていない」を
+	# 同時に押さえる。
+	assert_not_invoked "$FAKE_SSH_LOG" "[$s] neither 'ssh -fN' nor 'ssh -O exit' runs when the check fails"
+	if [ -e "$FAKE_HOME/.ssh/cm-devc-app" ]; then
+		ok "[$s] the existing control socket is left in place when the check fails"
+	else
+		ng "[$s] the existing control socket is left in place when the check fails"
+	fi
+
+	# 前方一致で通してしまわないこと。127.0.1.10 が載っていても 127.0.1.1 の
+	# 代わりにはならない。
+	reset_env
+	export FAKE_UNAME_S=Darwin
+	export FAKE_SSH_G_STDOUT="localforward 127.0.1.1:4519 localhost:4519"
+	export FAKE_IFCONFIG_STDOUT="$LO0_NEAR_MISS"
+	run_case karakuri-pf app
+
+	assert_rc_nonzero "[$s] an address that is only a prefix of one on lo0 counts as missing"
+	assert_stderr_has "127.0.1.1 is not on lo0" "[$s] the near-miss error still names the address that is missing"
+
+	# fail open その 1: `ssh -G` が失敗したら黙って先へ進む。出力の綴りは
+	# OpenSSH の版に依存しうるので、読み取れないことを転送の可否に繋げない。
+	reset_env
+	export FAKE_UNAME_S=Darwin
+	export FAKE_SSH_G_EXIT_CODE=1
+	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
+	run_case karakuri-pf app
+
+	assert_rc_zero "[$s] a failing 'ssh -G' lets the forward through"
+	if [ -z "$CASE_STDERR" ]; then
+		ok "[$s] a failing 'ssh -G' says nothing"
+	else
+		ng "[$s] a failing 'ssh -G' says nothing (stderr: $CASE_STDERR)"
+	fi
+
+	# fail open その 2: localforward の行が 1 つも無いとき。
+	reset_env
+	export FAKE_UNAME_S=Darwin
+	FAKE_SSH_G_STDOUT="$(printf 'user someone\nport 22')"
+	export FAKE_SSH_G_STDOUT
+	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
+	run_case karakuri-pf app
+
+	assert_rc_zero "[$s] a config with no localforward lets the forward through"
+	if has_line "$FAKE_SSH_LOG" "-fN devc-app"; then
+		ok "[$s] the forward is started when there is nothing to check"
+	else
+		ng "[$s] the forward is started when there is nothing to check"
+	fi
+
+	# bind 側が 127. で始まらないものは検査対象にならない。lo0 には 127.0.0.1
+	# しか載せていないので、もしこれらを拾っていれば「載っていない」と言って
+	# 失敗する（fail open で素通りしたのではないことが、これで分かる）。
+	reset_env
+	export FAKE_UNAME_S=Darwin
+	FAKE_SSH_G_STDOUT="$(printf 'localforward localhost:4519 localhost:4519\nlocalforward [::1]:4520 localhost:4520')"
+	export FAKE_SSH_G_STDOUT
+	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
+	run_case karakuri-pf app
+
+	assert_rc_zero "[$s] a bind address that is not 127.x is not checked against lo0"
+	if [ -z "$CASE_STDERR" ]; then
+		ok "[$s] neither 'localhost' nor an IPv6 bind address is reported as missing"
+	else
+		ng "[$s] neither 'localhost' nor an IPv6 bind address is reported as missing (stderr: $CASE_STDERR)"
 	fi
 
 	# --- karakuri-help ---------------------------------------------------------------

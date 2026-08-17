@@ -312,6 +312,69 @@ _karakuri_ssh_host() {
 	esac
 }
 
+# _karakuri_check_loopback <host> — その host の LocalForward が bind しようと
+# している 127.x のアドレスが lo0 に載っているかを、ssh を起こす前に見る。
+# 載っていないものがあれば、直し方（karakuri-loopback add）を添えて 1 を返す。
+#
+# macOS だけの問題である。Linux は 127.0.0.0/8 の全体が最初から自分宛てとして
+# bind でき、alias を足す作業自体が無い。macOS は 127.0.0.1 以外の loopback
+# アドレスを `ifconfig lo0 alias` で明示的に有効化しないと bind できず、しかも
+# それは再起動で消える。~/.ssh/config 側は ExitOnForwardFailure yes なので
+# ssh は正しく失敗するのだが、出るメッセージは
+# `bind: Can't assign requested address` で、何を直せばよいかがそこからは
+# 分からない。実際に足りないのは alias 1 本、というところまでをここで言う。
+#
+# 検査は fail open にしてある。`ssh -G` が失敗したときも、localforward の行が
+# 1 つも読めなかったときも、何も言わずに 0 を返して先へ進む。`ssh -G` の出力は
+# OpenSSH の版に依存しうる（キーワードの綴り・アドレスの囲み方が変わりうる）
+# ので、こちらの読み取りが外れたときに port forwarding そのものが止まると、
+# 本来動く環境で動かなくなる。この検査は「失敗したときの説明を良くする」ため
+# のものであって、転送の可否を決める権限は持たせない。
+_karakuri_check_loopback() {
+	[ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
+
+	# `ssh -G` は Host ブロックや Match を解決した後の実効設定を、小文字の
+	# キーワードで出す。1 行は `localforward 127.0.1.1:4519 localhost:4519`
+	# の形になる。config を自分で読むと Host の照合・Include・多重定義まで
+	# 自前で持つことになるので、解決は ssh 自身にやらせる。
+	local cfg
+	cfg="$(ssh -G "$1" 2>/dev/null)" || return 0
+
+	# 2 番目のフィールド（bind 側）の `:` より前だけを見て、127. で始まる
+	# ものを集める。IPv6（`[::1]:4519`）や unix socket のパスはここで自然に
+	# 外れる。同じアドレスへ何本転送していても言うことは 1 回でよいので
+	# sort -u で潰す。
+	local addrs
+	addrs="$(printf '%s\n' "$cfg" |
+		awk '$1 == "localforward" { split($2, f, ":"); if (f[1] ~ /^127\./) print f[1] }' |
+		sort -u)"
+	[ -n "$addrs" ] || return 0
+
+	# ifconfig が読めなかったときも fail open。ここで「読めない＝載っていない」
+	# と解釈すると、全アドレスについて嘘の警告を出したうえで転送を止める。
+	local lo
+	lo="$(ifconfig lo0 2>/dev/null)" || return 0
+	[ -n "$lo" ] || return 0
+
+	local addr missing=0
+	while IFS= read -r addr; do
+		[ -n "$addr" ] || continue
+		# 末尾の空白まで含めて照合する。`inet 127.0.1.1` だけで見ると
+		# 127.0.1.10 が載っているときに 127.0.1.1 も載っていることになる。
+		# なお 127.0.0.1 は lo0 に必ず出るので、特別扱いは要らずここを通る。
+		case "$lo" in
+		*"inet $addr "*) continue ;;
+		esac
+		echo "karakuri-pf: loopback alias ${addr} is not on lo0, so the forward cannot bind. Run: karakuri-loopback add ${addr}" >&2
+		missing=1
+	done <<EOF
+${addrs}
+EOF
+
+	[ "$missing" -eq 0 ] || return 1
+	return 0
+}
+
 # karakuri-pf <name> — port forwarding を張り直す。
 #
 # 「張る」ではなく「張り直す」なのは、コンテナを作り直した後の再接続が
@@ -326,6 +389,11 @@ karakuri-pf() {
 	local host
 	host="$(_karakuri_ssh_host "$1")"
 
+	# loopback alias の検査は、古い master を落とすより前に置く。落としてから
+	# 失敗すると、それまで生きていた転送まで巻き添えで消える。「張り直しに
+	# 失敗した」だけで済むはずのものが「打ったせいで繋がらなくなった」になる。
+	_karakuri_check_loopback "$host" || return 1
+
 	# 生きていれば落とす。生きていなければ何も起きない（失敗は無視する）。
 	# -n は「stdin を /dev/null にする」指定。制御コマンドに stdin は要らず、
 	# 付けておけば下の clean-pf のようにループの中で呼んでも、ループが
@@ -335,9 +403,43 @@ karakuri-pf() {
 	# 残る。残骸があると次の接続がそこへ繋ぎに行って失敗するので消す。
 	rm -f "${HOME}/.ssh/cm-${host}"
 
-	if ssh -fN "$host"; then
-		return 0
+	# ssh -fN は背面へ回った後も端末の stderr を掴み続ける。転送先の dev
+	# サーバが落ちている状態でブラウザが再接続を繰り返すと、
+	# `connect_to localhost port 4301: failed.` が端末に延々と出続け、
+	# karakuri-clean-pf で殺すまで止まらない。転送そのものは壊れておらず、
+	# dev サーバを起動し直せばそのまま復活するので、転送を畳むのは過剰な
+	# 対処である。畳まずに黙らせるには、出力先を端末から外すしかない。
+	#
+	# 以後の転送エラーはこの 1 本のログに溜まる。読みたいときは
+	# `tail -f "${XDG_STATE_HOME:-$HOME/.local/state}/karakuri/pf-<host>.log"`。
+	# host ごとにファイルを分けてあるので、どのコンテナの転送が転んでいるかは
+	# ファイル名で分かる。
+	local log_dir log
+	log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/karakuri"
+	log="${log_dir}/pf-${host}.log"
+
+	# ログが置けないなら、ログ分離だけをあきらめて従来どおり端末へ出す。
+	# ここで止めると「ログが取れない」という副次的な事情で port forwarding
+	# そのものが失敗することになり、目的（転送を張る）に対して代償が大きい。
+	if ! mkdir -p "$log_dir" 2>/dev/null; then
+		log=""
 	fi
+
+	if [ -z "$log" ]; then
+		if ssh -fN "$host"; then
+			return 0
+		fi
+	else
+		if ssh -fN "$host" 2>>"$log"; then
+			return 0
+		fi
+		# 失敗したときだけログの末尾を見せる。原因（コンテナ側 sshd が
+		# 起動していない・bind できない等）を書いているのは ssh 自身の
+		# メッセージであり、それをログへ回した結果、下の一般的な文言しか
+		# 利用者に見えなくなるのでは分離した意味が無い。
+		tail -n 20 "$log" >&2 2>/dev/null
+	fi
+
 	echo "karakuri-pf: 'ssh -fN ${host}' failed. Check that the container is up and that ~/.ssh/config has a Host entry for '${host}'" >&2
 	return 1
 }
