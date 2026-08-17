@@ -347,7 +347,7 @@ IPv6 の試行はログ（`fw-drop6:`）に残ります。**silent DROP では�
 allowlist を通らなかった宛先 IP は ipset `egress-audit-v4` に溜まります（`enforce` / `audit` の両モード）。読むには root が要ります。
 
 ```sh
-docker exec -u root [[ORCA_RICH_MD:928c6996ad06dfd2c3b9c41420657a38:inline-html:%3Ccontainer%3E]] ipset list egress-audit-v4
+docker exec -u root <container> ipset list egress-audit-v4
 ```
 
 **読み方・IP から名前を戻す手順・何を allowlist に足して何を足さないかは [`docs/measuring-egress.md`](./docs/measuring-egress.md) に集約してあります。** `timeout` の残量から新旧を判断する方法、CDN 上では名前を特定しきれないこと、その場合の決着のつけ方まで、まとめてそちらにあります。
