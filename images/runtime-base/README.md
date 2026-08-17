@@ -651,7 +651,7 @@ clone から `~/.config/<project>/` へコピーする（`image:` の digest を
 ```sh
 PROD_COMPOSE_FILE=~/.config/acme/compose.prod.yaml \
 PROD_BROKER="$HOME/.local/bin/acme-broker" \
-PROD_KEYCHAIN_SERVICE=acme-prod-env \
+BROKER_KEYCHAIN_SERVICE=acme-prod-env \
 GIT_REPO=https://github.com/acme/app.git \
 GIT_REF=<40 桁の commit sha> \
 ~/.local/bin/prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy

@@ -215,7 +215,7 @@ compose ファイル自体もリポジトリの外に置く。プロジェクト
 ```sh
 PROD_COMPOSE_FILE=~/.config/<project>/compose.prod.yaml \
 PROD_BROKER=~/.local/bin/<project>-broker \
-PROD_KEYCHAIN_SERVICE=<project>-prod-env \
+BROKER_KEYCHAIN_SERVICE=<project>-prod-env \
 GIT_REPO=https://github.com/<org>/<project>.git \
 GIT_REF=$(git rev-parse HEAD) \
 ~/.local/bin/prod-run.sh dotenvx get -f .env.production
