@@ -92,14 +92,17 @@ VSCode 等の devcontainer 拡張でそのまま起動してよい。prod-run.sh
 
 dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped GH_TOKEN 等）も prod と同じ broker 方式で注入する。従来の `env_file`（`dev/.env.container`）はホスト不揮発ディスク上の恒久平文となるため廃止する。
 
-1. dev 鍵束を Bitwarden に用意する。個人分は `env/<project>/dev`、チーム共有分は共有コレクションの `env/<project>/shared/dev`
+1. dev 鍵束を Bitwarden に用意する。個人分は `env/<project>/dev`、チーム共有分は共有コレクションの `env/<project>/shared/dev`、**全プロジェクト共通の個人分は `env/_common/dev`**（`_` 接頭辞はプロジェクト名との衝突回避。プロジェクト slug は kebab-case とし、`_` 始まりのプロジェクトを作らない）
+
+   `env/_common/dev` に置くものの代表が **`SSH_AUTHORIZED_KEYS`**（値 = 自分の SSH 公開鍵 1 行、`ssh-ed25519 AAAA... user@host` の形そのまま）。devcontainer-base v2 の sshd が `/run/secrets/SSH_AUTHORIZED_KEYS` を認可鍵として直接読むため、これだけで SSH port forwarding のログインが有効になる（[PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)）。受託案件などプロジェクト単位で別の鍵を使う場合は `env/<project>/dev` に同名キーを置けば後勝ちで上書きされる
 2. コンテナ起動後、ホストで `dev-inject.sh` を実行する。broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプし、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く。`.zshrc` に関数を置くと 1 コマンドになる:
 
    ```sh
-   # 共有 note を先・個人 note を後（同名キーは後勝ち = 個人が上書き）
+   # 共有 → 共通個人 → プロジェクト個人の順（同名キーは後勝ち = 右ほど強い。
+   # プロジェクト個人が共通個人を上書きできる）
    dev-inject-bw() {
      BROKER_BW_BIN="$HOME/.local/bin/bw" \
-     BROKER_BW_ITEM="env/$1/shared/dev,env/$1/dev" \
+     BROKER_BW_ITEM="env/$1/shared/dev,env/_common/dev,env/$1/dev" \
      DEV_BROKER="$HOME/.local/bin/broker-bitwarden.sh" \
      DEV_COMPOSE_PROJECT="$1-dev" \
      dev-inject.sh

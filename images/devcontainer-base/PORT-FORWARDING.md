@@ -120,7 +120,7 @@ sudo launchctl load -w /Library/LaunchDaemons/dev.loopback-alias.plist
 AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys
 ```
 
-標準の経路は 1 つ目です。broker の個人アイテムに `SSH_AUTHORIZED_KEYS` キーとして公開鍵を持たせれば、GH_TOKEN 等の secret と同じ dev-inject 1 回で注入されます。専用の注入スクリプトは要りません。
+標準の経路は 1 つ目です。broker の個人アイテムに `SSH_AUTHORIZED_KEYS` キーとして公開鍵を持たせれば、GH_TOKEN 等の secret と同じ dev-inject 1 回で注入されます。専用の注入スクリプトは要りません。具体的な手順 — アイテムの命名（全プロジェクト共通の個人アイテム `env/_common/dev`）・値の形式・`BROKER_BW_ITEM` のマージ順 — は [example/README.md](../../example/README.md) の「dev の起動」を参照してください。
 
 公開鍵は秘密情報ではありません。broker に載せるのは秘匿のためではなく、搬送と再注入のタイミング規律を secret と 1 本にまとめるためです。tmpfs なのでコンテナ停止で消えますが、消える条件も再注入の作法も secret と同じで、覚えることが増えません。dev-inject を忘れると git 認証も同時に失敗するため、SSH だけが静かに壊れることもありません。
 
