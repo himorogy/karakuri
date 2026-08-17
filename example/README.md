@@ -12,18 +12,24 @@ dev container には LLM エージェントが常駐するため信頼しない�
 
 ## 推奨配置
 
+配布テンプレート（`images/runtime-base/templates/`）は置き場所で二つに分かれている。
+`templates/host/` はホストの固定パスへ置くもの、`templates/project/` はプロジェクトの
+リポジトリへ置くもの。`compose.prod.yaml` は名前だけ見るとプロジェクトの
+リポジトリに置くものに見えるが、`host/` にある。`prod-run.sh` の `PROD_COMPOSE_FILE` が
+指す先であり、下記のとおりホストの固定パス（`~/.config/<project>/`）に置く。
+
 ```
 ~/.local/bin/                  # dev workspace の外（ホスト固定パス）
   bw                           # Bitwarden CLI（native ビルドを SHA-256 照合の上配置）
-  prod-run.sh                  # images/runtime-base/templates/prod-run.sh のコピー
-  dev-inject.sh                # images/runtime-base/templates/dev-inject.sh のコピー
-  broker-bitwarden.sh          # broker 標準実装（templates/ のコピー）
+  prod-run.sh                  # images/runtime-base/templates/host/prod-run.sh のコピー
+  dev-inject.sh                # images/runtime-base/templates/host/dev-inject.sh のコピー
+  broker-bitwarden.sh          # broker 標準実装（templates/host/ のコピー）
   prj1-broker                  # prod 鍵束のラッパー（下記）
   broker-macos-keychain.sh     # 代替: macOS Keychain broker（登録ツール broker-macos-keychain-set.sh と対）
 ~/.config/prj1/
-  compose.prod.yaml            # templates/compose.prod.yaml のコピー。image の digest を実在のものへ差し替える
+  compose.prod.yaml            # templates/host/compose.prod.yaml のコピー。image の digest を実在のものへ差し替える
 <project repo>/                # dev container にマウントされる（git 管理）
-  env-guard.conf
+  env-guard.conf                 # templates/project/env-guard.conf のコピー
   .devcontainer/
     Dockerfile
     docker-compose.yaml
@@ -48,7 +54,7 @@ alias prj1-prod-deploy='PROD_BROKER=$HOME/.local/bin/prj1-broker \
 
 `pnpm install` を毎回連結するのは `/src` が tmpfs だから — 一発コマンドは常に clone 直後の素の working tree で走り、node_modules は存在しない。プロジェクト側に `"release:prod": "pnpm i --frozen-lockfile && pnpm deploy:prod"` のような script を切って `prod-run.sh pnpm release:prod` とする方が読みやすい。
 
-broker の標準は Bitwarden CLI（`templates/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
+broker の標準は Bitwarden CLI（`templates/host/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
 
 `~/.local/bin/prj1-broker`（PROD_BROKER は引数を取れないため、項目名はラッパーで固定する。カンマ区切りで複数項目をマージでき、同名キーは後勝ちなので共有を先・個人を後に）:
 

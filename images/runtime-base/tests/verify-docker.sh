@@ -293,7 +293,7 @@ chmod a+r "$SAFE_GITCONFIG"
 export SAFE_GITCONFIG
 
 # --- compose ファイル生成 --------------------------------------------------------
-# templates/compose.prod.yaml は変更しない (rev.5 確定後にオーケストレーターが
+# templates/host/compose.prod.yaml は変更しない (rev.5 確定後にオーケストレーターが
 # 直す)。ここでは検証用の一時コピーを mktemp 配下に生成する。プレースホルダ
 # __IMAGE__ を実イメージ参照へ sed で差し替える方式は、entrypoint.test.sh /
 # shim.test.sh の「テストごとに一意な tmpdir へ sed で書き換えたコピーを使う」
@@ -305,10 +305,10 @@ export SAFE_GITCONFIG
 # シェルがその場で展開しようとし、GIT_REPO 未設定なら `:?` でこのスクリプト
 # 自体が即座に落ちてしまう。
 
-# --- A: 出荷 templates/compose.prod.yaml の構造検証 (docker が要る、jq を使う) --
+# --- A: 出荷 templates/host/compose.prod.yaml の構造検証 (docker が要る、jq を使う) --
 #
 # 下の compose-current.yaml 等は全て自前生成物であり、実際に配布する
-# templates/compose.prod.yaml 自身は一度も検証されていなかった。自前生成物
+# templates/host/compose.prod.yaml 自身は一度も検証されていなかった。自前生成物
 # とのずれ (tmpfs のオプション、read_only、user、ulimits、logging 等) が
 # 入り込んでも検出できない。
 #
@@ -344,7 +344,7 @@ if ! command -v jq >/dev/null 2>&1; then
 	exit 1
 fi
 
-COMPOSE_PROD_YAML="$REPO_ROOT/images/runtime-base/templates/compose.prod.yaml"
+COMPOSE_PROD_YAML="$REPO_ROOT/images/runtime-base/templates/host/compose.prod.yaml"
 
 # compose_prod_config
 # 出荷ファイルを `docker compose config --format json` で解決した JSON を
@@ -383,7 +383,7 @@ tmpfs_entries_or_fail() {
 	printf '%s\n' "$entries"
 }
 
-# --- B: 出荷 templates/compose.prod.yaml からの最小派生 (docker が要る) --------
+# --- B: 出荷 templates/host/compose.prod.yaml からの最小派生 (docker が要る) --------
 #
 # A が構造の表明 (静的パース) であるのに対し、B は実際にコンテナを起動して
 # entrypoint が完走することを見る。「派生」であって「書き直し」ではない —
@@ -450,7 +450,7 @@ echo
 echo "=== B: 出荷 compose.prod.yaml からの派生 diff (許される変更は image: / bind mount 追加 / GIT_CONFIG_GLOBAL 追加の 3 点のみ) ==="
 diff -u "$COMPOSE_PROD_YAML" "$COMPOSE_SHIPPED" || true
 
-# compose-current.yaml: templates/compose.prod.yaml と同一の tmpfs 記法
+# compose-current.yaml: templates/host/compose.prod.yaml と同一の tmpfs 記法
 # (uid=1000,gid=1000,mode=...) + /src は named volume。M1 (compose 経由の
 # uid= 形式受け入れ確認) / M6 (named volume 再利用時の N-1 / N-2) / A11 /
 # A17 で使う。
@@ -710,7 +710,7 @@ diff -u "$ENTRYPOINT_IMAGE_COPY" "$ENTRYPOINT_NO_TMPFS_CHECK" || true
 # --- docker run 共通ラッパー (compose.prod.yaml と等価な docker run flags) -----
 # compose を経由しない ASSERT の多く (A5, A7〜A10, A16 等) は、compose の
 # パーサ挙動そのものではなく entrypoint / shim の挙動を見たいだけなので、
-# docker run に直接 templates/compose.prod.yaml と同じオプションを渡す。
+# docker run に直接 templates/host/compose.prod.yaml と同じオプションを渡す。
 # これらは M1 で uid= 形式が実際に機能することが前提になる。M1 が否定的な
 # 結果を出した場合、この関数を経由する ASSERT 群は同じ前提の上で失敗する
 # ことになるが、それ自体が「uid= 形式が壊れている」という情報を運ぶので
@@ -800,7 +800,7 @@ fi
 # M1: tmpfs の所有権 (最優先)
 #
 # 設計書 §4.2 は素の短縮形 `tmpfs: ["/run", …]` を書いているが、実装
-# (templates/compose.prod.yaml) は「root:root で作られ USER node が
+# (templates/host/compose.prod.yaml) は「root:root で作られ USER node が
 # /run/secrets を作れず落ちる」との判断で `uid=1000,gid=1000,mode=0755` へ
 # 変えている。この判断の前提 — docker の tmpfs 既定 mode が 1777 で
 # world-writable なので素の形でも通るのではないか — が未検証。
@@ -1538,7 +1538,7 @@ measure M9 "3 ケースのまとめ (A/B の合計は二重計上を避けて計
 # (ハードリンクが効き、RAM が案 A の半分になる)。残る問題は「store-dir を
 # どうやって prod で既定にするか」— `pnpm install --store-dir <path>` の
 # フラグは効くが (M9-b / M9-e で確認済み)、これを compose ファイルや
-# entrypoint に焼くのはこのタスクのスコープ外 (templates/compose.prod.yaml /
+# entrypoint に焼くのはこのタスクのスコープ外 (templates/host/compose.prod.yaml /
 # Dockerfile / prod-entrypoint.sh は変更しない)。設定ファイル側で既定化
 # できないかを、フラグを一切渡さずに確認する。
 #
@@ -2778,7 +2778,7 @@ EOS
 		PROD_BROKER="$fake_broker" \
 		GIT_REPO="file://$TEST_BARE_DIR" \
 		GIT_REF="$TEST_COMMIT" \
-		bash "$REPO_ROOT/images/runtime-base/templates/prod-run.sh" true >/dev/null 2>&1 || rc=$?
+		bash "$REPO_ROOT/images/runtime-base/templates/host/prod-run.sh" true >/dev/null 2>&1 || rc=$?
 	[ "$rc" -ne 0 ]
 }
 assert A17 "broker (フェイク) が非ゼロ終了したとき、prod-run.sh 経由でパイプ全体が非ゼロ終了する [compose-current.yaml 経由 prod-run.sh。broker が secrets を一切渡さず失敗する経路のため harness preflight とは無関係]" a17_prod_run_pipefail
@@ -2792,7 +2792,7 @@ a18_home_empty_no_fallback() {
 assert A18 '$HOME が tmpfs で空であり、fallback 資格情報 (~/.config/gh 等) が存在しない' a18_home_empty_no_fallback
 
 # =============================================================================
-# A19〜A34: 出荷 templates/compose.prod.yaml の構造検証 (docker が要る、jq を使う)
+# A19〜A34: 出荷 templates/host/compose.prod.yaml の構造検証 (docker が要る、jq を使う)
 #
 # compose_prod_config() / tmpfs_entries_or_fail() は「compose ファイル生成」
 # 節 (上、$SCRATCH セットアップの一部) で定義済み。ここでは 1 検査 1 assert()
@@ -3036,7 +3036,7 @@ a35_named_volume_src_rejected() {
 assert A35 "/src が named volume の構成で entrypoint が非ゼロ終了し、/src が tmpfs でないことを名指しする [compose-current.yaml。自己検査は fetch より前なので harness preflight とは無関係]" a35_named_volume_src_rejected
 
 # =============================================================================
-# B1〜B4: 出荷 templates/compose.prod.yaml からの最小派生の実挙動 (docker が要る)
+# B1〜B4: 出荷 templates/host/compose.prod.yaml からの最小派生の実挙動 (docker が要る)
 #
 # compose-shipped.yaml (上、$SCRATCH セットアップの一部) は出荷ファイルその
 # ものへの sed 派生で、加えた変更は image: / bind mount 追加 / GIT_CONFIG_GLOBAL

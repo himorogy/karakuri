@@ -2,7 +2,7 @@ name: env-guard
 
 # 平文 env のコミットを CI 側で検知する reusable workflow。呼び出し側
 # リポジトリの .github/workflows/env-guard.yml に 5 行のスタブ
-# (images/runtime-base/templates/env-guard.yml) を置いて使う。
+# (images/runtime-base/templates/project/env-guard.yml) を置いて使う。
 #
 # 設計: docs/prod-secret-isolation-design.md §8.1 / §8.2
 #

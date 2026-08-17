@@ -25,7 +25,7 @@ ng() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEV_INJECT_SH="$TEST_DIR/../dev-inject.sh"
+DEV_INJECT_SH="$TEST_DIR/../host/dev-inject.sh"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

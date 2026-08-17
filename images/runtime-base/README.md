@@ -14,7 +14,7 @@ ghcr.io/himorogy/runtime-base:1
 本 README は収録物と運用手順を扱う。設計の全体像・脅威モデル・判断根拠は
 [`docs/prod-secret-isolation-design.md`](../../docs/prod-secret-isolation-design.md) にある。
 個々の判断の根拠は、それが効いている場所（entrypoint のコメント、
-`templates/compose.prod.yaml` のコメント）にも書いてある。
+`templates/host/compose.prod.yaml` のコメント）にも書いてある。
 
 ---
 
@@ -496,7 +496,8 @@ allow   *.env.container.example
 既定のパターンは basename が `.env` で始まるものしか拾わない。`production.env` のような
 名前を使っているプロジェクトは、上記のように `pattern` で明示すること。
 
-雛形は `images/runtime-base/templates/env-guard.conf`（全項目がコメントアウトされた状態で、
+雛形は `images/runtime-base/templates/project/env-guard.conf`（プロジェクトのリポジトリへ
+置くもの。全項目がコメントアウトされた状態で、
 書式と既定値の説明が入っている）。
 
 ### セットアップ
@@ -541,7 +542,8 @@ jobs:
 実際に走るスキャナまでが決まる。タグは指す先を後から変えられるので、固定したつもりのものが
 固定されない。
 
-雛形は `images/runtime-base/templates/env-guard.yml`。呼び出し側 org の Actions ポリシーが
+雛形は `images/runtime-base/templates/project/env-guard.yml`（プロジェクトのリポジトリへ
+置くもの）。呼び出し側 org の Actions ポリシーが
 「選択した actions / reusable workflows のみ許可」なら、`himorogy/karakuri/...` を allowlist へ
 明示的に追加する必要がある（プランの制限ではなく設定項目）。
 
@@ -597,13 +599,19 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 
 ### prod でコマンドを実行する
 
-テンプレート一式は [`templates/`](./templates/) にある。**リポジトリの中から実行しない。**
+テンプレート一式は [`templates/`](./templates/) にある。置き場所で二つに分けてあり、
+`templates/host/` はホストの固定パスへ置くもの、`templates/project/` はプロジェクトの
+リポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）。**リポジトリの中から実行しない。**
 
 ```
-templates/compose.prod.yaml            # プロジェクトごとにコピー
-templates/prod-run.sh                  # ホストの ~/.local/bin/ 等へコピー
-templates/broker-macos-keychain.sh     # 同上
+templates/host/compose.prod.yaml            # ホストの ~/.config/<project>/ 等へプロジェクトごとにコピー
+templates/host/prod-run.sh                  # ホストの ~/.local/bin/ 等へコピー
+templates/host/broker-macos-keychain.sh     # 同上
 ```
+
+`compose.prod.yaml` は名前だけ見ると「プロジェクトのリポジトリに置くもの」に見えるが、
+`host/` に入っているのが正しい。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、
+下記の起動コマンド例のとおりホストの固定パス（`~/.config/<project>/`）に置く。
 
 dev workspace はホストに bind mount されており、リポジトリ内のラッパーを dev container の
 LLM エージェントが書き換えれば、人間がホストで実行する際に正規 broker の前後で鍵を複製できる。
@@ -705,7 +713,7 @@ entrypoint 完了後なので `/run/secrets` は注入済み。退出後の `doc
 3. 取得時に OS レベルの認可（パスワード / Touch ID プロンプト）が働く
 4. 非対話環境で認可を得られない場合は非ゼロ終了する
 
-参照実装は [`templates/broker-macos-keychain.sh`](./templates/broker-macos-keychain.sh)（macOS の
+参照実装は [`templates/host/broker-macos-keychain.sh`](./templates/host/broker-macos-keychain.sh)（macOS の
 `security` CLI）。セットアップ手順はファイル冒頭のコメントにある。Windows 側の標準は未決で、
 1Password / Bitwarden CLI への統一も候補に残っている。stdin 注入方式なので、broker はコマンド
 1 個の差し替えで移行でき、compose と entrypoint は無変更で済む。

@@ -24,7 +24,7 @@ ng() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-BROKER_SH="$TEST_DIR/../broker-bitwarden.sh"
+BROKER_SH="$TEST_DIR/../host/broker-bitwarden.sh"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

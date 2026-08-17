@@ -111,8 +111,8 @@ pnpm 10 → 11 の移行を同時に踏む場合は
   ```
 
   出てきたものが全て `.env` で始まる basename なら、**`env-guard.conf` は置かなくてよい。**
-  雛形は `images/runtime-base/templates/env-guard.conf`、手順の全体は README の
-  「セットアップ」節にある。
+  雛形は `images/runtime-base/templates/project/env-guard.conf`（プロジェクトのリポジトリへ
+  置くもの）、手順の全体は README の「セットアップ」節にある。
 
 - **検査内容が変わっている。** hook が呼んでいた `dotenvx precommit` は外れ、共有スキャナ
   `env-guard-scan` に一本化された。CI 側とまったく同じ 1 本のファイルが判定する。以前は
@@ -148,12 +148,13 @@ rm ~/.config/<project>/.env.container
 > `rm` はビット列の消去ではない。CoW / ジャーナリング / ウェアレベリングにより削除後も残りうる
 > （`shred` は現代のファイルシステムでは機能しない）。ここで頼っているのはディスク暗号化である。
 
-broker を dev workspace の**外**へ置く。
+broker を dev workspace の**外**へ置く。`templates/host/` はホストの固定パスへ置くものを
+まとめてある。
 
 ```sh
 mkdir -p ~/.local/bin
-cp images/runtime-base/templates/broker-macos-keychain.sh ~/.local/bin/<project>-broker
-cp images/runtime-base/templates/prod-run.sh ~/.local/bin/prod-run.sh
+cp images/runtime-base/templates/host/broker-macos-keychain.sh ~/.local/bin/<project>-broker
+cp images/runtime-base/templates/host/prod-run.sh ~/.local/bin/prod-run.sh
 chmod +x ~/.local/bin/<project>-broker ~/.local/bin/prod-run.sh
 ```
 
@@ -168,7 +169,7 @@ chmod +x ~/.local/bin/<project>-broker ~/.local/bin/prod-run.sh
 
 ```sh
 mkdir -p ~/.config/<project>
-cp images/runtime-base/templates/compose.prod.yaml ~/.config/<project>/compose.prod.yaml
+cp images/runtime-base/templates/host/compose.prod.yaml ~/.config/<project>/compose.prod.yaml
 ```
 
 `image:` のプレースホルダを実際の digest に置き換える。**タグではなく digest で pin する。**
@@ -260,7 +261,8 @@ jobs:
 自分の中に持っている。この 1 行で指した ref が、実際に走るスキャナを決める。タグは指す先を
 後から変えられるので、固定したつもりのものが固定されない。SHA は karakuri のコミット履歴から取る。
 
-雛形は `images/runtime-base/templates/env-guard.yml`。
+雛形は `images/runtime-base/templates/project/env-guard.yml`（プロジェクトのリポジトリへ
+置くもの）。
 
 hook（2 で入った）と**同じ 1 本のスキャナ**が判定するので、両者の間で結果が食い違うことはない。
 違うのはスコープだけで、hook は staged なファイルを、CI は tracked なファイル全体を見る。

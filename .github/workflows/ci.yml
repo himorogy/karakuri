@@ -11,7 +11,7 @@ jobs:
   # 自身も呼び出し側の 1 つとして通す。
   #
   # 呼び出し方がプロジェクト側のスタブ
-  # (images/runtime-base/templates/env-guard.yml) と違い、`himorogy/karakuri/
+  # (images/runtime-base/templates/project/env-guard.yml) と違い、`himorogy/karakuri/
   # .github/workflows/env-guard.yml@<commit sha>` ではなくローカルパス参照に
   # なっているのは意図的である。他リポジトリを指す形にすると、PR で変更した
   # 版ではなく公開済みの版が走ってしまい、その PR の変更が CI に掛からない。

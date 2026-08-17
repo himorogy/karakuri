@@ -24,7 +24,7 @@ ng() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROD_RUN_SH="$TEST_DIR/../prod-run.sh"
+PROD_RUN_SH="$TEST_DIR/../host/prod-run.sh"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
