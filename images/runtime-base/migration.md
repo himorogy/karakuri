@@ -148,20 +148,40 @@ rm ~/.config/<project>/.env.container
 > `rm` はビット列の消去ではない。CoW / ジャーナリング / ウェアレベリングにより削除後も残りうる
 > （`shred` は現代のファイルシステムでは機能しない）。ここで頼っているのはディスク暗号化である。
 
-broker を dev workspace の**外**へ置く。`templates/host/` はホストの固定パスへ置くものを
-まとめてある。
+broker を dev workspace の**外**へ置く。`templates/host/` にホストの固定パスへ置くものが
+まとまっているが、ここから個別にファイルをコピーするのではなく、karakuri をタグ指定で
+clone し、その中の `templates/host/` をそのまま使う。入手方法の詳細は
+[README の「ホスト側ツールを入手する」](./README.md#ホスト側ツールを入手する)を参照
+（ここでは繰り返さない）。
 
 ```sh
-mkdir -p ~/.local/bin
-cp images/runtime-base/templates/host/broker-macos-keychain.sh ~/.local/bin/<project>-broker
-cp images/runtime-base/templates/host/prod-run.sh ~/.local/bin/prod-run.sh
-chmod +x ~/.local/bin/<project>-broker ~/.local/bin/prod-run.sh
+git clone --depth 1 --branch <tag> https://github.com/himorogy/karakuri.git ~/.config/karakuri
 ```
 
-**リポジトリ内から実行してはいけない。** workspace はホストに bind mount されており、
-リポジトリ内のラッパーを dev container の LLM エージェントが書き換えれば、人間がホストで実行する
-際に正規 broker の前後で鍵を複製できる。Makefile や npm script から broker 起動を委譲するのも
-同じ理由で不可。
+`~/.config/karakuri/images/runtime-base/templates/host` を `PATH` に足すか、そこから
+`~/.local/bin/` へ symlink する。broker 本体（`broker-macos-keychain.sh` や
+`broker-bitwarden.sh`）もここに含まれているので、個別の取得は要らない。
+
+`.zshrc` / `.bashrc` に `karakuri.sh` の `source` を 1 行足しておくと、compose project 名の
+付け方や対話 prod 作業の二段構えといった呼び出し規約が関数としてまとまる。
+
+```sh
+. ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh
+```
+
+**`karakuri.sh` の既定 broker は Bitwarden CLI（`broker-bitwarden.sh`）を前提にしている。**
+ここで採る macOS Keychain broker のように差し替える場合は、`karakuri-broker-command` /
+`karakuri-broker-env` を自分の `.zshrc` で（`source` の後に）再定義する。broker は差し替え
+可能というのが契約（`broker-macos-keychain.sh` 冒頭を参照）で、`karakuri.sh` はその差し替え点を
+この 2 関数だけに閉じ込めている。関数の一覧・環境変数・推奨 alias はファイル冒頭のコメントと
+末尾のコメントにある。
+
+**dev workspace に bind mount されるディレクトリの中から実行してはいけない。** 禁じているのは
+置き場所であって、git リポジトリの中にあること自体ではない。上の clone 先は bind mount
+されないので、そこから実行してよい。禁止の実質的な理由は、workspace がホストに bind mount
+されているために、そこに置いたラッパーを dev container の LLM エージェントが書き換えられて
+しまうこと — 正規 broker の呼び出しの前後に鍵を複製するコードを仕込む、といった攻撃が構成上
+可能になる。Makefile や npm script から broker 起動を委譲するのも同じ理由で不可。
 
 ---
 
@@ -169,14 +189,23 @@ chmod +x ~/.local/bin/<project>-broker ~/.local/bin/prod-run.sh
 
 ```sh
 mkdir -p ~/.config/<project>
-cp images/runtime-base/templates/host/compose.prod.yaml ~/.config/<project>/compose.prod.yaml
+cp ~/.config/karakuri/images/runtime-base/templates/host/compose.prod.yaml \
+  ~/.config/<project>/compose.prod.yaml
 ```
 
-`image:` のプレースホルダを実際の digest に置き換える。**タグではなく digest で pin する。**
+他のホスト側ツールと違い、これは clone をそのまま参照せず**編集を伴うコピー**にする。
+`image:` のプレースホルダを実際の digest に置き換える必要があり、この値は正本の clone には
+含まれていない（digest はイメージのビルド後に確定するため、タグの内容として配れない）。
+**タグではなく digest で pin する。**
 
 ```sh
 docker buildx imagetools inspect ghcr.io/himorogy/runtime-base:1 --format '{{.Manifest.Digest}}'
 ```
+
+`karakuri.sh` を source していれば `karakuri-image-digest <tag>` が上記の代わりになり、
+`image:` 行の完成形を出力する（貼り付けは手で行う — compose ファイルは prod の防御を宣言する
+中心的なファイルなので、自動書き換えはしない）。以降、正本のタグと compose ファイルの digest が
+ずれていないかは `karakuri-check-image <tag>` で検査できる。
 
 compose ファイル自体もリポジトリの外に置く。プロジェクト固有の値は焼かれていないので、
 `GIT_REPO` / `GIT_REF` と `COMPOSE_PROJECT_NAME` だけで複数プロジェクトに使い回せる。

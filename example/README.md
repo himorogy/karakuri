@@ -18,16 +18,24 @@ dev container には LLM エージェントが常駐するため信頼しない�
 リポジトリに置くものに見えるが、`host/` にある。`prod-run.sh` の `PROD_COMPOSE_FILE` が
 指す先であり、下記のとおりホストの固定パス（`~/.config/<project>/`）に置く。
 
+`host/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
+（詳細は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の
+「ホスト側ツールを入手する」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
+手段が無くなるためで、clone なら手を加えれば `git status` に出る。
+
 ```
-~/.local/bin/                  # dev workspace の外（ホスト固定パス）
-  bw                           # Bitwarden CLI（native ビルドを SHA-256 照合の上配置）
-  prod-run.sh                  # images/runtime-base/templates/host/prod-run.sh のコピー
-  dev-inject.sh                # images/runtime-base/templates/host/dev-inject.sh のコピー
-  broker-bitwarden.sh          # broker 標準実装（templates/host/ のコピー）
-  prj1-broker                  # prod 鍵束のラッパー（下記）
-  broker-macos-keychain.sh     # 代替: macOS Keychain broker（登録ツール broker-macos-keychain-set.sh と対）
-~/.config/prj1/
-  compose.prod.yaml            # templates/host/compose.prod.yaml のコピー。image の digest を実在のものへ差し替える
+~/.config/karakuri/            # dev workspace の外（ホスト固定パス）。タグ指定で clone
+  images/runtime-base/templates/host/
+    prod-run.sh
+    dev-inject.sh
+    broker-bitwarden.sh          # broker 標準実装
+    broker-macos-keychain.sh     # 代替: macOS Keychain broker（登録ツール broker-macos-keychain-set.sh と対）
+    karakuri.sh                  # 呼び出し規約。.zshrc / .bashrc から source する
+~/.local/bin/                  # 上記を解決するための symlink（または PATH に直接足してもよい）
+  bw                            # Bitwarden CLI（native ビルドを SHA-256 照合の上配置。karakuri の配布物ではない）
+~/.config/app/
+  compose.prod.yaml            # ~/.config/karakuri/.../templates/host/compose.prod.yaml のコピー。
+                                # image の digest を実在のものへ差し替える
 <project repo>/                # dev container にマウントされる（git 管理）
   env-guard.conf                 # templates/project/env-guard.conf のコピー
   .devcontainer/
@@ -35,7 +43,11 @@ dev container には LLM エージェントが常駐するため信頼しない�
     docker-compose.yaml
 ```
 
-prod-run.sh・broker・compose.prod.yaml を workspace の外に置くのは必須。workspace はホストへ bind mount されており、リポジトリ内に置くと dev container 内のエージェントがこれらを書き換えられる（正規 broker の前後に鍵を複製するコードを仕込む、compose から `read_only` / tmpfs を外す等）。
+karakuri の clone・broker・compose.prod.yaml を workspace の外に置くのは必須。workspace は
+ホストへ bind mount されており、リポジトリ内に置くと dev container 内のエージェントがこれらを
+書き換えられる（正規 broker の前後に鍵を複製するコードを仕込む、compose から `read_only` /
+tmpfs を外す等）。禁じているのは置き場所であって、git リポジトリの中にあること自体ではない —
+`~/.config/karakuri` は bind mount されない別の clone なので、そこから実行してよい。
 
 compose.prod.yaml はプロジェクト固有値を含まない設計なので、全プロジェクトで 1 枚を共有することもできる。その場合は runtime-base の digest pin も全プロジェクトで共通になり、イメージ更新が一斉適用になる。プロジェクトごとに更新タイミングを分けたい場合は `~/.config/<project>/` に分置する。
 
@@ -44,28 +56,35 @@ compose.prod.yaml はプロジェクト固有値を含まない設計なので�
 `.zshrc`:
 
 ```sh
-export PROD_COMPOSE_FILE=~/.config/prj1/compose.prod.yaml
+export KARAKURI_ORG=acme
+export KARAKURI_BW_BIN="$HOME/.local/bin/bw"
+export KARAKURI_PROD_COMPOSE="$HOME/.config/app/compose.prod.yaml"
 
-alias prj1-prod-deploy='PROD_BROKER=$HOME/.local/bin/prj1-broker \
-  GIT_REPO=https://github.com/acme/app.git \
-  GIT_REF=1234567890abcdef1234567890abcdef12345678 \
-  prod-run.sh sh -c "pnpm install --frozen-lockfile && dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy"'
+. ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh
 ```
 
-`pnpm install` を毎回連結するのは `/src` が tmpfs だから — 一発コマンドは常に clone 直後の素の working tree で走り、node_modules は存在しない。プロジェクト側に `"release:prod": "pnpm i --frozen-lockfile && pnpm deploy:prod"` のような script を切って `prod-run.sh pnpm release:prod` とする方が読みやすい。
-
-broker の標準は Bitwarden CLI（`templates/host/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
-
-`~/.local/bin/prj1-broker`（PROD_BROKER は引数を取れないため、項目名はラッパーで固定する。カンマ区切りで複数項目をマージでき、同名キーは後勝ちなので共有を先・個人を後に）:
+環境変数の並べ方（`BROKER_BW_ITEM` の項目名、`COMPOSE_PROJECT_NAME` の付け方）は
+`karakuri.sh` が引き受けるので、`.zshrc` に残るのは環境そのもの（bw の在処・org・compose
+ファイルの配置先）だけになる。起動は関数呼び出しになる。
 
 ```sh
-#!/usr/bin/env bash
-export BROKER_BW_BIN="$HOME/.local/bin/bw"
-export BROKER_BW_ITEM="env/prj1/shared/prod,env/prj1/prod"
-exec "$HOME/.local/bin/broker-bitwarden.sh"
+karakuri-prod-exec app 1234567890abcdef1234567890abcdef12345678 \
+  sh -c 'pnpm install --frozen-lockfile && dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy'
 ```
 
-macOS Keychain を使う代替もある（`broker-macos-keychain.sh`。登録・更新は対になる `broker-macos-keychain-set.sh` で行う — Keychain のプロンプトが 1 行しか受けないため base64 で畳む等の面倒をツールが見る）。1Password 等も、dotenv 全文を stdout に出すラッパーを書けば broker 契約（各テンプレート冒頭に記載）を満たす。
+`karakuri-prod-exec` はタスクランナーを挟まず、渡した引数をそのまま prod へ渡す。install と
+dotenvx をまとめて 1 コマンドにしているのは、`dotenvx` を `pnpm` の外側に置く必要があるため
+（下記「挙動と制約」を参照 — `pnpm <task>` は `node_modules/.bin` を PATH の先頭に積むため、
+その内側で dotenvx を呼ぶと shim が素通りされる）。install をタスクランナー任せにしてよい
+（dotenvx を挟まない）タスクなら `karakuri-prod-run app <sha> <task>` が
+`pnpm install --frozen-lockfile && pnpm <task>` を組み立てる（既定のタスクランナーは pnpm、
+`KARAKURI_PROD_INSTALL` / `KARAKURI_PROD_RUN` で上書きできる）。
+
+broker の標準は Bitwarden CLI（`templates/host/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
+
+項目名は `env/<project>/shared/prod,env/<project>/prod`（共有 → 個人の順、カンマ区切りで複数項目をマージでき、同名キーは後勝ち）という規約で、以前はこれをプロジェクトごとのラッパースクリプトへ手で書いていたが、いまは `karakuri.sh` 内の `karakuri-broker-env` 関数がこの項目名を組み立てる。プロジェクトごとのラッパーはもう要らない。
+
+broker は差し替え可能というのが契約（各テンプレート冒頭に記載）で、`karakuri.sh` もこれを引き継いでいる。標準の Bitwarden 実装から差し替えるには `karakuri-broker-command` / `karakuri-broker-env` の 2 関数を（`source` した後で）再定義すればよい — broker 固有の知識はこの 2 関数だけに閉じ込められているので、他の関数はここが返すものしか見ない。macOS Keychain を使う代替もある（`broker-macos-keychain.sh`。登録・更新は対になる `broker-macos-keychain-set.sh` で行う — Keychain のプロンプトが 1 行しか受けないため base64 で畳む等の面倒をツールが見る）。1Password 等も、dotenv 全文を stdout に出すラッパーを書けば同じ契約を満たす。
 
 ### 挙動と制約
 
@@ -82,11 +101,15 @@ stdin が secret の搬送路のため `run` の対話 TTY とは両立しない
 
 ```sh
 # 端末 1: 土台を前面で起動する。broker の認可プロンプトも entrypoint のログもここに出る
-prod-run.sh sleep 8h        # PROD_BROKER / GIT_REPO / GIT_REF 等は一発コマンドと同じ
+karakuri-prod-base app 1234567890abcdef1234567890abcdef12345678
 
 # 端末 2: entrypoint 完了（clone 済み・sleep 稼働）後に入る
-docker exec -it -w /src "$(docker ps -q --filter name=prod-run | head -1)" bash
+karakuri-prod-shell app
 ```
+
+**コンテナを名前で引いて `head -1` で選んではいけない。** compose.prod.yaml は全プロジェクトで 1 枚を共有できる設計なので、compose project 名を明示しないと、どのプロジェクトの prod を起動しても同じ名前になる。複数のプロジェクトの土台を同時に立てていると、名前で引くフィルタが全部に一致し、`head -1` がそのうち一つを黙って選ぶ。入った先には別プロジェクトの鍵が注入済みで、`/src` には別プロジェクトのコードが clone されている。選択が黙って行われるため、入った本人が気づけない。
+
+`karakuri-prod-base` は `COMPOSE_PROJECT_NAME` をプロジェクトごとに振り、`karakuri-prod-shell` はそれを使って compose 経由でコンテナを引く。該当が 0 件でも複数件でも、推測せずに失敗する。
 
 entrypoint 完了後に exec するため `/run/secrets` は注入済み。1 回の注入・clone でセッションを維持でき、その中で dryrun と適用を続けられる。退出後は端末 1 の Ctrl-C で終了・回収（`--rm`）。`sleep infinity` ではなく時間を切っておくと、stop 忘れがそのまま放置されない。
 
@@ -101,22 +124,15 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 1. dev 鍵束を Bitwarden に用意する。個人分は `env/<project>/dev`、チーム共有分は共有コレクションの `env/<project>/shared/dev`、**全プロジェクト共通の個人分は `env/_common/dev`**（`_` 接頭辞はプロジェクト名との衝突回避。プロジェクト slug は kebab-case とし、`_` 始まりのプロジェクトを作らない）
 
    `env/_common/dev` に置くものの代表が **`SSH_AUTHORIZED_KEYS`**（値 = 自分の SSH 公開鍵 1 行、`ssh-ed25519 AAAA... user@host` の形そのまま）。devcontainer-base v2 の sshd が `/run/secrets/SSH_AUTHORIZED_KEYS` を認可鍵として直接読むため、これだけで SSH port forwarding のログインが有効になる（[PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)）。受託案件などプロジェクト単位で別の鍵を使う場合は `env/<project>/dev` に同名キーを置けば後勝ちで上書きされる
-2. コンテナ起動後、ホストで `dev-inject.sh` を実行する。broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプし、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く。`.zshrc` に関数を置くと 1 コマンドになる:
+2. コンテナ起動後、ホストで `karakuri-dev-inject` を実行する。broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプし、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く。
 
    ```sh
-   # 共有 → 共通個人 → プロジェクト個人の順（同名キーは後勝ち = 右ほど強い。
-   # プロジェクト個人が共通個人を上書きできる）
-   dev-inject-bw() {
-     BROKER_BW_BIN="$HOME/.local/bin/bw" \
-     BROKER_BW_ITEM="env/$1/shared/dev,env/_common/dev,env/$1/dev" \
-     DEV_BROKER="$HOME/.local/bin/broker-bitwarden.sh" \
-     DEV_COMPOSE_PROJECT="$1-dev" \
-     dev-inject.sh
-   }
-   # 使い方: dev-inject-bw dotfiles
+   karakuri-dev-inject app
    ```
 
-   `DEV_COMPOSE_PROJECT` は `.devcontainer/docker-compose.yaml` の `name:` の値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する
+   項目名を「共有 → 共通個人 → プロジェクト個人」の順に並べるのも、compose project 名を `<project>-dev` にするのも `karakuri.sh` が引き受ける（同名キーは後勝ち = 右ほど強い。プロジェクト個人が共通個人を上書きする）。以前はこの組み立てを `.zshrc` の関数として手で書いていた
+
+   渡す `<project>` は `.devcontainer/docker-compose.yaml` の `name:` から末尾の `-dev` を除いた値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する
 
    注入した鍵を npm scripts から使うツール（dotenvx / wrangler / gh）は、scripts 内では **`_` 付きの名前**で書く。pnpm/npm は scripts 実行時に `node_modules/.bin` を PATH 先頭へ差し込むため、素の名前はプロジェクトローカルのバイナリに解決されて shim（鍵注入）が迂回される。`_dotenvx` 等はコンテナ側が用意する明示呼び名で、鍵を注入したうえでローカル版（あればそれ、なければイメージ同梱版）を実行する:
 

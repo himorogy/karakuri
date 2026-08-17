@@ -597,25 +597,56 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 
 ## 使い方
 
-### prod でコマンドを実行する
+### ホスト側ツールを入手する
 
 テンプレート一式は [`templates/`](./templates/) にある。置き場所で二つに分けてあり、
 `templates/host/` はホストの固定パスへ置くもの、`templates/project/` はプロジェクトの
-リポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）。**リポジトリの中から実行しない。**
+リポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）。
 
+`host/` 側は、**このリポジトリをタグ指定で clone して使う**。ファイルを個別にコピーしない。
+
+```sh
+git clone --depth 1 --branch <tag> https://github.com/himorogy/karakuri.git ~/.config/karakuri
 ```
-templates/host/compose.prod.yaml            # ホストの ~/.config/<project>/ 等へプロジェクトごとにコピー
-templates/host/prod-run.sh                  # ホストの ~/.local/bin/ 等へコピー
-templates/host/broker-macos-keychain.sh     # 同上
+
+`~/.config/karakuri/images/runtime-base/templates/host` を `PATH` に足すか、そこから
+`~/.local/bin/` へ symlink を張る。どちらでもよい。
+
+コピーではなく clone にするのは、コピーが増えるほど「手元のものが正本と同じか」を
+確かめる手段が無くなるためである。clone なら手元にあるのは正本と同じ git オブジェクトで、
+書き換えれば `git status` に出る。secret の搬送路が黙って書き換わっていないことを、
+追加の道具なしに確認できる。
+
+更新は明示的に行う。`git pull` で追随させない — 未リリースの状態が prod の経路に
+入りうる。
+
+```sh
+git -C ~/.config/karakuri fetch --tags
+git -C ~/.config/karakuri log --oneline HEAD..origin/main -- images/runtime-base/templates/
+git -C ~/.config/karakuri checkout <new-tag>
 ```
+
+clone 先は dev workspace の外に置くこと。**禁じているのは置き場所であって、git リポジトリの
+中にあること自体ではない。** dev workspace はホストに bind mount されており、そこに置いた
+ラッパーを dev container の LLM エージェントが書き換えれば、人間がホストで実行する際に
+正規 broker の前後で鍵を複製できる。この clone は bind mount されないので、その経路が無い。
+
+呼び出し規約は [`templates/host/karakuri.sh`](./templates/host/karakuri.sh) にある。
+`.zshrc` / `.bashrc` からこれを `source` すると、broker 項目の命名・compose project 名・
+対話 prod 作業の二段構えといった規約が関数として入る。設定として残るのは
+`KARAKURI_BW_BIN` / `KARAKURI_ORG` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを
+指すものだけになる。関数の一覧と推奨 alias はファイル末尾のコメントにある。
+
+### prod でコマンドを実行する
 
 `compose.prod.yaml` は名前だけ見ると「プロジェクトのリポジトリに置くもの」に見えるが、
 `host/` に入っているのが正しい。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、
-下記の起動コマンド例のとおりホストの固定パス（`~/.config/<project>/`）に置く。
+下記の起動コマンド例のとおりホストの固定パス（`~/.config/<project>/`）に置く。これは
+clone から `~/.config/<project>/` へコピーする（`image:` の digest を差し替えるため、
+ここだけは編集を伴うコピーになる）。
 
-dev workspace はホストに bind mount されており、リポジトリ内のラッパーを dev container の
-LLM エージェントが書き換えれば、人間がホストで実行する際に正規 broker の前後で鍵を複製できる。
-broker と起動スクリプトを dev から到達不能なホストの固定パスに置くことで、この経路を断つ。
+`karakuri.sh` を source していれば、下の生の呼び出しは `karakuri-prod-run` が組み立てる。
+以下は、その下で実際に何が渡っているかを示したものである。
 
 ```sh
 PROD_COMPOSE_FILE=~/.config/acme/compose.prod.yaml \

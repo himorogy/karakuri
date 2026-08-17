@@ -766,9 +766,12 @@ stdin が secret の搬送路のため、`run` の対話 TTY とは両立しな�
 <prod-run ラッパー> ... prod-run.sh sleep 8h
 
 # 端末 2: entrypoint 完了（clone 済み・sleep 稼働）後に入る
-docker ps --filter name=prod-run    # container 特定
+#         compose project 名で引く。名前フィルタで引いて先頭を採ってはいけない
+docker compose -p prod-<repo> -f <compose ファイル> ps -q prod
 docker exec -it -w /src <container> bash
 ```
+
+**container の特定を推測で行わない。** compose.prod.yaml はプロジェクト固有値を持たない設計なので全プロジェクトで 1 枚を共有でき、その場合 compose project 名はファイルの所在から導かれて、どのプロジェクトの prod を起動しても同じ名前になる。`docker ps --filter name=prod-run` はそれら全部に一致し、先頭を採る実装は複数の土台が立っているときに黙って一つを選ぶ。入った先には別プロジェクトの鍵が注入済みで、`/src` には別プロジェクトのコードが clone されている。起動側で `COMPOSE_PROJECT_NAME` をプロジェクトごとに振り、取得側は compose 経由で引いて、0 件でも複数件でも失敗させる。ホスト側の関数はこの形で実装されている（`images/runtime-base/templates/host/karakuri.sh`）。
 
 - entrypoint 完了後に exec するため `/run/secrets` は注入済み。対話シェルの起動時に注入済み鍵名が表示される（§4.3）
 - 注入 1 回・clone 1 回でセッションを維持でき、その中で dryrun と適用を続けられる
