@@ -57,6 +57,17 @@
 #   karakuri-prod-shell <repo>                      土台へ入る
 #   karakuri-image-digest <tag>                     タグ → image: 行の完成形
 #   karakuri-check-image <tag>                      compose の digest と照合
+#   karakuri-broker-command <dev|prod> <project>    broker 実行ファイルのパスを出す（差し替え点）
+#   karakuri-broker-env <dev|prod> <project>        broker へ渡す環境変数を出す（差し替え点）
+#   karakuri-help                                   この一覧と環境変数の現在値を出す
+#
+# 上の一覧は karakuri-help と読み手が違う: こちらはソースを開いた人が
+# 関数を追加・削除したときに真っ先に直す目次、karakuri-help はシェルを
+# 開いたまま（ソースを見ずに）引ける対話用の一覧で、環境変数の現在値も
+# 出す点がこちらには無い。関数を増減させたときはここと karakuri-help の
+# 両方を直すこと（2 箇所で止めているのは、この一覧はテキストの目次として
+# 見出しの直後という読みやすい位置に置きたく、実装の中に埋めると読み手が
+# 増減を追いにくくなるため）。
 #
 # 名前が長いのは、source される側が `pf` や `prod-run` のような一般的な名前を
 # 取ると利用者の既存の関数を黙って覆ってしまうため。短縮はファイル末尾の
@@ -741,6 +752,105 @@ karakuri-check-image() {
 	return 1
 }
 
+# --- ヘルプ -----------------------------------------------------------------------
+
+# _karakuri_help_env <name> <必須/任意> <現在値> <説明> — karakuri-help の
+# 環境変数 1 行を stdout に出す。現在値が空文字なら "(unset)" と表示する。
+#
+# 「必須/任意」と現在値を別引数にしてあるのは、KARAKURI_PROD_INSTALL /
+# KARAKURI_PROD_RUN のように「未設定」と「空文字を設定」を区別しないと
+# 意味が変わる変数があり（karakuri-prod-run 側を参照）、その 2 つだけは
+# この共通ヘルパーを使わず個別に組み立てるため。
+_karakuri_help_env() {
+	printf '  %s (%s): %s\n' "$1" "$2" "${3:-(unset)}"
+	printf '      %s\n' "$4"
+}
+
+# karakuri-help — 提供している関数と環境変数を一覧する。引数は取らない。
+#
+# 経緯: 手がかりが「末尾の alias 例のコメント」と `karakuri-` の補完しか
+# 無く、実機で「今どの環境変数が効いているか分からない」を踏んだ。
+# ソースを開かなくても対話シェルの中だけで完結させたいので、環境変数は
+# 説明だけでなく現在値も出す。
+#
+# 現在値を出してよい理由: ここに出すのは bw の在処・org 名・compose
+# ファイルの配置先であって、どれも秘密ではない。broker が返す鍵や
+# BROKER_BW_ITEM の中身はここでは絶対に出さない（項目名自体は秘密では
+# ないが、それを見せるのは karakuri-broker-env の役目であってここではない
+# — この関数はあくまで「karakuri.sh 自身が読む環境変数」だけを見る）。
+#
+# 関数一覧の 1 行説明はファイル先頭の「提供する関数」一覧とほぼ同じ文言に
+# なるが、二重管理とは考えていない。あちらはソースを開いた人向けの目次、
+# こちらは対話シェルから引く実行時ヘルプで、読み手も入手手段も違う。
+# 本当に重複していたのはこの下にあった alias 例の環境変数の説明文（対話
+# 利用者向けという点でここと読み手が同じだった）で、そちらは削り、
+# ここへ一本化した。
+karakuri-help() {
+	cat <<'FUNCS'
+karakuri.sh が提供する関数:
+
+  karakuri-pf <name>
+      port forwarding を張り直す
+  karakuri-clean-pf [name...]
+      port forwarding の後始末（省略時は devc-* を全部畳む）
+  karakuri-dev-inject <project>
+      起動済みの dev container へ鍵を注入する
+  karakuri-prod-run <org/repo> <sha> <task> [task-args...]
+      install を挟んでタスクランナー経由で prod のタスクを実行する
+  karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
+      install を挟まず、渡したコマンドをそのまま prod で実行する
+  karakuri-prod-base <org/repo> <sha>
+      対話 prod 作業の土台を起動する（前面で動かし、別端末から karakuri-prod-shell で入る）
+  karakuri-prod-shell <repo>
+      起動済みの土台へ入る
+  karakuri-image-digest <tag>
+      タグから digest を引き、compose ファイルへ貼れる image: 行を出す
+  karakuri-check-image <tag>
+      compose に pin された digest と、タグの現在の digest を照合する
+  karakuri-broker-command <dev|prod> <project>
+      broker 実行ファイルのパスを出す（差し替え点。既定は Bitwarden broker）
+  karakuri-broker-env <dev|prod> <project>
+      broker へ渡す環境変数を出す（差し替え点）
+  karakuri-help
+      この一覧を出す
+
+FUNCS
+
+	printf '環境変数（bw の在処・org 名・compose ファイルの配置先。秘密は含まない）:\n\n'
+
+	_karakuri_help_env "KARAKURI_BW_BIN" "任意" "${KARAKURI_BW_BIN:-}" \
+		"bw 実行ファイルの絶対パス。未設定なら broker 側の既定（PATH 解決）に任せる"
+
+	_karakuri_help_env "KARAKURI_ORG" "任意" "${KARAKURI_ORG:-}" \
+		"<org>/<repo> の org を省いたときに補う。org を複数横断して扱うなら設定しないこと（設定すると、別 org のつもりで打った bare <repo> が黙って KARAKURI_ORG 側の org へ解決される）"
+
+	_karakuri_help_env "KARAKURI_PROD_COMPOSE" "prod 系の関数で必須（karakuri-prod-shell は例外で不要）" "${KARAKURI_PROD_COMPOSE:-}" \
+		"compose.prod.yaml の配置先"
+
+	if [ "${KARAKURI_PROD_INSTALL+set}" = "set" ]; then
+		if [ -z "$KARAKURI_PROD_INSTALL" ]; then
+			printf '  KARAKURI_PROD_INSTALL (任意): (empty — install 段を省く設定)\n'
+		else
+			printf '  KARAKURI_PROD_INSTALL (任意): %s\n' "$KARAKURI_PROD_INSTALL"
+		fi
+	else
+		printf '  KARAKURI_PROD_INSTALL (任意): (unset — 既定 "pnpm install --frozen-lockfile" を使う)\n'
+	fi
+	printf '      タスクの前に走らせる install コマンド。空文字を設定すると install 段を省く\n'
+
+	if [ "${KARAKURI_PROD_RUN+set}" = "set" ]; then
+		printf '  KARAKURI_PROD_RUN (任意): %s\n' "$KARAKURI_PROD_RUN"
+	else
+		printf '  KARAKURI_PROD_RUN (任意): (unset — 既定 "pnpm" を使う)\n'
+	fi
+	printf '      タスク名の前に置くコマンド（"npm run" 等の複数語も設定できる）\n'
+
+	_karakuri_help_env "KARAKURI_TOOL_DIR" "任意" "${KARAKURI_TOOL_DIR:-}" \
+		"prod-run.sh / dev-inject.sh / broker を探すディレクトリ。通常は設定しなくてよい"
+
+	return 0
+}
+
 # --- 推奨する alias の例 ---------------------------------------------------------
 #
 # 短い名前は利用者の側で付ける。下をそのまま .zshrc / .bashrc へ写せば、
@@ -760,7 +870,7 @@ karakuri-check-image() {
 #   export KARAKURI_ORG=acme
 #   export KARAKURI_PROD_COMPOSE="$HOME/.config/acme/compose.prod.yaml"
 #
-# KARAKURI_ORG は任意。扱う org が 1 つに決まる人向けの省略記法でしかない。
-# 複数の org を横断して触るなら設定せず、毎回 <org>/<repo> の形で渡すこと
-# （設定してしまうと、別 org のつもりで打った bare <repo> が黙って
-# KARAKURI_ORG 側の org へ解決される）。
+# 各変数の意味・必須/任意・現在値は karakuri-help を実行して見ること
+# （ここに説明文を書くと、karakuri-help の説明文と 2 箇所を直す羽目になる。
+# KARAKURI_ORG の「複数 org を横断するなら設定しない」という注意も含めて
+# karakuri-help 側に一本化した）。

@@ -44,15 +44,17 @@
 #   切り替えると消える点にも注意）。
 #
 #   bw login                       # アカウントへのログイン（初回のみ）
-#   bw sync                        # vault キャッシュの更新
+#   bw sync                        # vault キャッシュの更新（初回の取得分）
 #
 #   Bitwarden 側に Secure Note を 1 項目作り、名前を「env/<project>/<環境>」の
 #   ように付ける（例: env/radwisp/dev）。中身は dotenv 形式のテキスト全文
 #   （複数行の KEY=value をまとめたもの）。この項目名を、呼ぶ側で
 #   BROKER_BW_ITEM として渡す。
 #
-#   注意: 項目の内容を Bitwarden 側で更新した後は `bw sync` を実行しないと、
-#   ローカルの vault キャッシュが古いまま旧値を返す。
+#   このスクリプトは取得の直前に `bw sync` を 1 回実行するので、項目の内容を
+#   Bitwarden 側で更新した後にローカルの vault キャッシュが古いまま旧値を
+#   返す、という事故は通常は起きない（sync が失敗した場合を除く。下記）。
+#   `BROKER_BW_SYNC=0` を設定すると sync をしない。
 #
 # --- 使い方 -------------------------------------------------------------------
 #
@@ -98,6 +100,27 @@ session=$("$bw_bin" unlock --raw)
 # 取得の成否によらず、このスクリプトを抜けるときには必ず lock する。
 # lock の失敗で本来の終了コードを上書きしない。
 trap 'BW_SESSION="$session" "$bw_bin" lock >/dev/null 2>&1 || true' EXIT
+
+# 取得の直前に vault キャッシュを更新する。sync はセッションを要求するので
+# unlock より後、複数項目でもプロンプトを増やさないよう get notes より前に
+# 1 回だけ行う。BROKER_BW_SYNC=0 で無効化できる（オフライン環境で毎回
+# sync を試みてタイムアウト待ちになるのを避けたい場合など）。
+#
+# 失敗しても止めない。ローカルキャッシュから取れる鍵も、それ自体は正当に
+# 発行された鍵であり、Bitwarden 側で失効済みなら下流の認証失敗として
+# 別途現れる。ここで止めると、ネットワークの無い場所では sync が必ず失敗し、
+# prod 作業そのものが一切できなくなる。ただし黙って古いキャッシュへ
+# フォールバックすると「鍵を回転したのに古い値が使われた」に誰も気付けない
+# ので、警告は必ず出す。
+#
+# stdout は secret の搬送路そのものなので、bw sync 自身の出力
+# （"Syncing complete." 等）が紛れ込まないよう捨てる。診断は stderr に
+# 出るものなのでそのまま流す（get notes と同じ扱い）。
+if [ "${BROKER_BW_SYNC:-1}" != "0" ]; then
+	if ! BW_SESSION="$session" "$bw_bin" sync >/dev/null; then
+		echo "broker-bitwarden: bw sync failed; continuing with the local vault cache, which may return stale values until the next successful sync (set BROKER_BW_SYNC=0 to skip this step)" >&2
+	fi
+fi
 
 # カンマ区切りの各項目を並び順のまま取得して連結する。1 項目でも失敗
 # （見つからない・同名複数・空）したら全体を非ゼロで止める — 部分的な

@@ -32,8 +32,14 @@ trap 'rm -rf "$WORKDIR"' EXIT
 export BW_STUB_LOG="$WORKDIR/bw-calls.log"
 
 # フェイク bw。unlock はセッション鍵らしき文字列を返し、get notes は項目名で
-# 応答を切り替える。lock / get の呼び出しと、そのとき BW_SESSION が渡って
-# いたかをログに記録する。
+# 応答を切り替える。lock / get / sync の呼び出しと、そのとき BW_SESSION が
+# 渡っていたかをログに記録する。
+#
+# sync は broker 側の「stdout に secret 以外の何かを混ぜていないか」を
+# 検査するため、わざと bw sync らしい出力を stdout と stderr の両方に出す
+# （実物の `bw sync` も "Syncing complete." のような文言を stdout に出す）。
+# 失敗させたいテストのために終了コードは FAKE_SYNC_EXIT_CODE で切り替えられる
+# ようにしてある。
 cat >"$WORKDIR/bw" <<'STUB'
 #!/usr/bin/env bash
 cmd="${1:-}"
@@ -43,6 +49,12 @@ unlock)
 	;;
 lock)
 	echo "lock session=${BW_SESSION:-unset}" >>"$BW_STUB_LOG"
+	;;
+sync)
+	echo "sync session=${BW_SESSION:-unset}" >>"$BW_STUB_LOG"
+	printf 'Syncing complete.\n'
+	echo "bw sync: stub diagnostic on stderr" >&2
+	exit "${FAKE_SYNC_EXIT_CODE:-0}"
 	;;
 get)
 	item="${3:-}"
@@ -104,6 +116,63 @@ if [ "$locks" -eq 1 ]; then
 	ok "lock 1 回・セッション付き"
 else
 	ng "lock 記録: $(grep '^lock' "$BW_STUB_LOG" || echo none)"
+fi
+
+# --- bw sync ----------------------------------------------------------------
+
+echo "sync は unlock の後・get の前に、セッション付きで 1 回だけ呼ばれる"
+: >"$BW_STUB_LOG"
+out="$(BROKER_BW_ITEM=shared,personal run_broker 2>/dev/null)"
+rc=$?
+syncs="$(grep -c '^sync session=stub-session-token$' "$BW_STUB_LOG")"
+if [ "$rc" -eq 0 ] && [ "$syncs" -eq 1 ]; then
+	ok "複数項目でも sync は 1 回・セッション付き"
+else
+	ng "rc=$rc syncs=$syncs log: $(cat "$BW_STUB_LOG")"
+fi
+if [ "$(grep -n '^sync ' "$BW_STUB_LOG" | head -1 | cut -d: -f1)" -lt \
+	"$(grep -n '^get ' "$BW_STUB_LOG" | head -1 | cut -d: -f1)" ]; then
+	ok "sync のログが get より先に記録される（get の前に呼ばれている）"
+else
+	ng "sync が get より後に呼ばれている: $(cat "$BW_STUB_LOG")"
+fi
+
+echo "sync の stdout がバックエンドの出力（dotenv）に混ざらない"
+if ! printf '%s' "$out" | grep -q "Syncing complete"; then
+	ok "stdout に bw sync の出力が現れない"
+else
+	ng "stdout に bw sync の出力が漏れている: $out"
+fi
+
+echo "sync が失敗しても取得は成功し、stderr に警告が出る"
+: >"$BW_STUB_LOG"
+out="$(BROKER_BW_ITEM=personal FAKE_SYNC_EXIT_CODE=1 run_broker 2>"$WORKDIR/stderr")"
+rc=$?
+err="$(cat "$WORKDIR/stderr")"
+if [ "$rc" -eq 0 ] && [ "$out" = "GH_TOKEN=personal-token" ]; then
+	ok "sync 失敗でも取得は成功する"
+else
+	ng "rc=$rc out=$out"
+fi
+if printf '%s' "$err" | grep -q "bw sync failed"; then
+	ok "sync 失敗が stderr に警告として出る"
+else
+	ng "stderr に sync 失敗の警告が無い: $err"
+fi
+if [ "$(grep -c '^get ' "$BW_STUB_LOG")" -eq 1 ]; then
+	ok "sync 失敗後も get notes は呼ばれている"
+else
+	ng "sync 失敗後に get notes が呼ばれていない: $(cat "$BW_STUB_LOG")"
+fi
+
+echo "BROKER_BW_SYNC=0 なら sync を呼ばない"
+: >"$BW_STUB_LOG"
+out="$(BROKER_BW_ITEM=personal BROKER_BW_SYNC=0 run_broker 2>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "GH_TOKEN=personal-token" ] && ! grep -q '^sync ' "$BW_STUB_LOG"; then
+	ok "BROKER_BW_SYNC=0 で sync が呼ばれず、取得は成功する"
+else
+	ng "rc=$rc out=$out log: $(cat "$BW_STUB_LOG")"
 fi
 
 # --- 複数項目のマージ -----------------------------------------------------------

@@ -245,6 +245,20 @@ assert_stderr_has() {
 	esac
 }
 
+assert_stdout_has() {
+	case "$CASE_STDOUT" in
+	*"$1"*) ok "$2" ;;
+	*) ng "$2 (stdout: $CASE_STDOUT)" ;;
+	esac
+}
+
+assert_stdout_lacks() {
+	case "$CASE_STDOUT" in
+	*"$1"*) ng "$2 (stdout: $CASE_STDOUT)" ;;
+	*) ok "$2" ;;
+	esac
+}
+
 assert_stdout_is() {
 	if [ "$CASE_STDOUT" = "$1" ]; then
 		ok "$2"
@@ -644,13 +658,53 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 		ng "[$s] clean-pf <name> removes just that socket"
 	fi
 
+	# --- karakuri-help ---------------------------------------------------------------
+	echo "[$s] karakuri-help lists functions and env vars, and reflects current values"
+	reset_env
+	export KARAKURI_ORG=acme
+	export KARAKURI_BW_BIN=/opt/bw
+	run_case karakuri-help
+
+	assert_rc_zero "[$s] karakuri-help succeeds"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] karakuri-help does not call prod-run.sh / dev-inject.sh / broker"
+
+	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject karakuri-prod-run \
+		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
+		karakuri-image-digest karakuri-check-image karakuri-help; do
+		assert_stdout_has "$fn" "[$s] karakuri-help output mentions $fn"
+	done
+
+	assert_stdout_has "KARAKURI_ORG" "[$s] karakuri-help lists KARAKURI_ORG"
+	assert_stdout_has "acme" "[$s] karakuri-help shows the current value of KARAKURI_ORG"
+	assert_stdout_has "/opt/bw" "[$s] karakuri-help shows the current value of KARAKURI_BW_BIN"
+
+	# KARAKURI_PROD_INSTALL / KARAKURI_PROD_RUN は reset_env が unset している。
+	# 既定値だけを見せる誤りではなく「今は未設定」を見せていることを確認する。
+	assert_stdout_has "KARAKURI_PROD_INSTALL (任意): (unset" \
+		"[$s] karakuri-help marks unset KARAKURI_PROD_INSTALL as unset, not just its default"
+	assert_stdout_has "KARAKURI_PROD_RUN (任意): (unset" \
+		"[$s] karakuri-help marks unset KARAKURI_PROD_RUN as unset, not just its default"
+
+	assert_stdout_lacks "BROKER_BW_ITEM" \
+		"[$s] karakuri-help never prints BROKER_BW_ITEM (that is the broker's business, not this function's)"
+
+	reset_env
+	export KARAKURI_PROD_INSTALL=""
+	export KARAKURI_PROD_RUN="npm run"
+	run_case karakuri-help
+
+	assert_stdout_has "KARAKURI_PROD_INSTALL (任意): (empty" \
+		"[$s] karakuri-help distinguishes an empty KARAKURI_PROD_INSTALL from unset"
+	assert_stdout_has "KARAKURI_PROD_RUN (任意): npm run" \
+		"[$s] karakuri-help shows a multi-word KARAKURI_PROD_RUN as set"
+
 	# --- 関数が全部定義されていること --------------------------------------------------
 	echo "[$s] every documented function is defined"
 	reset_env
 	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image \
-		karakuri-broker-command karakuri-broker-env; do
+		karakuri-broker-command karakuri-broker-env karakuri-help; do
 		# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
 		if PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \
 			"$SHELL_UNDER_TEST" -c '. "$KARAKURI_SH" || exit 90; command -v "$1" >/dev/null' \
