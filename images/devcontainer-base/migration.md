@@ -18,6 +18,16 @@ pnpm 10 を使っている devcontainer を、この base image（pnpm 11）へ�
 sshd 同梱・`GIT_ASKPASS` / `CRIT_PORT` の焼き込み・個人フックは v2 からで、
 v1 系には無い。
 
+**2.1.0 で github.com への https 認証の挙動が変わる。** base が github.com の credential helper を
+打ち消すため、VS Code が転送するホスト側の資格情報では認証されなくなり、`/run/secrets/GH_TOKEN`
+の注入が必須になる（public repo の clone と ssh remote、github.com 以外のホストは影響しない）。
+
+**挙動の変更をマイナーで入れている。** 正式リリース前で、利用側がまだこのリポジトリ自身と
+移行中のプロジェクトに限られるため。浮動タグ `:2` を参照しているプロジェクトは、次のリビルドで
+この変更を受け取る。**リビルドの前に dev-inject へ移行済みであることを確かめること。**
+狙いと外し方は [`images/runtime-base/README.md`](../runtime-base/README.md) の
+「git の認証（github.com）」。
+
 以下、**実測済み**と**リリースノート由来（未実測）**を分けて記す。実測は 2026-08-04 に
 karakuri monorepo（pnpm 11.20.0 / Node 24 / linux-arm64）で行ったもの。
 
@@ -264,7 +274,10 @@ volumes:
 - **それ以外は個人フック**（ホスト側 `~/.config/devc-personal/setup.sh`。雛形の
   compose が `/personal:ro` に mount し、`postCreateCommand` が実行する）。codex 等の
   個人ツールはここへ。git の認証は base が焼く `GIT_ASKPASS` が
-  `/run/secrets/GH_TOKEN` から取るため、旧雛形にあった `gh auth setup-git` は不要になった
+  `/run/secrets/GH_TOKEN` から取るため、旧雛形にあった `gh auth setup-git` は不要になった。
+  2.1.0 以降は不要になっただけでなく**効かない** — base が github.com の credential helper を
+  打ち消すので、`gh auth setup-git` が global gitconfig へ書く helper は github.com について
+  呼ばれない
 
 `postCreateCommand` に長いワンライナーを書いていた構成からは、中身を個人フックへ移す。
 プロジェクト共通で必要なセットアップが残る場合だけ、自前の post-create.sh を作って

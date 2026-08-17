@@ -142,10 +142,24 @@ ENV CRIT_PORT=4588 \
 # sshd はクライアント側の environ を引き継がず、セッションの環境は PAM (pam_env)
 # が /etc/environment から組み立てる。SSH セッションにも同じ値を届けるため、
 # ENV と /etc/environment の両方に書く (値の原本は上の ENV。ここは転記)。
+#
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 は runtime-base が
+# 焼く。github.com の credential helper を打ち消して git の認証を GIT_ASKPASS へ
+# 落とすためのもので、VS Code の Dev Containers 拡張が global gitconfig へ helper
+# を書く以上、dev で最も効かせたい 3 つである。ここへ転記しないと SSH セッション
+# だけ打ち消しが外れ、その経路の git だけがホスト側の資格情報で通る。
+# 値の原本は runtime-base 側なので、名前が変わったら空を転記して黙って穴が開く。
+# それを避けるため、転記の前に存在を確かめて落とす (VALUE_0 は空が正常値なので
+# 対象にできない。KEY_0 が在れば VALUE_0 も在るという前提を取る)。
+RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ]
+
 RUN printf '%s\n' \
       "CRIT_PORT=\"${CRIT_PORT}\"" \
       "CRIT_NO_UPDATE_CHECK=\"${CRIT_NO_UPDATE_CHECK}\"" \
       "GIT_ASKPASS=\"${GIT_ASKPASS}\"" \
+      "GIT_CONFIG_COUNT=\"${GIT_CONFIG_COUNT}\"" \
+      "GIT_CONFIG_KEY_0=\"${GIT_CONFIG_KEY_0}\"" \
+      "GIT_CONFIG_VALUE_0=\"${GIT_CONFIG_VALUE_0}\"" \
     >> /etc/environment
 
 RUN crit --version

@@ -119,14 +119,23 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
      "dev": "_dotenvx run -f .env.dev --strict -- next dev"
    }
    ```
-3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（devcontainer-base v2 が ENV と `/etc/environment` の両方に焼き込み済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
+3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（devcontainer-base が ENV と `/etc/environment` の両方に焼き込み済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
+
+   devcontainer-base 2.1.0 以降は、これを「読まれる経路」にするために github.com の credential
+   helper を打ち消している。VS Code の Dev Containers 拡張が global gitconfig へ書き込む helper が
+   `GIT_ASKPASS` より先に評価され、注入したトークンではなくホスト側の資格情報で認証が通って
+   しまうため。**この結果、`GH_TOKEN` を注入していないと private repo の https 操作は失敗する**
+   （public repo の clone と ssh remote、github.com 以外のホストは影響しない）。狙いと外し方は
+   [`images/runtime-base/README.md`](../images/runtime-base/README.md) の「git の認証（github.com）」
 
 dev compose 側の前提（本ディレクトリの `docker-compose.yaml` に反映済み）:
 
 - `/run` が tmpfs（`tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]`）。**これが無いと `/run/secrets` はコンテナの writable layer = ホスト側の不揮発ディスクへ書かれ、平文廃止の意味が消える。** オプション無しの短縮形は root:root 所有になり node ユーザーが `/run/secrets` を作れない点も prod と同じ
-- `GIT_ASKPASS` は compose に書かない。devcontainer-base v2 が焼き込み済みで、compose の
-  `environment:` は SSH セッションに届かず経路間で値が食い違うため（base の
-  PORT-FORWARDING.md）。base を使わないイメージでは従来どおり compose で設定する
+- `GIT_ASKPASS` と `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` は compose に
+  書かない。devcontainer-base が焼き込み済みで、compose の `environment:` は SSH セッションに
+  届かず経路間で値が食い違うため（base の PORT-FORWARDING.md）。base を使わないイメージでは
+  従来どおり compose で設定する。`GIT_CONFIG_COUNT` を自分の設定にも使いたい場合は、base が
+  置いている 3 つを引き継いだうえで 1 番以降に足すこと（カウンタは 1 本しかない）
 - `env_file` 節は使わない
 
 注入を忘れた場合は下流の認証失敗として顕在化する（shim は不在なら素通し。ただし dotenvx だけは `--strict` が無いと復号失敗が沈黙する）。`/run` は tmpfs なので、コンテナの再作成だけでなく停止 → 再起動でも消える。**コンテナを起動するたびに、起動後 dev-inject を 1 回**が運用になる（dev-inject は起動ラッパーではない — 起動は従来どおり IDE が行う）。

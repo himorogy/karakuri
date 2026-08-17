@@ -41,9 +41,10 @@ services:
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
       CLAUDE_CONFIG_DIR: /home/node/.claude
-      # CRIT_PORT (既定 4588) と GIT_ASKPASS は base v2 が ENV と /etc/environment の
-      # 両方で設定済み。ここには書かない — compose の environment: は docker exec
-      # 経由のシェルにしか届かず、SSH セッションには効かないため、上書きすると
+      # CRIT_PORT (既定 4588)、GIT_ASKPASS、github.com の credential helper を打ち消す
+      # GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 は base が ENV と
+      # /etc/environment の両方で設定済み。ここには書かない — compose の environment: は
+      # docker exec 経由のシェルにしか届かず、SSH セッションには効かないため、上書きすると
       # 経路によって値が食い違う (base の PORT-FORWARDING.md 参照)。
 
     # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
