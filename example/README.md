@@ -150,6 +150,8 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 
    渡す `<project>` は `.devcontainer/docker-compose.yaml` の `name:` から末尾の `-dev` を除いた値。サービス名が `dev` 以外なら `DEV_SERVICE` で指定する
 
+   コンテナ内のサービスへホストのブラウザから到達するには、続けて `karakuri-pf <project>` で port forwarding を張る（VS Code の自動転送を使う場合は不要）。初回だけ `~/.ssh/config` の設定が要り、macOS では loopback エイリアスの用意（`karakuri-loopback install` を 1 回、プロジェクトごとに `karakuri-loopback add <addr> <hostname>`）も要る。ターミナルからコンテナへ入るのは `karakuri-dock <project>`。いずれも手順は [PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)
+
    注入した鍵を npm scripts から使うツール（dotenvx / wrangler / gh）は、scripts 内では **`_` 付きの名前**で書く。pnpm/npm は scripts 実行時に `node_modules/.bin` を PATH 先頭へ差し込むため、素の名前はプロジェクトローカルのバイナリに解決されて shim（鍵注入）が迂回される。`_dotenvx` 等はコンテナ側が用意する明示呼び名で、鍵を注入したうえでローカル版（あればそれ、なければイメージ同梱版）を実行する:
 
    ```json

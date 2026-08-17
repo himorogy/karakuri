@@ -146,6 +146,11 @@ templates/host/       ホストの固定パスへ置くもの
   prod-run.sh
   compose.prod.yaml
   karakuri.sh              (H3 で新設)
+  dock.sh                  (SSH の ProxyCommand から呼ばれる。§4.6 参照)
+  loopback-setup.sh        (loopback alias と /etc/hosts の設定。§4.6 参照)
+  loopback/                loopback-setup.sh が配置する LaunchDaemon 一式
+    karakuri-loopback-aliases
+    com.karakuri.loopback-aliases.plist
 
 templates/project/    プロジェクトのリポジトリへ置くもの
   env-guard.conf
@@ -223,8 +228,8 @@ H1 と組み合わせると、利用側の `PATH` 追加は `~/.config/karakuri/
 提供する名前は次のとおりです。
 
 ```
-karakuri-pf            karakuri-clean-pf
-karakuri-dev-inject
+karakuri-pf            karakuri-clean-pf      karakuri-loopback
+karakuri-dev-inject    karakuri-dock
 karakuri-prod-run      karakuri-prod-exec
 karakuri-prod-base     karakuri-prod-shell
 karakuri-image-digest  karakuri-check-image
@@ -255,7 +260,19 @@ karakuri-image-digest  karakuri-check-image
 
 ### 4.6 範囲に含めないもの
 
-**`~/.ssh/config` の生成や配布はしません。** `images/devcontainer-base/PORT-FORWARDING.md` が設定例を示しており、`karakuri-pf` / `karakuri-clean-pf` が依存しているのはそのうち `ControlPath ~/.ssh/cm-%n` の規約だけです。`LocalForward` に並べるポートも `HostName` に書くコンテナ名もプロジェクト固有であり、生成しても利用者が全面的に書き換えることになります。書き方の参考を示すに留めます。
+**`~/.ssh/config` の生成や配布はしません。** `images/devcontainer-base/PORT-FORWARDING.md` が設定例を示しており、`karakuri-pf` / `karakuri-clean-pf` が依存しているのはそのうち `ControlPath ~/.ssh/cm-%n` の規約だけです。`LocalForward` に並べるポートも `HostName` に書くプロジェクト名もプロジェクト固有であり、生成しても利用者が全面的に書き換えることになります。書き方の参考を示すに留めます。
+
+**`ProxyCommand` が呼ぶスクリプト（`dock.sh`）は配ります。** 上の判断と矛盾しません。`~/.ssh/config` に書く 1 行は利用者のものですが、その 1 行が起動する処理の中身は karakuri の規約そのものです。コンテナの引き方（compose が焼き込む `com.docker.compose.project=<project>-dev` と `com.docker.compose.service=dev` のラベル）も、`/usr/local/sbin/sshd-inetd` を絶対パスで exec することも、規約を決めた側が持つべきものです。`~/.ssh/config` に長い `docker exec` を直接書かせると、規約が変わるたびに全利用者が自分の config を書き換えることになります。
+
+`dock.sh` には対話シェルを開くモードもあり、そちらは `karakuri-dock <project>` として関数からも呼べます。**ただし `--stdio` のモードは関数にできません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、利用者の対話シェルに定義された関数はそこから見えません。`dock.sh` は実行ファイルなので `PATH` 上にあればコマンド名でも解決されますが、`ssh` を起動する側の環境の `PATH` に依存するため、`ProxyCommand` には絶対パスを勧めます。この非対称は、知らないと「関数があるのだから `ProxyCommand` にも書けるはずだ」と読んでしまうため、`karakuri.sh` 側のコメントにも明記します。
+
+`dock.sh` がフォールバックを持たないのも規約です。実機で踏んだ事例として、`sshd-inetd` が見つからないときに `/usr/sbin/sshd -i -e` を直接起動するフォールバックが、ラッパーの `mkdir -p /run/sshd` を飛ばして `Missing privilege separation directory: /run/sshd` を出していました。`/run` は tmpfs なのでコンテナ起動のたびに空になります。移行の保険のつもりのフォールバックが、失敗を隠して原因から遠いエラーに変換していたことになります。**見つからないなら `docker exec` が `executable file not found` で失敗するのが正しい壊れ方です。**
+
+**loopback alias の永続化（`loopback-setup.sh`）も配ります。** macOS では `127.0.0.1` 以外の loopback アドレスは `ifconfig lo0 alias` で有効化する必要があり、設定は再起動で消えます。手順書に落とすと「2 つのファイルを別々のディレクトリへ、`root:wheel`、`0644`/`0755`、`launchctl bootstrap`」の 4 段になり、`chmod` か `chown` を落とした失敗が静かに残ります（次の再起動まで気づけません）。冪等なインストーラ 1 本に畳みます。
+
+ただし**アドレスの割り当ては決めません**。`127.0.1.x` を使うか `127.0.2.x` を使うかは利用者の流儀であり、別マシンへの SSH に別レンジを充てるといった拡張もあります。LaunchDaemon が張るアドレスは `/etc/karakuri/loopback-aliases`（root 所有）から読み、ツール側は `127.0.0.0/8` であることだけを検査します。設定ファイルを `/usr/local/etc` ではなく `/etc` に置くのは、macOS の `/usr/local` が admin グループ書き込み可で、root で走る daemon が admin 権限で書き換えられるファイルを読む形を避けるためです。
+
+`karakuri-loopback` は `karakuri.sh` が提供する関数のうち**唯一 `sudo` を要求します**。特権が要る設定作業をこの 1 つに閉じ込めることで、日常的に打つ `karakuri-pf` に `sudo` を持ち込まずに済みます。`karakuri-pf` から `sudo ifconfig` を呼ぶ案は、`-fN` のバックグラウンド化とパスワードプロンプトが噛み合わず、回避のために sudoers を緩めると `ifconfig` が lo0 以外の interface も触れる権限を常時渡すことになるため、採りません。
 
 ---
 

@@ -699,6 +699,14 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 
 `karakuri-help` が関数の一覧と、環境変数の説明・現在値を出す。
 
+SSH port forwarding を使う場合は、これに加えて `~/.ssh/config` の設定と、初回 1 回の
+`karakuri-loopback install` が要る。前者の書き方と、`ProxyCommand` に `templates/host/dock.sh`
+の絶対パスを書く理由は
+[`images/devcontainer-base/PORT-FORWARDING.md`](../devcontainer-base/PORT-FORWARDING.md) にある。
+後者は `/etc/hosts` の管理ブロックを用意し、macOS では loopback エイリアスを再起動を跨いで
+張り直す LaunchDaemon を入れる。**`karakuri.sh` が提供する関数のうち、`sudo` を要求するのは
+`karakuri-loopback` だけである。**
+
 ### broker 本体（bw）を用意する
 
 標準の broker は Bitwarden CLI を呼ぶ。**bw 本体は karakuri の配布物ではない**ので、clone には

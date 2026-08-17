@@ -48,6 +48,33 @@
 				// helper が先に確定するため必須ではないが、それ以外のホストへの
 				// https 認証でもこの注入は起きるため、ここでも重ねて止めておく。
 				"git.terminalAuthentication": false
+
+				// --- ポート転送を SSH の経路へ一本化する場合 ---------------------
+				//
+				// 下の 3 つを有効にすると、Dev Containers 拡張の自動転送が止まり、
+				// 到達経路がホスト側の SSH port forwarding だけになる。自動転送の
+				// 不具合（別コンテナへ転送される・勝手に別のホストポートが割り
+				// 当てられる）を踏んだ場合の逃げ道であり、プロジェクト間でポート
+				// 番号を使い回したい場合の前提でもある。詳細と、なぜホスト名を
+				// どちらか一方の経路にしか向けられないのかは、base の
+				// PORT-FORWARDING.md を参照。
+				//
+				// **3 つとも要る。** remote.autoForwardPorts だけでは止まらない
+				// 経路（ターミナルに出た localhost リンクのクリック、出力の走査）
+				// が報告されている。otherPortsAttributes が全ポートに効く受け皿。
+				//
+				// **有効にする前にホスト側ツールが入っていることを確認すること。**
+				// docker-compose.yaml は ports: を書かず、egress-guard が INPUT を
+				// DROP している。到達経路は「自動転送」と「SSH port forwarding」の
+				// 2 つしかなく、後者はホスト側ツール・~/.ssh/config・loopback
+				// エイリアスの 3 つが揃って初めて動く。揃わないまま自動転送を
+				// 切ると、コンテナ内のサービスへ到達する手段が無くなる。しかも
+				// publish は塞がれているのではなく応答が返らない形で失敗するため、
+				// 症状からは原因に辿り着けない。
+				//
+				// "remote.autoForwardPorts": false,
+				// "remote.restoreForwardedPorts": false,
+				// "otherPortsAttributes": { "onAutoForward": "ignore" }
 			}
 		}
 	},
