@@ -139,6 +139,14 @@ exit "${FAKE_DOCK_EXIT_CODE:-0}"
 FAKE_DOCK
 chmod +x "$FAKE_BIN_DIR/dock.sh"
 
+cat >"$FAKE_BIN_DIR/loopback-setup.sh" <<'FAKE_LOOPBACK_SETUP'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"${FAKE_ARGV_FILE:?}"
+env >"${FAKE_ENV_FILE:?}"
+exit "${FAKE_LOOPBACK_SETUP_EXIT_CODE:-0}"
+FAKE_LOOPBACK_SETUP
+chmod +x "$FAKE_BIN_DIR/loopback-setup.sh"
+
 # --- 検査対象の compose ファイル -------------------------------------------------
 # コメント行の image: を無視できているかも同時に見たいので 1 行入れてある。
 BASE_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -537,6 +545,36 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 		ok "[$s] dock.sh is called without any broker or compose environment"
 	fi
 
+	reset_env
+	run_case karakuri-loopback add 127.0.1.1 foo.test
+
+	assert_rc_zero "[$s] loopback succeeds"
+	assert_argv_has "add" "[$s] loopback-setup.sh receives the subcommand"
+	assert_argv_has "127.0.1.1" "[$s] loopback-setup.sh receives the address"
+	assert_argv_has "foo.test" "[$s] loopback-setup.sh receives the host name"
+	if [ "$(wc -l <"$FAKE_ARGV_FILE" 2>/dev/null)" = "3" ]; then
+		ok "[$s] loopback-setup.sh receives exactly three arguments"
+	else
+		ng "[$s] loopback-setup.sh receives exactly three arguments (argv: $(cat "$FAKE_ARGV_FILE" 2>/dev/null))"
+	fi
+	if grep -qE '^(BROKER_|DEV_|PROD_)' "$FAKE_ENV_FILE" 2>/dev/null; then
+		ng "[$s] loopback-setup.sh is called without any broker or compose environment"
+	else
+		ok "[$s] loopback-setup.sh is called without any broker or compose environment"
+	fi
+
+	# 引数 0 個でも止めずに渡す。usage を出すのはスクリプト側で、同じ規則を
+	# 関数にも持たせると片方だけが古くなる。
+	reset_env
+	run_case karakuri-loopback
+
+	assert_rc_zero "[$s] loopback with no arguments still reaches the script"
+	if [ -n "$(cat "$FAKE_ARGV_FILE" 2>/dev/null)" ]; then
+		ng "[$s] loopback-setup.sh is called without arguments, leaving usage to the script"
+	else
+		ok "[$s] loopback-setup.sh is called without arguments, leaving usage to the script"
+	fi
+
 	# スクリプトが無いときは _karakuri_tool のエラーで止まる。実行ビットを
 	# 落とすだけでは足りない（PATH を引く側は、シェルによっては実行ビットの
 	# 無いファイルも見つけてくる）ので、ファイルごと退避する。これで
@@ -549,6 +587,15 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_rc_nonzero "[$s] dock fails when dock.sh cannot be found"
 	assert_stderr_has "cannot find 'dock.sh'" "[$s] the error names dock.sh as the missing script"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] nothing is executed when dock.sh cannot be found"
+
+	reset_env
+	mv "$FAKE_BIN_DIR/loopback-setup.sh" "$WORKDIR/loopback-setup.sh.hidden"
+	run_case karakuri-loopback list
+	mv "$WORKDIR/loopback-setup.sh.hidden" "$FAKE_BIN_DIR/loopback-setup.sh"
+
+	assert_rc_nonzero "[$s] loopback fails when loopback-setup.sh cannot be found"
+	assert_stderr_has "cannot find 'loopback-setup.sh'" "[$s] the error names loopback-setup.sh as the missing script"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] nothing is executed when loopback-setup.sh cannot be found"
 
 	# --- prod-shell: コンテナ特定を推測でやらない -------------------------------------
 	echo "[$s] prod-shell refuses to guess which container to enter"
@@ -878,7 +925,7 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_rc_zero "[$s] karakuri-help succeeds"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] karakuri-help does not call prod-run.sh / dev-inject.sh / broker"
 
-	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject \
+	for fn in karakuri-pf karakuri-clean-pf karakuri-loopback karakuri-dev-inject \
 		karakuri-dock karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image karakuri-help; do
@@ -929,7 +976,7 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	# --- 関数が全部定義されていること --------------------------------------------------
 	echo "[$s] every documented function is defined"
 	reset_env
-	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject \
+	for fn in karakuri-pf karakuri-clean-pf karakuri-loopback karakuri-dev-inject \
 		karakuri-dock karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image \

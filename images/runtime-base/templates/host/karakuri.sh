@@ -55,6 +55,7 @@
 #
 #   karakuri-pf <name>                              port forwarding を張り直す
 #   karakuri-clean-pf [name...]                     port forwarding の後始末
+#   karakuri-loopback <install|add|remove|list> [args...]   /etc/hosts と loopback alias の設定（sudo が要る）
 #   karakuri-dev-inject <project>                   dev container へ鍵を注入
 #   karakuri-dock <project>                         dev container の中で対話シェルを開く
 #   karakuri-prod-run <org/repo> <sha> <task> [args...]
@@ -369,6 +370,33 @@ karakuri-clean-pf() {
 			rm -f "$sock"
 		done
 	return 0
+}
+
+# karakuri-loopback <install|add|remove|list> [args...] — loopback alias と
+# /etc/hosts の設定。loopback-setup.sh を呼ぶだけの薄いラッパー。
+#
+# この関数だけが sudo を要求する。karakuri.sh が提供する他の関数はどれも
+# 特権を要らない（ssh を張る・docker を叩く・broker を呼ぶ、のいずれも
+# 利用者の権限で足りる）ので、ここは例外だと明示しておく。loopback-setup.sh
+# は LaunchDaemon の配置と /etc/karakuri/loopback-aliases・/etc/hosts の編集を
+# するため、内部で sudo を使う。
+#
+# 例外を 1 つ作ってでもこの形にしたのは、日常操作の側に sudo を持ち込まない
+# ため。alias の付与を karakuri-pf の中でやれば「転送を張るたびにパスワードを
+# 聞かれる」ことになり、聞かれ慣れた利用者は中身を読まずに通すようになる。
+# 特権が要るのは設定作業（一度やれば再起動を跨いで残る）だけなので、そこを
+# この 1 つの関数に閉じ込め、毎日打つ karakuri-pf は特権なしのまま残した。
+#
+# サブコマンド名の検査はここではしない。同じ規則を 2 箇所に持つと片方だけが
+# 古くなる（karakuri-prod-run が sha を検査しないのと同じ判断）。引数 0 個の
+# ときもそのまま渡し、usage はスクリプト側に出させる。
+karakuri-loopback() {
+	local setup
+	setup="$(_karakuri_tool loopback-setup.sh)" || return 1
+
+	# 環境変数は渡さない。karakuri-dev-inject などと違って broker も compose も
+	# 関与せず、このスクリプトが読むのは自分の引数と /etc の状態だけである。
+	"$setup" "$@"
 }
 
 # --- dev ------------------------------------------------------------------------
@@ -1012,6 +1040,8 @@ karakuri.sh が提供する関数:
       port forwarding を張り直す
   karakuri-clean-pf [name...]
       port forwarding の後始末（省略時は devc-* を全部畳む）
+  karakuri-loopback <install|add|remove|list> [args...]
+      /etc/hosts と loopback alias を設定する（alias は macOS のみ。この関数だけ sudo が要る）
   karakuri-dev-inject <project>
       起動済みの dev container へ鍵を注入する
   karakuri-dock <project>

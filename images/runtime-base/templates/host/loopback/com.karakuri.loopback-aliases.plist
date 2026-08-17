@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	com.karakuri.loopback-aliases — 起動のたびに loopback alias を張り直す
+	LaunchDaemon。/etc/karakuri/loopback-aliases に並べたアドレスを
+	/usr/local/libexec/karakuri-loopback-aliases が lo0 へ張る。
+	macOS では 127.0.0.1 以外の loopback アドレスは明示的に張らないと bind
+	できず、張った結果は再起動で消えるため、この一手間を起動時に再現する。
+
+	一度走って終わるジョブなので KeepAlive は書いていない。書くと launchd は
+	正常終了のたびに再実行しようとする。失敗は StandardErrorPath の log に
+	残るので、起動直後に張れなかった理由は後から読める。
+
+	StandardOutPath を書いていないのは、書くものが無いからである。
+	karakuri-loopback-aliases は正常な経路では 1 バイトも標準出力へ出さず
+	（読み飛ばしも失敗も stderr へ出す）、成功したことは `ifconfig lo0` を
+	見れば分かる。それでも StandardOutPath を足すと、起動のたびに空の
+	書き込みで開かれる log が /var/log にもう 1 つ増え、「中身が無い log」を
+	見つけた人に「daemon が動いていないのでは」と読ませることになる。
+	出力を足すときは、この plist にも StandardOutPath を足すこと。
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.karakuri.loopback-aliases</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/libexec/karakuri-loopback-aliases</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/var/log/karakuri-loopback-aliases.log</string>
+</dict>
+</plist>
