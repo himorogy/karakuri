@@ -144,7 +144,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（devcontainer-base が ENV と `/etc/environment` の両方に焼き込み済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
 
    ただし github.com だけは askpass ではなく、イメージ自前の credential helper
-   `git-credential-gh-token` が同じ `/run/secrets/GH_TOKEN` を読む（devcontainer-base 2.1.0 以降）。
+   `git-credential-gh-token` が同じ `/run/secrets/GH_TOKEN` を読む（devcontainer-base 2.2.0 以降）。
    VS Code の Dev Containers 拡張は global gitconfig へ credential helper を書き込むうえ、統合
    ターミナルの environ へ `GIT_ASKPASS` を注入して上書きしてくる。helper は設定側なので、環境
    変数による設定で固定すればどちらにも勝てる。**この結果、`GH_TOKEN` を注入していないと private

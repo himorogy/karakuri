@@ -101,7 +101,7 @@ base に入れる条件は次のいずれか。
 Feature（版が lock に固定される）と個人フック（`/personal/setup.sh`、層 C）の
 2 つで、プロジェクト共通のスクリプトを置く必然が無くなったため。git の認証も
 base の `GIT_ASKPASS` 焼き込みが担うので、`gh auth setup-git` のような
-セットアップは要らない（2.1.0 以降は要らないだけでなく、github.com については
+セットアップは要らない（2.2.0 以降は要らないだけでなく、github.com については
 base が自前の credential helper へ固定するため効かない）。必要になったプロジェクトだけ自前で足す。
 
 雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
@@ -302,7 +302,7 @@ base digest だけで環境が確定しなくなる ③shim 経由で PATH 解�
 `apt-get` は arm64 側でエミュレーションが走る。ビルド時間が問題になったら
 ネイティブランナー（`ubuntu-24.04-arm`）の matrix ビルド + digest マージに切り替える。
 
-**github.com への https 認証は `GH_TOKEN` の注入を要求する（2.1.0 以降）。** イメージが github.com の
+**github.com への https 認証は `GH_TOKEN` の注入を要求する（2.2.0 以降）。** イメージが github.com の
 credential helper を自前のものへ固定するため、VS Code が global gitconfig へ書く helper でも、
 VS Code が統合ターミナルの environ へ注入する `GIT_ASKPASS` でも認証されない。
 `/run/secrets/GH_TOKEN` が無ければ private repo の `fetch` / `push` は失敗する。
