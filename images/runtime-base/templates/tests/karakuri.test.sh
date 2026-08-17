@@ -158,6 +158,51 @@ services:
     image: ${BASE_IMAGE}@${BASE_DIGEST} # v1.2.2
 EOF
 
+# --- 検査対象の compose ディレクトリ ------------------------------------------------
+# プロジェクトごとに 1 枚の compose ファイルを持つ運用の fixture。ファイル名が
+# repo 名になる（karakuri.sh はそれ以外の手掛かりでファイルを選ばない）ので、
+# ここのファイル名はそのままテストで打つ repo 名でもある。
+#
+# ディレクトリを 1 つで済ませず 4 つに分けてあるのは、karakuri-check-image が
+# ディレクトリの中を全部見るため。曖昧な組み合わせやイメージ名の食い違いを
+# 同じディレクトリに同居させると、それらが他のテストの掃引結果に混ざる。
+OTHER_IMAGE="ghcr.io/acme/other-runtime"
+
+# write_compose <path> <image ref> — 1 サービスだけの compose ファイルを書く。
+write_compose() {
+	mkdir -p "$(dirname "$1")"
+	cat >"$1" <<EOF
+services:
+  prod:
+    image: $2
+EOF
+}
+
+# 正常系。.yaml と .yml が 1 つずつあり、どちらも同じイメージを pin している。
+COMPOSE_DIR_OK="$WORKDIR/compose-dir"
+write_compose "$COMPOSE_DIR_OK/app.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
+write_compose "$COMPOSE_DIR_OK/legacy.yml" "${BASE_IMAGE}@${BASE_DIGEST}"
+
+# 同じ repo に .yaml と .yml が両方ある。どちらを使うかは推測しない。
+COMPOSE_DIR_BOTH="$WORKDIR/compose-dir-both"
+write_compose "$COMPOSE_DIR_BOTH/dup.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
+write_compose "$COMPOSE_DIR_BOTH/dup.yml" "${BASE_IMAGE}@${BASE_DIGEST}"
+
+# 掃引の結果が混ざるディレクトリ。ファイル名を意図的にこの並びにしてある:
+# 掃引は名前順なので、問題のある 2 枚（古い digest・digest 未記入）の後ろに
+# 正常な 1 枚を置いておかないと、「最初の問題で打ち切る」実装との差が出ない
+# （打ち切っても、最後尾の問題までは同じ出力になってしまう）。
+COMPOSE_DIR_MIXED="$WORKDIR/compose-dir-mixed"
+write_compose "$COMPOSE_DIR_MIXED/app.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
+write_compose "$COMPOSE_DIR_MIXED/billing.yaml" "${BASE_IMAGE}@${OTHER_DIGEST}"
+write_compose "$COMPOSE_DIR_MIXED/notes.yml" "${BASE_IMAGE}:1.2.2"
+write_compose "$COMPOSE_DIR_MIXED/zeta.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
+
+# イメージ名が揃っていない。裸のタグからは参照を組み立てられない。
+COMPOSE_DIR_DIVERGE="$WORKDIR/compose-dir-diverge"
+write_compose "$COMPOSE_DIR_DIVERGE/app.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
+write_compose "$COMPOSE_DIR_DIVERGE/other.yaml" "${OTHER_IMAGE}@${BASE_DIGEST}"
+
 BASE_SHA="1234567890abcdef1234567890abcdef12345678"
 BASE_CID="cafe0123deadbeef"
 
@@ -172,6 +217,9 @@ reset_env() {
 	export KARAKURI_SH="$FAKE_BIN_DIR/karakuri.sh"
 	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED"
 	unset KARAKURI_ORG KARAKURI_PROD_INSTALL KARAKURI_PROD_RUN KARAKURI_BW_BIN KARAKURI_TOOL_DIR
+	# 既定は単一ファイル運用（上で KARAKURI_PROD_COMPOSE を張っている）。
+	# ディレクトリ運用を見るテストが個別に張る。
+	unset KARAKURI_PROD_COMPOSE_DIR
 
 	export FAKE_ARGV_FILE="$WORKDIR/argv.$$.$RANDOM"
 	export FAKE_ENV_FILE="$WORKDIR/env.$$.$RANDOM"
@@ -609,6 +657,120 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	run_case karakuri-check-image 1.2.2
 	assert_rc_zero "[$s] check-image still succeeds without a trailing comment"
 
+	# --- プロジェクトごとの compose ファイル -------------------------------------------
+	# compose ファイルはプロジェクトごとに 1 枚持ち、置き場所ごと、どの dev
+	# container にも mount しないホスト上の git repo に置く。karakuri.sh 側は
+	# repo 名から使うファイルを引く（引けなければ止める）。
+	echo "[$s] the compose file is resolved from the repository name"
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-prod-run acme/app "$BASE_SHA" deploy
+
+	assert_rc_zero "[$s] prod-run succeeds with KARAKURI_PROD_COMPOSE_DIR"
+	assert_env_has "PROD_COMPOSE_FILE=$COMPOSE_DIR_OK/app.yaml" \
+		"[$s] <repo>.yaml under the directory is the compose file"
+
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-prod-exec acme/legacy "$BASE_SHA" ls
+
+	assert_rc_zero "[$s] prod-exec succeeds when only <repo>.yml exists"
+	assert_env_has "PROD_COMPOSE_FILE=$COMPOSE_DIR_OK/legacy.yml" \
+		"[$s] <repo>.yml is used when <repo>.yaml is absent"
+
+	# reset_env は単一ファイル運用を張ったままなので、上の 2 件も実は
+	# 「両方設定された状態」を通っている。優先順位が意図であることを名前で
+	# 残しておかないと、あれは偶然だったのかが後から読めない。
+	reset_env
+	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED"
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-prod-base acme/app "$BASE_SHA"
+
+	assert_rc_zero "[$s] prod-base succeeds when both settings are present"
+	assert_env_has "PROD_COMPOSE_FILE=$COMPOSE_DIR_OK/app.yaml" \
+		"[$s] the directory wins over the single shared file when both are set"
+
+	echo "[$s] an ambiguous or missing compose file stops the run"
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_BOTH"
+	run_case karakuri-prod-run acme/dup "$BASE_SHA" deploy
+
+	assert_rc_nonzero "[$s] a repository with both .yaml and .yml fails"
+	assert_stderr_has "$COMPOSE_DIR_BOTH/dup.yaml" "[$s] the ambiguity error names the .yaml candidate"
+	assert_stderr_has "$COMPOSE_DIR_BOTH/dup.yml" "[$s] the ambiguity error names the .yml candidate"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] prod-run.sh is not invoked when two candidates exist"
+
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-prod-run acme/absent "$BASE_SHA" deploy
+
+	assert_rc_nonzero "[$s] a repository with no compose file in the directory fails"
+	assert_stderr_has "$COMPOSE_DIR_OK/absent.yaml" "[$s] the error names the .yaml path it looked for"
+	assert_stderr_has "$COMPOSE_DIR_OK/absent.yml" "[$s] the error names the .yml path it looked for"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] prod-run.sh is not invoked when neither candidate exists"
+
+	reset_env
+	unset KARAKURI_PROD_COMPOSE
+	run_case karakuri-prod-run acme/app "$BASE_SHA" deploy
+
+	assert_rc_nonzero "[$s] prod-run fails when neither the directory nor the single file is set"
+	assert_stderr_has "KARAKURI_PROD_COMPOSE_DIR" "[$s] the error names KARAKURI_PROD_COMPOSE_DIR as one of the two ways out"
+
+	# --- ディレクトリ運用の digest 照合 --------------------------------------------
+	# 引数に repo を取らずディレクトリを丸ごと掃引するのが狙い: 貼り忘れた
+	# プロジェクトを見つけるのに、どれを貼り忘れたかを先に知っている必要がない。
+	echo "[$s] check-image sweeps every compose file in the directory"
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-check-image 1.2.2
+
+	assert_rc_zero "[$s] check-image succeeds when every file in the directory matches"
+	assert_stdout_has "$COMPOSE_DIR_OK/app.yaml" "[$s] each .yaml file is reported by name"
+	assert_stdout_has "$COMPOSE_DIR_OK/legacy.yml" "[$s] .yml files are swept as well"
+
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_MIXED"
+	run_case karakuri-check-image 1.2.2
+
+	assert_rc_nonzero "[$s] check-image fails when one of the files pins a stale digest"
+	assert_stderr_has "mismatch" "[$s] the stale file is reported as a mismatch"
+	assert_stderr_has "$COMPOSE_DIR_MIXED/billing.yaml" "[$s] the mismatch names the file that is behind"
+	assert_stderr_has "$COMPOSE_DIR_MIXED/notes.yml" "[$s] a file that pins no digest at all is reported separately"
+	assert_stdout_has "$COMPOSE_DIR_MIXED/app.yaml" "[$s] the files that do match are still listed"
+	assert_stdout_has "matches" "[$s] the matching file is reported as a match"
+	# ここが「打ち切らない」ことの本体。zeta.yaml は問題のある 2 枚より後ろに
+	# あるので、最初の問題で止める実装ではこの行が出ない。
+	assert_stdout_has "$COMPOSE_DIR_MIXED/zeta.yaml" \
+		"[$s] the sweep continues past a problem and still reports the files behind it"
+
+	echo "[$s] image-digest needs the directory to agree on one image name"
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-image-digest 1.2.2
+
+	assert_rc_zero "[$s] image-digest succeeds when every file names the same image"
+	assert_stdout_is "image: ${BASE_IMAGE}@${BASE_DIGEST}" \
+		"[$s] the shared image name is used to resolve the bare tag"
+
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_DIVERGE"
+	run_case karakuri-image-digest 1.2.2
+
+	assert_rc_nonzero "[$s] image-digest fails when the files name different images"
+	assert_stderr_has "$COMPOSE_DIR_DIVERGE/other.yaml" "[$s] the error names a file that disagrees"
+	assert_not_invoked "$FAKE_BUILDX_ARGV_FILE" \
+		"[$s] no registry lookup happens while the image name is ambiguous"
+
+	# 完全な参照を渡す道は残っている（スラッシュを含むなら compose を読まない、
+	# という既存の判定則がそのまま逃げ道になる）。
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_DIVERGE"
+	run_case karakuri-image-digest "${OTHER_IMAGE}:1.2.2"
+
+	assert_rc_zero "[$s] a full reference still works when the directory's image names disagree"
+	assert_stdout_is "image: ${OTHER_IMAGE}@${BASE_DIGEST}" \
+		"[$s] the full reference decides the image name without reading any compose file"
+
 	# --- port forwarding -------------------------------------------------------------
 	echo "[$s] port forwarding is torn down before it is set up"
 	reset_env
@@ -697,6 +859,23 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 		"[$s] karakuri-help distinguishes an empty KARAKURI_PROD_INSTALL from unset"
 	assert_stdout_has "KARAKURI_PROD_RUN (任意): npm run" \
 		"[$s] karakuri-help shows a multi-word KARAKURI_PROD_RUN as set"
+
+	# 「どちらか一方が要る」関係の 2 つは、両方が一覧に出て現在値も見えること。
+	# 片方だけを見て「未設定だから壊れている」と読む誤りを避けるための表示。
+	reset_env
+	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
+	run_case karakuri-help
+
+	assert_stdout_has "KARAKURI_PROD_COMPOSE_DIR" "[$s] karakuri-help lists KARAKURI_PROD_COMPOSE_DIR"
+	assert_stdout_has "$COMPOSE_DIR_OK" "[$s] karakuri-help shows the current value of KARAKURI_PROD_COMPOSE_DIR"
+	assert_stdout_has "$COMPOSE_PINNED" "[$s] karakuri-help still shows KARAKURI_PROD_COMPOSE alongside it"
+
+	reset_env
+	unset KARAKURI_PROD_COMPOSE
+	run_case karakuri-help
+
+	assert_stdout_has "KARAKURI_PROD_COMPOSE_DIR" "[$s] karakuri-help lists KARAKURI_PROD_COMPOSE_DIR even when it is unset"
+	assert_stdout_has "(unset)" "[$s] karakuri-help marks the unset compose settings as unset"
 
 	# --- 関数が全部定義されていること --------------------------------------------------
 	echo "[$s] every documented function is defined"

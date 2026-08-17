@@ -31,7 +31,14 @@
 #                          既定（PATH 解決）に任せる
 #   KARAKURI_ORG           GitHub org の既定値。<org>/<repo> の org を省いた
 #                          ときに補われる
-#   KARAKURI_PROD_COMPOSE  compose.prod.yaml の配置先（prod 系の関数で必須）
+#   KARAKURI_PROD_COMPOSE  全プロジェクトで 1 枚を共有する compose.prod.yaml の
+#                          配置先。KARAKURI_PROD_COMPOSE_DIR が設定されている
+#                          ときは使われない
+#   KARAKURI_PROD_COMPOSE_DIR
+#                          プロジェクトごとの compose ファイルを集めた
+#                          ディレクトリ。使うのは <repo>.yaml（無ければ
+#                          <repo>.yml）。KARAKURI_PROD_COMPOSE より優先される。
+#                          prod 系の関数は、この 2 つのどちらかが要る
 #   KARAKURI_PROD_INSTALL  タスクの前に走らせる install コマンド。
 #                          既定は `pnpm install --frozen-lockfile`。
 #                          空文字を設定すると install 段を省く
@@ -395,15 +402,118 @@ karakuri-dev-inject() {
 		"$dev_inject"
 }
 
+# --- compose ファイルの解決 --------------------------------------------------------
+# compose ファイルはプロジェクトごとに 1 枚持つ。置き場所ごとホスト上の git
+# repo にして、どの dev container にも mount しない。理由はファイルの中身に
+# ある: あれは prod の防御（read_only・tmpfs の記法・cap_drop・init）を宣言
+# している当のものなので、dev container に常駐する LLM エージェントから到達
+# できる場所に置くと、防御そのものが書き換えの対象になる。git で持つのは
+# 改竄検知のためではなく（到達できないなら検知は要らない）、digest をいつ
+# 上げたかの履歴を残すため。
+#
+# 全プロジェクトで 1 枚を共有する旧来の運用（KARAKURI_PROD_COMPOSE）も残す。
+# 共有できる構成の利用者にディレクトリを作らせる理由が無く、切り替えは
+# 環境変数の張り替えだけで済ませたいため。両方設定されているときは
+# ディレクトリを勝たせる（どちらも明示的な設定なので警告は出さない。
+# ディレクトリの方が後から入った、より具体的な指定である）。
+#
+# 解決規則をこの 3 つの関数に集約して、呼ぶ側には「どのファイルか」だけを
+# 渡す。規則が散ると、片方だけが新しい運用に追随した状態が作れてしまう。
+
+# _karakuri_compose_mode — どちらの運用かを stdout に出す（"dir" か "file"）。
+# 優先順位を決めているのはここ 1 箇所だけ。
+_karakuri_compose_mode() {
+	if [ -n "${KARAKURI_PROD_COMPOSE_DIR:-}" ]; then
+		printf 'dir\n'
+		return 0
+	fi
+	if [ -n "${KARAKURI_PROD_COMPOSE:-}" ]; then
+		printf 'file\n'
+		return 0
+	fi
+	echo "karakuri: neither KARAKURI_PROD_COMPOSE_DIR nor KARAKURI_PROD_COMPOSE is set. Set KARAKURI_PROD_COMPOSE_DIR to the directory that holds one compose file per project (named <repo>.yaml), or set KARAKURI_PROD_COMPOSE to a single shared compose.prod.yaml. Keep either one outside every dev workspace" >&2
+	return 1
+}
+
+# _karakuri_compose_for <repo> — その repo で使う compose ファイルのパスを
+# stdout に出す。
+#
+# 拡張子を 2 つ見るのは、compose 自身が compose.yaml と compose.yml の
+# どちらも受けるため。ただし両方あったらどちらかを選ばずに止める。片方を
+# 編集したつもりでもう片方が使われる、という取り違えは、このファイルが
+# 宣言しているものの性質上そのまま防御の抜けになる。
+_karakuri_compose_for() {
+	local repo="$1" mode
+	mode="$(_karakuri_compose_mode)" || return 1
+
+	if [ "$mode" = "file" ]; then
+		printf '%s\n' "$KARAKURI_PROD_COMPOSE"
+		return 0
+	fi
+
+	local yaml="${KARAKURI_PROD_COMPOSE_DIR}/${repo}.yaml"
+	local yml="${KARAKURI_PROD_COMPOSE_DIR}/${repo}.yml"
+
+	if [ -f "$yaml" ] && [ -f "$yml" ]; then
+		echo "karakuri: both '${yaml}' and '${yml}' exist, so there is no way to tell which one is the compose file for '${repo}'. Remove or rename one of them" >&2
+		return 1
+	fi
+	if [ -f "$yaml" ]; then
+		printf '%s\n' "$yaml"
+		return 0
+	fi
+	if [ -f "$yml" ]; then
+		printf '%s\n' "$yml"
+		return 0
+	fi
+
+	echo "karakuri: no compose file for '${repo}' under KARAKURI_PROD_COMPOSE_DIR — looked for '${yaml}' and '${yml}'. Add one there, or check the repository name you passed" >&2
+	return 1
+}
+
+# _karakuri_compose_list — 一括で見るべき compose ファイルを 1 行 1 件で
+# stdout に出す。ディレクトリ運用なら中の全ファイル、単一ファイル運用なら
+# その 1 枚。digest の照合のように「repo を 1 つに決めずに全部を見る」側が使う。
+#
+# glob をそのまま展開せず find を使うのは、一致 0 件のときの挙動が bash と
+# zsh で違うため（karakuri-clean-pf と同じ理由）。深さを 1 に切ってあるのは、
+# あのディレクトリは git repo なので .git/ の中まで拾ってしまうから。
+_karakuri_compose_list() {
+	local mode
+	mode="$(_karakuri_compose_mode)" || return 1
+
+	if [ "$mode" = "file" ]; then
+		printf '%s\n' "$KARAKURI_PROD_COMPOSE"
+		return 0
+	fi
+
+	if [ ! -d "$KARAKURI_PROD_COMPOSE_DIR" ]; then
+		echo "karakuri: KARAKURI_PROD_COMPOSE_DIR points at '${KARAKURI_PROD_COMPOSE_DIR}', which is not a directory" >&2
+		return 1
+	fi
+
+	local found
+	found="$(find "$KARAKURI_PROD_COMPOSE_DIR" -maxdepth 1 -type f \
+		\( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | sort)"
+	if [ -z "$found" ]; then
+		echo "karakuri: KARAKURI_PROD_COMPOSE_DIR '${KARAKURI_PROD_COMPOSE_DIR}' holds no compose file (looked for *.yaml and *.yml directly under it). Add one named after the repository it belongs to" >&2
+		return 1
+	fi
+
+	printf '%s\n' "$found"
+	return 0
+}
+
 # --- prod -----------------------------------------------------------------------
 
 # _karakuri_prod_call <org/repo> <sha> <argv...> — prod-run.sh を呼ぶ。
 #
-# COMPOSE_PROJECT_NAME をプロジェクトごとに振るのがここの要点。compose
-# ファイルは全プロジェクトで 1 枚を共有できる設計なので、project 名を
-# 指定しないと compose はファイルの所在から名前を導き、どのプロジェクトの
-# prod を起動しても同じ名前になる。そうなると、起動済みコンテナを名前で
-# 引く操作（karakuri-prod-shell）が別プロジェクトのコンテナに一致する。
+# COMPOSE_PROJECT_NAME をプロジェクトごとに振るのがここの要点。project 名を
+# 指定しないと compose はファイルの所在から名前を導く。単一ファイル運用では
+# どのプロジェクトの prod を起動しても同じ名前になり、ディレクトリ運用でも
+# 導かれるのは置き場所の名前であってプロジェクト名ではない。そうなると、
+# 起動済みコンテナを名前で引く操作（karakuri-prod-shell）が別プロジェクトの
+# コンテナに一致する。
 # 入った先には別プロジェクトの鍵が注入済みで、/src には別プロジェクトの
 # コードが clone されている。
 _karakuri_prod_call() {
@@ -417,10 +527,10 @@ _karakuri_prod_call() {
 	_karakuri_parse_repo "$spec" || return 1
 	local org="$_karakuri_org" repo="$_karakuri_repo"
 
-	if [ -z "${KARAKURI_PROD_COMPOSE:-}" ]; then
-		echo "karakuri: KARAKURI_PROD_COMPOSE is not set. Point it at the compose.prod.yaml you keep outside the dev workspace (for example ~/.config/${repo}/compose.prod.yaml)" >&2
-		return 1
-	fi
+	# 使う compose ファイルは repo から引く。どの環境変数が効いているかを
+	# ここで場合分けしない（規則は _karakuri_compose_for の 1 箇所にある）。
+	local compose
+	compose="$(_karakuri_compose_for "$repo")" || return 1
 
 	local prod_run broker
 	prod_run="$(_karakuri_tool prod-run.sh)" || return 1
@@ -434,7 +544,7 @@ _karakuri_prod_call() {
 	# 見るので、ここでは重ねて検査しない（同じ規則を二箇所に持つと片方だけ
 	# 古くなる）。
 	env "${_karakuri_env[@]}" \
-		"PROD_COMPOSE_FILE=${KARAKURI_PROD_COMPOSE}" \
+		"PROD_COMPOSE_FILE=${compose}" \
 		"PROD_BROKER=${broker}" \
 		"GIT_REPO=https://github.com/${org}/${repo}.git" \
 		"GIT_REF=${sha}" \
@@ -598,27 +708,29 @@ karakuri-prod-shell() {
 # 触る経路を作ると、パターンの取り違えが防御を消す形で現れる。貼るのは
 # 人間の手で、貼った結果は人間の目を通す。
 
-# _karakuri_compose_image_ref — compose ファイルに書かれている image の
-# 参照を stdout に出す。
+# _karakuri_compose_image_ref <file> — その compose ファイルに書かれている
+# image の参照を stdout に出す。
+#
+# 読むファイルを引数で受けるのは、ディレクトリ運用では 1 枚に決まらないため
+# （どのファイルを見るかを決めるのは _karakuri_compose_for / _karakuri_compose_list
+# の側で、ここは渡された 1 枚を読むだけにする）。
 _karakuri_compose_image_ref() {
-	if [ -z "${KARAKURI_PROD_COMPOSE:-}" ]; then
-		echo "karakuri: KARAKURI_PROD_COMPOSE is not set. Point it at the compose.prod.yaml you keep outside the dev workspace" >&2
-		return 1
-	fi
-	if [ ! -f "$KARAKURI_PROD_COMPOSE" ]; then
-		echo "karakuri: KARAKURI_PROD_COMPOSE points at '${KARAKURI_PROD_COMPOSE}', which is not a file" >&2
+	local file="$1"
+
+	if [ ! -f "$file" ]; then
+		echo "karakuri: '${file}' is not a file. Check that KARAKURI_PROD_COMPOSE (or KARAKURI_PROD_COMPOSE_DIR) points at the compose file you keep outside the dev workspace" >&2
 		return 1
 	fi
 
 	local lines
-	lines="$(grep -E '^[[:space:]]*image:[[:space:]]*[^[:space:]#]' "$KARAKURI_PROD_COMPOSE")"
+	lines="$(grep -E '^[[:space:]]*image:[[:space:]]*[^[:space:]#]' "$file")"
 
 	if [ -z "$lines" ]; then
-		echo "karakuri: no 'image:' line in ${KARAKURI_PROD_COMPOSE}" >&2
+		echo "karakuri: no 'image:' line in ${file}" >&2
 		return 1
 	fi
 	if [ "$(printf '%s\n' "$lines" | wc -l)" -gt 1 ]; then
-		echo "karakuri: ${KARAKURI_PROD_COMPOSE} has more than one 'image:' line — cannot tell which one pins the prod image. Check it by hand" >&2
+		echo "karakuri: ${file} has more than one 'image:' line — cannot tell which one pins the prod image. Check it by hand" >&2
 		return 1
 	fi
 
@@ -650,6 +762,48 @@ _karakuri_image_name() {
 	printf '%s\n' "$name"
 }
 
+# _karakuri_compose_image_name — 見るべき compose ファイル全部が同じイメージ名
+# を指しているとき、その名前を stdout に出す。
+#
+# ディレクトリ運用では「どのファイルの image 名を使うか」が引数からは決まら
+# ない。1 枚目を採るような選び方はしない: そこで選んだことは利用者に見えず、
+# 別プロジェクトのイメージのタグを解決した digest を、当人は自分のプロジェクト
+# のものだと思って貼る。揃っていれば曖昧さは無いので通し、揃っていなければ
+# 止めて、完全な参照を打ってもらう（0 件・複数件・曖昧は必ず失敗させる、という
+# このファイル全体の規律と同じ）。
+_karakuri_compose_image_name() {
+	local files
+	files="$(_karakuri_compose_list)" || return 1
+
+	local file ref name common="" common_file=""
+	while IFS= read -r file; do
+		[ -n "$file" ] || continue
+
+		ref="$(_karakuri_compose_image_ref "$file")" || return 1
+		name="$(_karakuri_image_name "$ref")"
+
+		if [ -z "$common_file" ]; then
+			common="$name"
+			common_file="$file"
+			continue
+		fi
+		if [ "$name" != "$common" ]; then
+			echo "karakuri: the compose files do not all name the same image — ${common_file} says '${common}' but ${file} says '${name}', so a bare tag cannot be resolved. Pass the full <image>:<tag> reference instead" >&2
+			return 1
+		fi
+	done <<EOF
+${files}
+EOF
+
+	if [ -z "$common_file" ]; then
+		echo "karakuri: found no compose file to read the image name from" >&2
+		return 1
+	fi
+
+	printf '%s\n' "$common"
+	return 0
+}
+
 # _karakuri_image_ref <tag> — 利用者が打った 1 引数を完全な参照にする。
 # `/` を含むならそのまま参照として扱い、含まないなら compose ファイルに
 # 書かれているイメージ名のタグとして扱う（判定にスラッシュを使うのは
@@ -662,9 +816,8 @@ _karakuri_image_ref() {
 		;;
 	esac
 
-	local current name
-	current="$(_karakuri_compose_image_ref)" || return 1
-	name="$(_karakuri_image_name "$current")"
+	local name
+	name="$(_karakuri_compose_image_name)" || return 1
 	printf '%s:%s\n' "$name" "$1"
 }
 
@@ -708,46 +861,73 @@ karakuri-image-digest() {
 #
 # clone した配布物の版ずれは git status で見えるが、compose ファイルは
 # clone の外にあるので git では見えない。そこを見るのがこの関数。
+#
+# ディレクトリ運用では、repo を指定させずにディレクトリの中を全部見る。
+# 引数に repo を取る形にすると、貼り忘れているプロジェクトを見つけるために
+# 「どれを貼り忘れたか」を先に知っている必要があり、順序が逆になる。全部を
+# 一覧で出せば、古い digest のまま残っているプロジェクトがその場で分かる。
+# 1 件目の不一致で止めないのもこのため（止めた先はいつまでも見えない）。
 karakuri-check-image() {
 	if [ "$#" -ne 1 ]; then
 		echo "Usage: karakuri-check-image <tag>   (or a full <image>:<tag> reference)" >&2
 		return 1
 	fi
 
-	local ref current expected
+	local ref expected_name files
 	ref="$(_karakuri_image_ref "$1")" || return 1
-	current="$(_karakuri_compose_image_ref)" || return 1
-
-	# digest が入っていない（タグ pin のまま）ときと、テンプレートの
-	# プレースホルダが残っているときは、レジストリへ問い合わせる前に止める。
-	# どちらも「照合できる状態になっていない」であって、照合の結果が
-	# 不一致なのとは原因が違う。同じメッセージにすると直し方を誤る。
-	local current_digest=""
-	case "$current" in
-	*@*) current_digest="${current#*@}" ;;
-	esac
-	if ! printf '%s' "$current_digest" | grep -qE '^sha256:[0-9a-f]{64}$'; then
-		echo "karakuri-check-image: ${KARAKURI_PROD_COMPOSE} does not pin a resolved digest (it says '${current}'). Run 'karakuri-image-digest $1' and paste the result over that line" >&2
-		return 1
-	fi
-
-	local current_name expected_name
-	current_name="$(_karakuri_image_name "$current")"
 	expected_name="$(_karakuri_image_name "$ref")"
-	if [ "$current_name" != "$expected_name" ]; then
-		echo "karakuri-check-image: ${KARAKURI_PROD_COMPOSE} pins image '${current_name}', but '$1' resolves to '${expected_name}' — these are different images, so their digests cannot be compared" >&2
-		return 1
-	fi
+	files="$(_karakuri_compose_list)" || return 1
 
-	expected="$(_karakuri_resolve_digest "$ref")" || return 1
+	local file current current_digest current_name expected="" bad=0
+	while IFS= read -r file; do
+		[ -n "$file" ] || continue
 
-	if [ "$current_digest" = "$expected" ]; then
-		printf '%s pins %s@%s (matches %s)\n' "$KARAKURI_PROD_COMPOSE" "$current_name" "$current_digest" "$ref"
-		return 0
-	fi
+		current="$(_karakuri_compose_image_ref "$file")" || {
+			bad=1
+			continue
+		}
 
-	echo "karakuri-check-image: digest mismatch. ${KARAKURI_PROD_COMPOSE} pins ${current_digest}, but ${ref} is now ${expected}. Run 'karakuri-image-digest $1' and paste the result over the image: line if the move is intended" >&2
-	return 1
+		# digest が入っていない（タグ pin のまま）ときと、テンプレートの
+		# プレースホルダが残っているときは、レジストリへ問い合わせる前に
+		# 止める。どちらも「照合できる状態になっていない」であって、照合の
+		# 結果が不一致なのとは原因が違う。同じメッセージにすると直し方を誤る。
+		current_digest=""
+		case "$current" in
+		*@*) current_digest="${current#*@}" ;;
+		esac
+		if ! printf '%s' "$current_digest" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+			echo "karakuri-check-image: ${file} does not pin a resolved digest (it says '${current}'). Run 'karakuri-image-digest $1' and paste the result over that line" >&2
+			bad=1
+			continue
+		fi
+
+		current_name="$(_karakuri_image_name "$current")"
+		if [ "$current_name" != "$expected_name" ]; then
+			echo "karakuri-check-image: ${file} pins image '${current_name}', but '$1' resolves to '${expected_name}' — these are different images, so their digests cannot be compared" >&2
+			bad=1
+			continue
+		fi
+
+		# レジストリへ問い合わせるのは、照合できるファイルが最初に見つかった
+		# ときの 1 回だけ。答えはファイルによらず同じなので繰り返す意味が無く、
+		# 「1 枚も照合できる状態になっていない」ときに問い合わせないという
+		# 元からの性質もこの置き方で保たれる。
+		if [ -z "$expected" ]; then
+			expected="$(_karakuri_resolve_digest "$ref")" || return 1
+		fi
+
+		if [ "$current_digest" = "$expected" ]; then
+			printf '%s pins %s@%s (matches %s)\n' "$file" "$current_name" "$current_digest" "$ref"
+			continue
+		fi
+
+		echo "karakuri-check-image: digest mismatch. ${file} pins ${current_digest}, but ${ref} is now ${expected}. Run 'karakuri-image-digest $1' and paste the result over the image: line if the move is intended" >&2
+		bad=1
+	done <<EOF
+${files}
+EOF
+
+	[ "$bad" -eq 0 ]
 }
 
 # --- ヘルプ -----------------------------------------------------------------------
@@ -822,8 +1002,14 @@ FUNCS
 	_karakuri_help_env "KARAKURI_ORG" "任意" "${KARAKURI_ORG:-}" \
 		"<org>/<repo> の org を省いたときに補う。org を複数横断して扱うなら設定しないこと（設定すると、別 org のつもりで打った bare <repo> が黙って KARAKURI_ORG 側の org へ解決される）"
 
-	_karakuri_help_env "KARAKURI_PROD_COMPOSE" "prod 系の関数で必須" "${KARAKURI_PROD_COMPOSE:-}" \
-		"compose.prod.yaml の配置先"
+	# この 2 つは「どちらか一方が要る」関係なので、必須/任意の欄にも現在値の
+	# 隣にもその条件を書く。片方だけを見て「未設定だから壊れている」と読む
+	# 誤りを避けるため。
+	_karakuri_help_env "KARAKURI_PROD_COMPOSE" "KARAKURI_PROD_COMPOSE_DIR が無いとき prod 系の関数で必須" "${KARAKURI_PROD_COMPOSE:-}" \
+		"全プロジェクトで 1 枚を共有する compose.prod.yaml の配置先。KARAKURI_PROD_COMPOSE_DIR が設定されていれば、そちらが優先されこの値は使われない"
+
+	_karakuri_help_env "KARAKURI_PROD_COMPOSE_DIR" "KARAKURI_PROD_COMPOSE が無いとき prod 系の関数で必須" "${KARAKURI_PROD_COMPOSE_DIR:-}" \
+		"プロジェクトごとの compose ファイルを集めたディレクトリ。使うのは <repo>.yaml（無ければ <repo>.yml、両方あればエラー）。KARAKURI_PROD_COMPOSE より優先される。karakuri-check-image はこのディレクトリの中を全部見る"
 
 	if [ "${KARAKURI_PROD_INSTALL+set}" = "set" ]; then
 		if [ -z "$KARAKURI_PROD_INSTALL" ]; then
@@ -866,6 +1052,10 @@ FUNCS
 #
 #   export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
 #   export KARAKURI_ORG=acme
+#   export KARAKURI_PROD_COMPOSE_DIR="$HOME/.config/acme/compose"   # <repo>.yaml を並べる
+#
+# 全プロジェクトで 1 枚を共有していた頃の書き方も残してある:
+#
 #   export KARAKURI_PROD_COMPOSE="$HOME/.config/acme/compose.prod.yaml"
 #
 # 各変数の意味・必須/任意・現在値は karakuri-help を実行して見ること

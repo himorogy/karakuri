@@ -34,9 +34,10 @@ dev container には LLM エージェントが常駐するため信頼しない�
 ~/.local/bin/                  # 上記を解決するための symlink（または PATH に直接足してもよい）
 ~/.dev-broker/                 # PATH の外。broker が名指しするバイナリを置く専用の場所
   bw                            # Bitwarden CLI（native ビルドを SHA-256 照合の上配置。karakuri の配布物ではない）
-~/.config/app/
-  compose.prod.yaml            # ~/.config/karakuri/.../templates/host/compose.prod.yaml のコピー。
+~/.config/prod-compose/        # ホスト上の git リポジトリ。どの devcontainer にも mount しない
+  app.yaml                     # templates/host/compose.prod.yaml のコピーを <repo>.yaml で置く。
                                 # image の digest を実在のものへ差し替える
+  <other-repo>.yaml            # プロジェクトごとに 1 枚
 <project repo>/                # dev container にマウントされる（git 管理）
   env-guard.conf                 # templates/project/env-guard.conf のコピー
   .devcontainer/
@@ -50,7 +51,11 @@ karakuri の clone・broker・compose.prod.yaml を workspace の外に置くの
 tmpfs を外す等）。禁じているのは置き場所であって、git リポジトリの中にあること自体ではない —
 `~/.config/karakuri` は bind mount されない別の clone なので、そこから実行してよい。
 
-compose.prod.yaml はプロジェクト固有値を含まない設計なので、全プロジェクトで 1 枚を共有することもできる。その場合は runtime-base の digest pin も全プロジェクトで共通になり、イメージ更新が一斉適用になる。プロジェクトごとに更新タイミングを分けたい場合は `~/.config/<project>/` に分置する。
+compose.prod.yaml はプロジェクト固有値を含まない設計なので、全プロジェクトで 1 枚を共有することもできる（`KARAKURI_PROD_COMPOSE` に単一ファイルを指す）。ただしその場合は runtime-base の digest pin も全プロジェクトで共通になり、イメージ更新が一斉適用になる。既定は上のようにプロジェクトごとに分ける形とする。
+
+**この置き場所は git リポジトリにしてよい。ただしどの devcontainer にも mount しないこと。** compose.prod.yaml は prod の防御（`read_only`・tmpfs の記法・`cap_drop`・`init: true`）を宣言している当のもので、エージェントが到達できる場所に置けば防御そのものが書き換え対象になる。git 管理の目的は改竄検知ではなく、digest をいつ上げたかの履歴を残すことにある — 到達不能なら検知は要らない。
+
+逆に言えば、**mount した時点でこの構成は「書き換えられないもの」から「書き換えられたら diff に出るもの」へ落ちる。** `git diff` は後から見れば分かるという性質であって、書き換えを止めはしない。エージェントが書き換えて commit すれば、人間がレビューしない限り正当な変更に見える。
 
 ## prod の起動
 
@@ -58,13 +63,17 @@ compose.prod.yaml はプロジェクト固有値を含まない設計なので�
 
 ```sh
 export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
-export KARAKURI_PROD_COMPOSE="$HOME/.config/app/compose.prod.yaml"
+export KARAKURI_PROD_COMPOSE_DIR="$HOME/.config/prod-compose"
 
 # 任意。扱う org が一つに定まる場合だけ設定する
 export KARAKURI_ORG=acme
 
 . ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh
 ```
+
+`KARAKURI_PROD_COMPOSE_DIR` には、プロジェクトごとの compose ファイルを `<repo>.yaml` の名前で
+並べる。全プロジェクトで 1 枚を共有する運用（`KARAKURI_PROD_COMPOSE` に単一ファイルを指す）も
+残してあるが、prod のイメージを一斉に更新することになるので、分けるほうを既定とする。
 
 環境変数の並べ方（`BROKER_BW_ITEM` の項目名、`COMPOSE_PROJECT_NAME` の付け方）は
 `karakuri.sh` が引き受けるので、`.zshrc` に残るのは環境そのもの（bw の在処・compose

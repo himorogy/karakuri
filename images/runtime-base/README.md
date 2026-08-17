@@ -747,6 +747,35 @@ vault の同期は broker が取得のたびに 1 回行うので、`bw sync` �
 項目名の付け方、共有分と個人分の分け方 — は
 [`templates/host/broker-bitwarden.sh`](./templates/host/broker-bitwarden.sh) の冒頭にある。
 
+### compose ファイルを置く
+
+`compose.prod.yaml` はプロジェクトごとに 1 枚持つ。置き場所をまとめて
+`KARAKURI_PROD_COMPOSE_DIR` に指すと、prod 系の関数が repo 名から `<repo>.yaml` を引く。
+
+```
+~/.config/prod-compose/
+  <repo>.yaml
+```
+
+`templates/host/compose.prod.yaml` をこの名前でコピーし、`image:` の digest を実在のものへ
+差し替える（`karakuri-image-digest <tag>` が貼り付け用の行を出す）。**ホスト側ツールのうち、
+編集を伴うコピーになるのはこのファイルだけ**である。他は clone のまま使う。
+
+全プロジェクトで 1 枚を共有する形も `KARAKURI_PROD_COMPOSE` として残してあるが、その場合は
+イメージの更新が全プロジェクトへ一斉に適用される。分けておくと更新のタイミングをプロジェクト
+ごとに選べる。`karakuri-check-image <tag>` は、ディレクトリ運用のとき中の全ファイルを検査
+するので、どのプロジェクトが古い digest のままかは一覧で分かる。
+
+**この置き場所は git リポジトリにしてよい。ただしどの devcontainer にも mount しないこと。**
+このファイルは prod の防御（`read_only`・tmpfs の記法・`cap_drop`・`init: true`）を宣言して
+いる当のもので、エージェントが到達できる場所へ置けば、防御そのものが書き換え対象になる。
+git 管理の目的は改竄検知ではなく、digest をいつ上げたかの履歴を残すことにある — 到達不能で
+あれば検知は要らない。
+
+逆に、mount した時点でこの構成は「書き換えられないもの」から「書き換えられたら diff に出る
+もの」へ落ちる。`git diff` は後から見れば分かるという性質であって、書き換えを止めはしない。
+エージェントが書き換えて commit すれば、人間がレビューしない限り正当な変更に見える。
+
 ### prod でコマンドを実行する
 
 `compose.prod.yaml` は名前だけ見ると「プロジェクトのリポジトリに置くもの」に見えるが、
