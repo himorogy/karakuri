@@ -41,7 +41,13 @@
 					"zsh": {
 						"path": "zsh"
 					}
-				}
+				},
+
+				// VS Code が統合ターミナルの environ へ GIT_ASKPASS を注入して
+				// 上書きしてくるのを止める。github.com はイメージ側の credential
+				// helper が先に確定するため必須ではないが、それ以外のホストへの
+				// https 認証でもこの注入は起きるため、ここでも重ねて止めておく。
+				"git.terminalAuthentication": false
 			}
 		}
 	},

@@ -19,8 +19,9 @@ sshd 同梱・`GIT_ASKPASS` / `CRIT_PORT` の焼き込み・個人フックは v
 v1 系には無い。
 
 **2.1.0 で github.com への https 認証の挙動が変わる。** base が github.com の credential helper を
-打ち消すため、VS Code が転送するホスト側の資格情報では認証されなくなり、`/run/secrets/GH_TOKEN`
-の注入が必須になる（public repo の clone と ssh remote、github.com 以外のホストは影響しない）。
+イメージ自前のもの（`/run/secrets/GH_TOKEN` を読む）へ固定するため、VS Code が転送するホスト側の
+資格情報では認証されなくなり、`GH_TOKEN` の注入が必須になる（public repo の clone と ssh remote、
+github.com 以外のホストは影響しない）。
 
 **挙動の変更をマイナーで入れている。** 正式リリース前で、利用側がまだこのリポジトリ自身と
 移行中のプロジェクトに限られるため。浮動タグ `:2` を参照しているプロジェクトは、次のリビルドで
@@ -276,8 +277,8 @@ volumes:
   個人ツールはここへ。git の認証は base が焼く `GIT_ASKPASS` が
   `/run/secrets/GH_TOKEN` から取るため、旧雛形にあった `gh auth setup-git` は不要になった。
   2.1.0 以降は不要になっただけでなく**効かない** — base が github.com の credential helper を
-  打ち消すので、`gh auth setup-git` が global gitconfig へ書く helper は github.com について
-  呼ばれない
+  自前のものへ固定するので、`gh auth setup-git` が global gitconfig へ書く helper は github.com
+  について呼ばれない
 
 `postCreateCommand` に長いワンライナーを書いていた構成からは、中身を個人フックへ移す。
 プロジェクト共通で必要なセットアップが残る場合だけ、自前の post-create.sh を作って

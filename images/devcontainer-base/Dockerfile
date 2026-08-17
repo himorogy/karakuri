@@ -143,15 +143,20 @@ ENV CRIT_PORT=4588 \
 # が /etc/environment から組み立てる。SSH セッションにも同じ値を届けるため、
 # ENV と /etc/environment の両方に書く (値の原本は上の ENV。ここは転記)。
 #
-# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 は runtime-base が
-# 焼く。github.com の credential helper を打ち消して git の認証を GIT_ASKPASS へ
-# 落とすためのもので、VS Code の Dev Containers 拡張が global gitconfig へ helper
-# を書く以上、dev で最も効かせたい 3 つである。ここへ転記しないと SSH セッション
-# だけ打ち消しが外れ、その経路の git だけがホスト側の資格情報で通る。
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 / GIT_CONFIG_KEY_1 /
+# GIT_CONFIG_VALUE_1 は runtime-base が焼く。スロット 0 で github.com の
+# credential helper を一旦すべて捨て、スロット 1 で自前の helper
+# (/usr/local/bin/git-credential-gh-token) を積み直すためのもので、VS Code の
+# Dev Containers 拡張が global gitconfig へ helper を書き込み、さらに統合
+# ターミナルの environ へ GIT_ASKPASS を注入して上書きしてくる以上、dev で最も
+# 効かせたい 5 つである。ここへ転記しないと SSH セッションだけ上書きが外れ、
+# その経路の git だけがホスト側の資格情報で通る。
 # 値の原本は runtime-base 側なので、名前が変わったら空を転記して黙って穴が開く。
 # それを避けるため、転記の前に存在を確かめて落とす (VALUE_0 は空が正常値なので
-# 対象にできない。KEY_0 が在れば VALUE_0 も在るという前提を取る)。
-RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ]
+# 対象にできない。KEY_0 が在れば VALUE_0 も在るという前提を取る。VALUE_1 は
+# 自前 helper の絶対パスで非空が正常値のため、KEY_1 と併せて確認対象にする)。
+RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ] \
+    && [ -n "${GIT_CONFIG_KEY_1}" ] && [ -n "${GIT_CONFIG_VALUE_1}" ]
 
 RUN printf '%s\n' \
       "CRIT_PORT=\"${CRIT_PORT}\"" \
@@ -160,6 +165,8 @@ RUN printf '%s\n' \
       "GIT_CONFIG_COUNT=\"${GIT_CONFIG_COUNT}\"" \
       "GIT_CONFIG_KEY_0=\"${GIT_CONFIG_KEY_0}\"" \
       "GIT_CONFIG_VALUE_0=\"${GIT_CONFIG_VALUE_0}\"" \
+      "GIT_CONFIG_KEY_1=\"${GIT_CONFIG_KEY_1}\"" \
+      "GIT_CONFIG_VALUE_1=\"${GIT_CONFIG_VALUE_1}\"" \
     >> /etc/environment
 
 RUN crit --version

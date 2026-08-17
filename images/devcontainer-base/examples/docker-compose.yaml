@@ -42,8 +42,8 @@ services:
       NODE_OPTIONS: --max-old-space-size=2048
       CLAUDE_CONFIG_DIR: /home/node/.claude
       # CRIT_PORT (既定 4588)、GIT_ASKPASS、github.com の credential helper を
-      # 打ち消す GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 は
-      # base イメージが ENV と /etc/environment の両方で設定済み。
+      # 自前のものへ固定する GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / VALUE_0 /
+      # KEY_1 / VALUE_1 は base イメージが ENV と /etc/environment の両方で設定済み。
       # ここには書かない — compose の
       # environment: は docker exec 経由のシェルにしか届かず、SSH セッション
       # (PAM が /etc/environment から環境を組み立てる) には効かないため、

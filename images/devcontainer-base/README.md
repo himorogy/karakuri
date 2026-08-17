@@ -62,10 +62,10 @@ base に入れる条件は次のいずれか。
   ホスト鍵は初回接続時にコンテナごとに生成。認可鍵は dev-inject が注入する
   `/run/secrets/SSH_AUTHORIZED_KEYS` と `~/.ssh/authorized_keys` の両対応。
   [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
-- `GIT_ASKPASS=/usr/local/bin/git-askpass` と、github.com の credential helper を打ち消す
-  `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0`（いずれも ENV と
-  `/etc/environment` の両方。SSH セッションには ENV が届かないため）。値の原本は runtime-base 側で、
-  ここは転記。狙いと影響は
+- `GIT_ASKPASS=/usr/local/bin/git-askpass` と、github.com の credential helper をイメージ自前の
+  ものへ固定する `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` /
+  `GIT_CONFIG_KEY_1` / `GIT_CONFIG_VALUE_1`（いずれも ENV と `/etc/environment` の両方。SSH
+  セッションには ENV が届かないため）。値の原本は runtime-base 側で、ここは転記。狙いと影響は
   [`images/runtime-base/README.md`](../runtime-base/README.md) の「git の認証（github.com）」
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
@@ -102,7 +102,7 @@ Feature（版が lock に固定される）と個人フック（`/personal/setup
 2 つで、プロジェクト共通のスクリプトを置く必然が無くなったため。git の認証も
 base の `GIT_ASKPASS` 焼き込みが担うので、`gh auth setup-git` のような
 セットアップは要らない（2.1.0 以降は要らないだけでなく、github.com については
-base の打ち消しにより効かない）。必要になったプロジェクトだけ自前で足す。
+base が自前の credential helper へ固定するため効かない）。必要になったプロジェクトだけ自前で足す。
 
 雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
 プロジェクトごとにユーザー定義ネットワーク（`<name>_default`）を自動で作り、その上でだけ
@@ -303,7 +303,8 @@ base digest だけで環境が確定しなくなる ③shim 経由で PATH 解�
 ネイティブランナー（`ubuntu-24.04-arm`）の matrix ビルド + digest マージに切り替える。
 
 **github.com への https 認証は `GH_TOKEN` の注入を要求する（2.1.0 以降）。** イメージが github.com の
-credential helper を打ち消すため、VS Code が転送するホスト側の資格情報では認証されない。
+credential helper を自前のものへ固定するため、VS Code が global gitconfig へ書く helper でも、
+VS Code が統合ターミナルの environ へ注入する `GIT_ASKPASS` でも認証されない。
 `/run/secrets/GH_TOKEN` が無ければ private repo の `fetch` / `push` は失敗する。
 「ホスト側の資格情報でたまたま通ってしまい、スコープを絞ったトークンを注入した意味が消える」
 状態を潰すのが目的なので、これは仕様である。public repo の clone と ssh remote、github.com 以外の
