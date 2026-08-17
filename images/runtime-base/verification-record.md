@@ -1046,10 +1046,43 @@ fatal: credential helper ... told us to quit    rc=128
 `tests/git-credential.test.sh`（docker 不要、27 件・すべて否定対照付き）と `verify-docker.sh` の
 M6（実イメージ）。
 
-**実機での確認（2026-08-16、統合ターミナル）。** `/etc/environment` に 5 つが載っていること、
-`git config --get-urlmatch credential.helper https://github.com` が空を返すこと（一度目の対策の
-時点）、否定対照として設定を外すと VS Code の helper が出ることを確認した。`GH_TOKEN` を注入した
-状態での成功側は未確認で、検証項目に残してある。
+**実機での確認 1 回目（2026-08-16、統合ターミナル。一度目の対策の時点）。** `/etc/environment` に
+転記が載っていること、`git config --get-urlmatch credential.helper https://github.com` が空を
+返すこと、否定対照として設定を外すと VS Code の helper が出ることを確認した。**この時点では
+「打ち消しは効いているのに認証はホスト資格情報で通る」状態で、それを掴んだのが上記 (h) の
+きっかけである。**
+
+**実機での確認 2 回目（2026-08-17、devcontainer-base 2.2.0 の統合ターミナル）。** 自前 helper を
+積む形で全項目を通した。
+
+- ENV に 5 つが載っている（`GIT_CONFIG_KEY_1` の有無が 2.1.0 と 2.2.0 の見分けになる）
+- `git config --get-urlmatch credential.helper https://github.com` が
+  `/usr/local/bin/git-credential-gh-token` を返す。否定対照（5 変数を外す）では VS Code の
+  helper が出る
+- `GIT_ASKPASS` は VS Code のものに上書きされたままである。**上書きされたまま無害化できている**
+  ことがこの版の要点で、askpass を取り返す必要が無い
+- **トークン不在**: private repo への `ls-remote` が
+  `git-credential-gh-token: GH_TOKEN not available` → `fatal: ... told us to quit` で即座に落ちる。
+  端末プロンプトにも落ちない
+- **同一 URL での否定対照**: 同じ private repo に対し 5 変数を外すと、ホスト側の資格情報で ref が
+  返る。肯定と否定が同じ URL で対になっている（1 回目は肯定と否定で repo が違っていた）
+- **public repo は無影響**: トークン不在のまま `https://github.com/git/git.git` の ref が返る。
+  401 が返らないため credential 解決自体が起きない、という主張が実測になった
+- **トークン注入後**: `dev-inject` で `/run/secrets/GH_TOKEN` を置くと同じ `ls-remote` が成功する
+
+最後に `GIT_TRACE=1` で経路そのものを見た。
+
+```
+run_command: '/usr/local/bin/git-credential-gh-token get'
+run_command: '/usr/local/bin/git-credential-gh-token store'
+```
+
+**`get` も `store` も自前 helper だけ**で、VS Code の helper も askpass も現れない。(e) で観測した
+「認証成功後にトークンがホストの資格情報ストアへ書き戻る」経路が、実イメージで閉じていることの
+直接の確認になっている。
+
+**未確認**: SSH セッション（`/etc/environment` → pam_env）での 5 変数。統合ターミナルは Dockerfile
+の `ENV` が直接届く経路なので、転記が実際に効いているかは別に見る必要がある。
 
 ---
 
