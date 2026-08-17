@@ -1081,8 +1081,43 @@ run_command: '/usr/local/bin/git-credential-gh-token store'
 「認証成功後にトークンがホストの資格情報ストアへ書き戻る」経路が、実イメージで閉じていることの
 直接の確認になっている。
 
-**未確認**: SSH セッション（`/etc/environment` → pam_env）での 5 変数。統合ターミナルは Dockerfile
-の `ENV` が直接届く経路なので、転記が実際に効いているかは別に見る必要がある。
+**経路は 3 つある（2026-08-17 に整理）。** 環境の出所が違うので、1 つ通っても他が通るとは言えない。
+
+| 経路 | 環境の出所 | `GIT_ASKPASS` の値 |
+|---|---|---|
+| VS Code 統合ターミナル | Dockerfile の `ENV` + VS Code の注入 | VS Code のもの（上書きされる） |
+| 素の `docker exec -it` | Dockerfile の `ENV` | イメージのもの |
+| SSH（`sshd -i` を `docker exec` のパイプ上で動かす ProxyCommand） | pam_env → `/etc/environment` | イメージのもの |
+
+VS Code が environ を上書きするのは統合ターミナルだけで、素の `docker exec` は受けない。3 つ目が
+`/etc/environment` への転記を要求する唯一の経路である。
+
+**SSH セッションでの確認（2026-08-17）。**
+
+```
+SSH_CONNECTION=UNKNOWN 65535 UNKNOWN 65535
+GIT_CONFIG_COUNT=2
+GIT_CONFIG_VALUE_0=
+GIT_CONFIG_VALUE_1=/usr/local/bin/git-credential-gh-token
+GIT_CONFIG_KEY_0=credential.https://github.com.helper
+GIT_CONFIG_KEY_1=credential.https://github.com.helper
+```
+
+`SSH_CONNECTION` が `UNKNOWN` なのは、相手がソケットではなくパイプで sshd が peer address を
+取れないためで、sshd セッションであることは変わらない（値が入っていること自体が、素の
+`docker exec` ではないことの区別になる）。
+
+**5 つ出ていること自体が転記の証拠になる。** sshd はセッションの環境を自分の environ から
+引き継がず、`PATH` / `HOME` / `USER` 等と PAM が与えたものだけで組み立てる。`docker exec` が
+sshd へ渡したイメージの `ENV` はセッションには届かない。したがってここに出ている 5 つは
+pam_env が `/etc/environment` から読んだものである。
+
+**懸念していた空値の欠落は起きなかった。** `GIT_CONFIG_VALUE_0=` が空のまま残っている。pam_env が
+`GIT_CONFIG_VALUE_0=""` の行を落とす実装だと、git は `missing config value` で fatal になる
+（静かには壊れないが動かなくなる）。落ちていない。
+
+`git config --get-urlmatch credential.helper https://github.com` もこの経路で
+`/usr/local/bin/git-credential-gh-token` を返す。**3 経路すべてで固定が効いている。**
 
 ---
 

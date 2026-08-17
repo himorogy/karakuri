@@ -1039,7 +1039,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [x] **helper の無応答・非ゼロ終了がフォールスルーすること**、および `quit=1` だけが連鎖を止めること（2026-08-16。トークン不在時に敵対的な askpass が呼ばれないことまで確認）
 - [x] **統合ターミナルの `GIT_ASKPASS` が VS Code のものに差し替わっていること**（2026-08-16、実機。`GIT_TRACE=1` で VS Code の askpass.sh が起動される様子を観測。打ち消しのみの対策が不十分だった根拠）
 - [x] **設定がビルドされたイメージの ENV に載っていること**（`verify-docker.sh` の M6 で表明。2026-08-17 に devcontainer-base 2.2.0 の実機でも確認）
-- [ ] **SSH セッション（`/etc/environment` → pam_env）でも 5 変数が効いていること**（統合ターミナルは Dockerfile の `ENV` が直接届く経路なので、転記が効いているかは別に見る必要がある。sshd 経由の実機確認が要る）
+- [x] **SSH セッション（`/etc/environment` → pam_env）でも 5 変数が効いていること**（2026-08-17、`sshd -i` を `docker exec` のパイプ上で動かす ProxyCommand 経由の実機。sshd はセッションの環境を自分の environ から引き継がないため、5 つ出ていること自体が転記の証拠になる。空値の `GIT_CONFIG_VALUE_0` も落ちない）
 - [x] **`GH_TOKEN` 注入済みの実機で、github.com への https 操作が自前 helper 経由で成功すること**（2026-08-17、devcontainer-base 2.2.0 の統合ターミナル。`GIT_TRACE=1` で `get` も `store` も自前 helper だけを通ることまで確認 — 認証成功後の書き戻しがホストへ出ないことの直接の確認）
 - [x] **トークン不在で即座に失敗し、端末プロンプトにも落ちないこと**、および同一 URL の否定対照（5 変数を外すとホスト資格情報で成功する）（2026-08-17、実機）
 - [x] **public repo が影響を受けないこと**（トークン不在のまま ref が返る。401 が返らず credential 解決自体が起きないという主張の実測。2026-08-17）
