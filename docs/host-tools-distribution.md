@@ -190,7 +190,9 @@ H1 と組み合わせると、利用側の `PATH` 追加は `~/.config/karakuri/
 
 利用側に残す設定は環境変数で外に出します。
 
-- `KARAKURI_BW_BIN` — bw 実行ファイルの絶対パス
+- `KARAKURI_BW_BIN` — bw 実行ファイルの絶対パス（PATH 上の解決に任せない。現在の推奨配置は
+  `~/.dev-broker/bw` のような PATH の外で、バージョンマネージャの shim 等 PATH 上で先に来る
+  ものに broker の呼び先が奪われないようにするため）
 - `KARAKURI_ORG` — GitHub org。**任意**。扱う org が一つに定まる場合だけ設定し、複数あるなら設定しない（リポジトリは `<org>/<repo>` の 1 引数で毎回渡せる。§4.3 の引数形式を参照）
 - `KARAKURI_PROD_COMPOSE` — `compose.prod.yaml` の配置先
 

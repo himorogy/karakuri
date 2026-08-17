@@ -697,6 +697,56 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 渡せるので、扱う org が複数あって一つに定まらないなら設定しない。設定するのは「ほとんどの
 場合これ」という org がある場合だけで、その場合もスラッシュ付きで渡せば上書きできる。
 
+`karakuri-help` が関数の一覧と、環境変数の説明・現在値を出す。
+
+### broker 本体（bw）を用意する
+
+標準の broker は Bitwarden CLI を呼ぶ。**bw 本体は karakuri の配布物ではない**ので、clone には
+含まれない。別途取得する。
+
+**native ビルドを取る。`npm install -g @bitwarden/cli` は使わない。** broker はホスト側で最も
+特権的な部品で、マスターパスワードを握り、全鍵束を stdout に出す。その取得経路は狭く・固定的に
+保つ。npm 版はインストール時に postinstall が走り、依存木が深く、update で黙って版が動く。
+nodenv 等の環境では node の版ごとのインストールになるため、node を切り替えた瞬間に消える。
+native 版は単一ファイルで、版は自分で上げるまで動かない。
+
+```sh
+# bitwarden/clients の Releases（cli-v* タグ）から取得する
+VER=<version>
+curl -LO "https://github.com/bitwarden/clients/releases/download/cli-v${VER}/bw-macos-${VER}.zip"
+
+# Releases ページに併記されている値と突き合わせる。ここを飛ばすなら native を選ぶ意味がない
+shasum -a 256 "bw-macos-${VER}.zip"
+
+# PATH の外へ置く（理由は下記）
+mkdir -p ~/.dev-broker
+unzip "bw-macos-${VER}.zip" && mv bw ~/.dev-broker/bw && chmod +x ~/.dev-broker/bw
+
+# 初回実行が隔離属性で止まる場合
+xattr -d com.apple.quarantine ~/.dev-broker/bw
+
+# アカウントへのログイン（初回のみ）
+~/.dev-broker/bw login
+```
+
+Linux なら `bw-linux-<VER>.zip`、Windows なら `bw-windows-<VER>.zip` を同じ手順で。
+
+**`~/.dev-broker/` は PATH に入れない。** `~/.local/bin` のような PATH 上のディレクトリへ置くと、
+PATH 順で先に来たもの（バージョンマネージャの shim など）が勝ちうる。broker が呼ぶバイナリは
+固定的であってほしいので、PATH から外し、絶対パスで名指しする。
+
+```sh
+export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
+```
+
+名指しを必須にしておくと、設定漏れが「別の bw が黙って呼ばれる」ではなく「bw が見つからない」
+として現れる。失敗の出方が変わるだけに見えるが、前者は気づく契機が無い。
+
+vault の同期は broker が取得のたびに 1 回行うので、`bw sync` を手で打つ必要はない
+（`BROKER_BW_SYNC=0` で無効化できる）。鍵束をどう Bitwarden 側に置くか — Secure Note の
+項目名の付け方、共有分と個人分の分け方 — は
+[`templates/host/broker-bitwarden.sh`](./templates/host/broker-bitwarden.sh) の冒頭にある。
+
 ### prod でコマンドを実行する
 
 `compose.prod.yaml` は名前だけ見ると「プロジェクトのリポジトリに置くもの」に見えるが、

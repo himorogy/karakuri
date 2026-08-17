@@ -25,23 +25,19 @@
 #
 # --- セットアップ（初回のみ） --------------------------------------------------
 #
-#   bw CLI のインストールは native 実行ファイルを推奨する。broker はホスト側で
-#   最も特権的な部品（マスターパスワードを握り、全鍵束を stdout に出す）で
-#   あり、その取得経路は狭く・固定的に保つ。npm 版（npm install -g
-#   @bitwarden/cli）は install 時に postinstall スクリプトが走り、依存木が
-#   深く、update で黙って版が動く。native 版は単一ファイルで、版は自分で
-#   上げるまで動かない:
+#   bw 本体の取得手順（native 版を推奨する理由、GitHub Releases からの入手と
+#   ハッシュ照合、PATH の外への固定パス配置）は karakuri リポジトリの
+#   images/runtime-base/README.md にある「broker 本体（bw）を用意する」節が
+#   正典であり、ここでは繰り返さない。同じ手順を二箇所に書くと、どちらかを
+#   直したときにもう片方だけ古いまま残るということが起きる。
 #
-#     # bitwarden/clients の GitHub Releases（cli-v* タグ）から取得し、
-#     # リリースアセットの SHA-256 と照合してから固定パスへ置く
-#     curl -LO https://github.com/bitwarden/clients/releases/download/cli-v<VER>/bw-macos-<VER>.zip
-#     shasum -a 256 bw-macos-<VER>.zip     # 照合
-#     unzip bw-macos-<VER>.zip && mv bw ~/.local/bin/bw && chmod +x ~/.local/bin/bw
-#     xattr -d com.apple.quarantine ~/.local/bin/bw   # 初回実行が隔離で止まる場合
-#
-#   npm 版を使う場合は、取得物のハッシュ照合と版の固定を自分で行うこと
-#   （nodenv 等の環境では node 版ごとのインストールになり、node を
-#   切り替えると消える点にも注意）。
+#   このファイルは broker の参照実装として他リポジトリのホストへ単体で
+#   コピーされうるため、上記の README への相対パス参照はコピー先で解決できる
+#   とは限らない。その場合は要点だけを頼りに、同じ考え方で自分の環境に
+#   用意すること — native 版を使う（npm 版は postinstall が走り版も固定
+#   できないので避ける）、bitwarden/clients の Releases から取得してハッシュを
+#   照合する、PATH の外（例: ~/.dev-broker/bw）に置いて下記 BROKER_BW_BIN で
+#   絶対パス指定する。
 #
 #   bw login                       # アカウントへのログイン（初回のみ）
 #   bw sync                        # vault キャッシュの更新（初回の取得分）
@@ -79,9 +75,9 @@ set -euo pipefail
 
 # bw の実体は BROKER_BW_BIN で絶対パス指定できる（既定は PATH 解決）。
 # PATH 任せだと、バージョンマネージャの shim 等、PATH 上で先に来たものが
-# 勝つ。broker が呼ぶバイナリは固定的であってほしいので、上記の固定パスへ
-# 置いた native 版を使う場合はここで名指しする:
-#   BROKER_BW_BIN="$HOME/.local/bin/bw"
+# 勝つ。broker が呼ぶバイナリは固定的であってほしいので、PATH の外の
+# 固定パスへ置いた native 版を使う場合はここで名指しする:
+#   BROKER_BW_BIN="$HOME/.dev-broker/bw"
 bw_bin="${BROKER_BW_BIN:-bw}"
 
 # 項目名にデフォルト値は持たせない。決め打ちの名前を置くと、複数プロジェクトを

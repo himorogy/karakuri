@@ -866,7 +866,7 @@ FUNCS
 #
 # 環境変数の設定例:
 #
-#   export KARAKURI_BW_BIN="$HOME/.local/bin/bw"
+#   export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
 #   export KARAKURI_ORG=acme
 #   export KARAKURI_PROD_COMPOSE="$HOME/.config/acme/compose.prod.yaml"
 #

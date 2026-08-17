@@ -32,6 +32,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
     broker-macos-keychain.sh     # 代替: macOS Keychain broker（登録ツール broker-macos-keychain-set.sh と対）
     karakuri.sh                  # 呼び出し規約。.zshrc / .bashrc から source する
 ~/.local/bin/                  # 上記を解決するための symlink（または PATH に直接足してもよい）
+~/.dev-broker/                 # PATH の外。broker が名指しするバイナリを置く専用の場所
   bw                            # Bitwarden CLI（native ビルドを SHA-256 照合の上配置。karakuri の配布物ではない）
 ~/.config/app/
   compose.prod.yaml            # ~/.config/karakuri/.../templates/host/compose.prod.yaml のコピー。
@@ -56,7 +57,7 @@ compose.prod.yaml はプロジェクト固有値を含まない設計なので�
 `.zshrc`:
 
 ```sh
-export KARAKURI_BW_BIN="$HOME/.local/bin/bw"
+export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
 export KARAKURI_PROD_COMPOSE="$HOME/.config/app/compose.prod.yaml"
 
 # 任意。扱う org が一つに定まる場合だけ設定する
@@ -86,7 +87,7 @@ dotenvx をまとめて 1 コマンドにしているのは、`dotenvx` を `pnp
 `pnpm install --frozen-lockfile && pnpm <task>` を組み立てる（既定のタスクランナーは pnpm、
 `KARAKURI_PROD_INSTALL` / `KARAKURI_PROD_RUN` で上書きできる）。
 
-broker の標準は Bitwarden CLI（`templates/host/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.local/bin/bw` に固定配置する（手順はテンプレート冒頭。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
+broker の標準は Bitwarden CLI（`templates/host/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.dev-broker/bw` のような PATH の外の固定パスに配置する（手順は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の「broker 本体（bw）を用意する」。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
 
 項目名は `env/<project>/shared/prod,env/<project>/prod`（共有 → 個人の順、カンマ区切りで複数項目をマージでき、同名キーは後勝ち）という規約で、以前はこれをプロジェクトごとのラッパースクリプトへ手で書いていたが、いまは `karakuri.sh` 内の `karakuri-broker-env` 関数がこの項目名を組み立てる。プロジェクトごとのラッパーはもう要らない。
 
