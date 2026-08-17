@@ -23,8 +23,8 @@ ghcr.io/himorogy/runtime-base:1
 | 種別 | 中身 |
 |---|---|
 | 実行系 | Node 24、pnpm、dotenvx、wrangler、git、gh |
-| secret 注入 | `wrangler` / `gh` / `dotenvx` の shim、`prod-entrypoint.sh`、`git-askpass` |
-| 制約 | `core.hooksPath` + pre-commit hook、egress-guard 本体と sudoers、github.com の credential helper の打ち消し（`GIT_CONFIG_COUNT` 系）と `git-auth-check` |
+| secret 注入 | `wrangler` / `gh` / `dotenvx` の shim、`prod-entrypoint.sh`、`git-credential-gh-token`、`git-askpass` |
+| 制約 | `core.hooksPath` + pre-commit hook、egress-guard 本体と sudoers、github.com の credential helper の固定（`GIT_CONFIG_COUNT` 系）と `git-auth-check` |
 
 入っていないもの（= devcontainer-base 側に積む）: crit、エージェント類、zsh / less / man-db /
 ripgrep / fd / vim-tiny 等の対話系、シェル履歴の永続化設定、`/workspaces`。
@@ -204,60 +204,105 @@ fallback 資格情報が存在しえない。したがって必要な secret を
 
 ## git の認証（github.com）
 
-plain な `git` の `clone` / `fetch` / `push` は shim を通らない。認証は
-`GIT_ASKPASS=/usr/local/bin/git-askpass` が `/run/secrets/GH_TOKEN` を読む経路に固定してある。
-トークンが無ければ askpass が非ゼロ終了するので、認証が要る操作は失敗として現れる。
+plain な `git` の `clone` / `fetch` / `push` は shim を通らない。github.com への認証は、イメージ
+自前の credential helper `/usr/local/bin/git-credential-gh-token` が `/run/secrets/GH_TOKEN` を
+読む経路に固定してある。トークンが無ければ helper が `quit=1` を返し、git は他の経路へ落ちずに
+その場で失敗する。
 
-### credential helper を打ち消す
+### なぜ askpass ではなく helper なのか
 
-git は credential helper を設定順（system → global → local）に呼び、**最初に資格情報を返した
-helper で解決を確定する**。`GIT_ASKPASS` は「どの helper も返さなかった場合」のフォールバックに
-すぎない。
+git は credential helper を設定順（system → global → local → 環境変数）に呼び、**最初に資格情報を
+返した helper で解決を確定する**。`GIT_ASKPASS` は「どの helper も答えなかった場合」の
+フォールバックにすぎない。
 
-dev container ではこれが実際に効いてくる。VS Code の Dev Containers 拡張が接続のたびに global の
-gitconfig へ helper を書き込むため、放っておくと github.com への https 認証は
-`/run/secrets/GH_TOKEN` ではなく**ホスト側の資格情報**で通る。スコープを絞ったトークンを注入した
-意味が消え、しかも**認証は成功する**ので気づく契機がない。
+dev container では VS Code の Dev Containers 拡張が **2 つとも握っている**。
 
-そこでイメージは github.com に限って helper を打ち消す。
+1. 接続のたびに global の gitconfig へ credential helper を書き込む
+2. 統合ターミナルの environ へ `GIT_ASKPASS` を注入して上書きする
+
+1 だけを潰しても 2 が残る。実測（統合ターミナル内、打ち消しのみを入れた状態）:
 
 ```
-GIT_CONFIG_COUNT=1
+$ echo $GIT_ASKPASS
+/vscode/vscode-server/bin/<hash>/extensions/git/dist/askpass.sh
+$ GIT_TRACE=1 git ls-remote https://github.com/<org>/<repo>.git
+...
+trace: run_command: /vscode/vscode-server/bin/<hash>/extensions/git/dist/askpass.sh 'Password for ...'
+```
+
+helper は 1 本も呼ばれていないのに、フォールバック先が VS Code のものに差し替わっていた。
+`GIT_ASKPASS` は environ なので、イメージの `ENV` は接続のたびに上書きされる。
+
+一方 credential helper は**設定**であり、環境変数による設定（`GIT_CONFIG_COUNT` 系）は
+**全ての設定ファイルを読んだ後**に適用される。gitconfig の記述順にも environ の注入にも
+左右されずに認証先を固定できるのは、こちら側だけである。
+
+### スロット 0 で捨て、スロット 1 で積む
+
+```
+GIT_CONFIG_COUNT=2
 GIT_CONFIG_KEY_0=credential.https://github.com.helper
-GIT_CONFIG_VALUE_0=          # 空
+GIT_CONFIG_VALUE_0=                                        # 空 = それまでの helper を捨てる
+GIT_CONFIG_KEY_1=credential.https://github.com.helper
+GIT_CONFIG_VALUE_1=/usr/local/bin/git-credential-gh-token  # 自前を積み直す
 ```
 
-- 空文字の helper は「それまでに積まれた helper を捨てる」git の作法。URL 限定なので、github.com
-  以外のホストの helper はそのまま残る
-- `GIT_CONFIG_COUNT` 系は**全ての設定ファイルを読んだ後**に適用される。gitconfig 内の記述順に
-  依存しないので、VS Code が後から書いても効く
-- `/etc/gitconfig` に同じ打ち消しを書いても効かない。git は system → global の順に読み、空文字で
-  捨てた後に global の helper が積み直されるため（実測）
+結果、github.com の helper 一覧は**自前の 1 本だけ**になる。得られる性質が 4 つある。
 
-### なぜ「自前の helper を先に置く」ではないのか
+- **`GIT_ASKPASS` の乗っ取りが無関係になる。** 認証は helper で確定し、askpass に到達しない
+- **`store` の宛先が自前 1 本だけになる。** git は認証に成功すると資格情報を `store` で
+  **全ての** helper に配る。VS Code の helper が一覧に残っていると、注入した fine-scoped な
+  トークンがそこを経由してホストの資格情報ストアへ書き戻る（実 clone で観測。
+  `verification-record.md`）。打ち消しが先にあるので、この書き戻し先ごと消える
+- **URL に埋まった username を上書きできる。** `dev.containers.copyGitConfig` でホストの
+  gitconfig が持ち込まれると、`[url "https://<user>@github.com/"] insteadOf` のような設定で
+  username が固定されることがある。helper が返す `username=x-access-token` が使われる
+- **打ち消しは URL 限定。** github.com 以外のホストの helper はそのまま残る
 
-`/etc/gitconfig` に `/run/secrets/GH_TOKEN` を返す helper を書く案もある。system は global より
-先に読まれるので、順序では勝てる。それでもこの形は採らない。**git は認証に成功すると、その資格
-情報を `store` で全ての helper に配る**ためである。VS Code の helper が一覧に残っている限り、
-注入した fine-scoped なトークンがホストの資格情報ストアへ書き戻る。実際の clone で観測した：
+`VALUE_1` が絶対パスなのは意図的。helper 名を裸で書くと git は PATH から
+`git-credential-<name>` を探すが、このイメージの PATH は `${NPM_CONFIG_PREFIX}/bin` が
+`/usr/local/bin` より先に来るため、同名を置かれると乗っ取られる（shim と同じ罠）。
+
+`/etc/gitconfig` に打ち消しを書く案は不成立（実測）。git は system → global の順に読むので、
+空値で捨てた後に global の helper が積み直される。system より後に読まれる設定ファイルは
+イメージから固定できない。
+
+### トークンが無いときは連鎖ごと止める
+
+helper が「答えない」だけでは足りない。**helper の失敗は黙ってフォールスルーする** — 出力なしで
+`exit 0` でも、`exit 1` でも、username だけ返しても、git は次の helper や askpass へ進み、そこで
+成功してしまう（実測）。
+
+`/run/secrets/GH_TOKEN` が不在・空・読めない場合、helper は stdout へ `quit=1` を出す。git は
+helper の連鎖を打ち切ってその場で失敗する。
 
 ```
-OURS(get)
-OURS(store)
-VSCODE(store)
-VSCODE_IN: username=x-access-token
-VSCODE_IN: password=TOKEN_FROM_SECRETS   ← コンテナ内 tmpfs のトークンがホストへ出る
+git-credential-gh-token: GH_TOKEN not available: /run/secrets/GH_TOKEN
+fatal: credential helper '/usr/local/bin/git-credential-gh-token' told us to quit
 ```
 
-打ち消しなら helper が 1 本も残らないので、この書き戻し先ごと消える。
+端末プロンプトにも落ちないので、対話シェルで人間がホスト側の資格情報を打ち込んで迂回すること
+も、エージェントがプロンプトの前で無限に待つこともない。
+
+「読めない」の扱いに注意が要る。`password=$(cat "$f")` の形だと `cat` の失敗が拾えず、空の
+password を返して成立してしまう。shim と同じく、読み取り結果を変数に受けてから判定している。
+
+### `GIT_ASKPASS` は残してある
+
+`GIT_ASKPASS=/usr/local/bin/git-askpass`（`git-askpass` の実体は runtime-base、`ENV` の設定は
+devcontainer-base）はそのまま。github.com は helper で確定するのでここへは来ないが、
+github.com 以外のホストと、prod の entrypoint 経路で使う。
 
 ### prod でも効く
 
-打ち消しは repo local の `.git/config` が置いた helper にも及ぶ（環境変数による設定は local を
-含む全ての設定ファイルより後に適用されるため）。checkout 済みの信頼しないコードが
-`credential.helper` を仕込み、次回の entrypoint 自身の `fetch` で呼ばせて `GH_TOKEN` を受け取る
-経路が、github.com については閉じる。「なぜ `/src` を使い捨てるのか」で挙げている `.git/config`
-持続の一種である。
+環境変数による設定は repo local（`.git/config`）より後に適用されるので、打ち消しは checkout
+済みコードが仕込んだ `credential.helper` にも及ぶ。信頼しないコードが `credential.helper` を
+仕込み、次回の entrypoint 自身の `fetch` で呼ばせて `GH_TOKEN` を受け取る経路が、github.com に
+ついては閉じる。「なぜ `/src` を使い捨てるのか」で挙げている `.git/config` 持続の一種である。
+
+トークン破棄（entrypoint の手順 10）の後は、helper が `quit=1` を返すようになる。`exec` 後に
+走る信頼しないコードから github.com への認証付き操作ができないことが、`unset GIT_ASKPASS` だけ
+だった頃より強く担保される。
 
 ### 何が失われるか
 
@@ -269,19 +314,22 @@ VSCODE_IN: password=TOKEN_FROM_SECRETS   ← コンテナ内 tmpfs のトーク�
 - ssh remote（`git@github.com:owner/repo.git`）は影響しない
 - github.com 以外のホストは影響しない
 
-意図して外すなら、利用側で `GIT_CONFIG_COUNT` を設定し直して打ち消しを打ち消す。
+意図して外すなら、利用側で `GIT_CONFIG_COUNT` を設定し直す。
 
-### 打ち消しが黙って外れることへの備え
+### 設定が黙って外れることへの備え
 
-`GIT_CONFIG_COUNT` は git が持つ**唯一のカウンタ**である。イメージが 0 番を占有しているため、
-同じ仕組みで設定を足したい利用側と衝突する。利用側が `GIT_CONFIG_COUNT=1` と自分の `KEY_0` を
-設定すると、イメージの打ち消しは**黙って**消える。消えても認証は通るので、失敗としては現れない。
+`GIT_CONFIG_COUNT` は git が持つ**唯一のカウンタ**である。イメージがスロット 0 と 1 を占有して
+いるため、同じ仕組みで設定を足したい利用側と衝突する。利用側が `GIT_CONFIG_COUNT` を自分で
+設定すると、イメージの 2 スロットは**黙って**消える。消えても認証は（ホスト側の資格情報で）
+通るので、失敗としては現れない。
 
-`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認し、github.com の helper が
-生き残っていれば名指しで警告する（`prod-context` から呼ばれる）。正常時は何も出さない。
+`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認する（`prod-context` から
+呼ばれる）。`git config --get-urlmatch credential.helper https://github.com` が自前 helper の
+パスと一致していれば何も出さない。空なら「askpass へ落ちる」、別物なら「その helper が確定先と
+`store` の宛先を奪う」と、原因を分けて警告する。
 
-利用側で `GIT_CONFIG_COUNT` を使いたい場合は、イメージが置いている 3 つを引き継いだうえで、
-自分の設定を 1 番以降に足すこと。
+利用側で `GIT_CONFIG_COUNT` を使いたい場合は、イメージが置いている 5 つを引き継いだうえで、
+自分の設定を 2 番以降に足すこと。
 
 ---
 
@@ -293,12 +341,14 @@ VSCODE_IN: password=TOKEN_FROM_SECRETS   ← コンテナ内 tmpfs のトーク�
 2. 空値・`=` を含まない行・不正な鍵名は**即座に非ゼロ終了**する。取込件数が 0 でも落とす
 3. **自己検査** — `/src` と secret の置き場が tmpfs であること、`/src` が `exec` であること
 4. **`GIT_REPO` に資格情報が埋まっていないこと**を確認する
-5. `GIT_ASKPASS` を設定し、`/src`（tmpfs）を `git init` + `fetch` で用意する
+5. `GIT_ASKPASS` を設定し、`/src`（tmpfs）を `git init` + `fetch` で用意する（github.com への認証は
+   イメージが焼いた credential helper が担う。「git の認証（github.com）」を参照）
 6. `GIT_REF` が完全な commit sha であることと、**それが自分自身に解決されること**を確認する
 7. 解決した sha を stderr と `/run/prod-ref` へ記録する
 8. `checkout --detach --force` → `reset --hard` → `clean -xdff` の順で `GIT_REF` の状態へ復元する
 9. `pnpm config set store-dir /src/.pnpm-store` で store を node_modules と同一 tmpfs へ向ける
-10. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する
+10. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する（以降 helper は
+    `quit=1` を返すようになる）
 11. `exec "$@"`（引数が無ければ非ゼロ終了）
 
 順序には意味がある。自己検査（3）が secret 取込（1）の後・git 操作（5）の前にあるのは、
@@ -337,7 +387,8 @@ WARNING を出して続行する。**黙ってスキップはしない** — こ
 `https://x:<token>@github.com/...` の形で渡すと、`remote set-url` によって URL が
 `/src/.git/config` に残り、`exec` 後に走る信頼しないコードが `git config remote.origin.url`
 で読める。`/run/secrets/GH_TOKEN` を破棄している防御が丸ごと空振りになるため、この形は拒否
-する。認証は `GIT_ASKPASS` 経由（stdin で渡した `GH_TOKEN`）が唯一の正規経路。
+する。認証は credential helper `git-credential-gh-token`（stdin で渡した `GH_TOKEN` を `/run/secrets`
+から読む）が唯一の正規経路。
 ssh 形式（`git@github.com:owner/repo.git`）は `://` を含まないので影響しない。
 
 ### 完全な sha であることと、それ自身に解決されることは別

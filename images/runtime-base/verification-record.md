@@ -920,7 +920,7 @@ fail-closed ではあるので安全側だが、**「その ref は存在しな�
 
 ---
 
-## 0.14 credential helper が `GIT_ASKPASS` を先取りする（2026-08-16。docker 不要の実測）
+## 0.14 github.com の認証経路（2026-08-16。docker 不要の実測 + 実機確認）
 
 プロジェクト側での使用で発覚した。`GIT_ASKPASS` を設定してあれば git の認証がそこを通る、と
 いうのが誤りだった。git は credential helper を設定順（system → global → local → 環境変数）に
@@ -987,10 +987,69 @@ VSCODE_IN: password=TOKEN_FROM_SECRETS
 顕在化させる」を実現するには `quit=1` を返すしかない（`fatal: credential helper ... told us to
 quit`、rc=128）。打ち消し + askpass ならこの作り込みが要らない。
 
-**採った形**: runtime-base が `GIT_CONFIG_COUNT` 系を焼き、devcontainer-base が
-`/etc/environment` へ転記する（sshd 経由のセッションに ENV は届かないため）。打ち消しが黙って
-外れることへの備えとして `git-auth-check` を置き、`prod-context` から対話シェルの起動ごとに
-呼ぶ。回帰は `tests/git-credential.test.sh`（docker 不要）と `verify-docker.sh` の M6（実イメージ）。
+**一度目の対策は不十分だった（同日、実機で判明）。** 上記 (a)〜(g) を根拠に「helper を打ち消して
+askpass へ落とす」形（`GIT_CONFIG_COUNT=1`）で実装し、CI の実イメージでも打ち消しが効くことを
+確認した。ところが VS Code の統合ターミナルで実際に private repo を叩くと、返ってこない。
+
+```
+$ echo $GIT_ASKPASS
+/vscode/vscode-server/bin/<hash>/extensions/git/dist/askpass.sh
+
+$ GIT_TRACE=1 GIT_CURL_VERBOSE=1 git ls-remote https://github.com/<org>/<repo>.git
+...
+<= Recv header: HTTP/2 401
+trace: run_command: /vscode/vscode-server/bin/<hash>/extensions/git/dist/askpass.sh 'Password for ...'
+```
+
+**helper は 1 本も呼ばれていない**（打ち消しは効いている）が、フォールバック先の askpass が
+VS Code のものに差し替わっていた。VS Code は global gitconfig の helper だけでなく、**統合
+ターミナルの environ へ `GIT_ASKPASS` を注入して上書きする**。環境変数は接続のたびに書かれる
+ので、イメージの `ENV` では守れない。同じ「沈黙した成功」が別経路で残っていた。
+
+このとき同時に、URL が `https://<user>@github.com/...` になっていることも観測した。ホストの
+gitconfig の `[url "https://<user>@github.com/"] insteadOf` が `dev.containers.copyGitConfig` で
+持ち込まれた結果で、username がホスト側の値に固定されていた。
+
+**(h) 打ち消し + 自前 helper（スロット 2 つ）ならどちらの乗っ取りにも勝つ。** 敵対的な askpass と
+VS Code 相当の helper を両方生かした状態で測った。
+
+```
+=== COUNT=1: 打ち消しのみ（一度目の対策）===
+VSCODE_ASKPASS_RAN(Username ...)
+username=HOSTPW password=HOSTPW              ← ホスト資格情報で確定
+
+=== COUNT=2: スロット0で打ち消し + スロット1で自前 helper ===
+OURS(get)                                    ← askpass は呼ばれない
+username=x-access-token password=TOKEN_FROM_SECRETS
+
+=== store の宛先 ===
+OURS(store)                                  ← VS Code helper には渡らない
+
+=== URL に username 埋め込み (nori-y@) ===
+OURS(get) → username=x-access-token          ← insteadOf の持ち込みも上書きされる
+
+=== トークン不在 ===
+OURS_QUIT(get)
+GH_TOKEN not provided
+fatal: credential helper ... told us to quit    rc=128
+```
+
+一覧に自前 1 本しか残らないため、(e) で自前 helper 案を退けた理由（`store` が VS Code へ配られる）
+も同時に消える。**打ち消しと自前 helper は排他ではなく、組み合わせて初めて両方の穴が閉じる。**
+
+**採った形**: runtime-base が `GIT_CONFIG_COUNT=2`（スロット 0 = 打ち消し、スロット 1 =
+`/usr/local/bin/git-credential-gh-token`）を焼き、devcontainer-base が `/etc/environment` へ
+5 つとも転記する（sshd 経由のセッションに ENV は届かないため）。設定が黙って外れることへの
+備えとして `git-auth-check` を置き、`prod-context` から対話シェルの起動ごとに呼ぶ（判定は
+「空か否か」ではなく「実効 helper が自前のパスと一致するか」）。雛形の `devcontainer.json` には
+`git.terminalAuthentication: false` を入れ、environ への注入自体も止める。回帰は
+`tests/git-credential.test.sh`（docker 不要、27 件・すべて否定対照付き）と `verify-docker.sh` の
+M6（実イメージ）。
+
+**実機での確認（2026-08-16、統合ターミナル）。** `/etc/environment` に 5 つが載っていること、
+`git config --get-urlmatch credential.helper https://github.com` が空を返すこと（一度目の対策の
+時点）、否定対照として設定を外すと VS Code の helper が出ることを確認した。`GH_TOKEN` を注入した
+状態での成功側は未確認で、検証項目に残してある。
 
 ---
 
@@ -1023,14 +1082,16 @@ quit`、rc=128）。打ち消し + askpass ならこの作り込みが要らな�
 | 20 | 起動ラッパー: 必須環境変数の欠落を名指しで報告し非ゼロ終了 | ✅ | 同上 |
 | 21 | 起動ラッパー: 非 40 桁 `GIT_REF` で警告を出しつつ続行 | ✅ | 同上 |
 | 22 | 起動ラッパー: `-T` と引数が docker へ正しく渡り、stdin が素通しされる | ✅ | 同上 |
-| 23 | 打ち消しの値が Dockerfile の ENV と一致している | ✅ | `tests/git-credential.test.sh`（テスト側に値を持たず Dockerfile から読む） |
-| 24 | 打ち消しあり: github.com で helper が呼ばれず askpass が使われる（否定対照込み） | ✅ | 同上 |
-| 25 | 打ち消しは URL 限定（gitlab.com では helper が残る） | ✅ | 同上 |
-| 26 | 打ち消しあり: 認証成功後の `store` がどの helper にも渡らない（否定対照込み） | ✅ | 同上 |
+| 23 | 設定の値が Dockerfile の ENV と一致している（スロット 0/1 が同一キー、VALUE_1 が絶対パス） | ✅ | `tests/git-credential.test.sh`（テスト側に値を持たず Dockerfile から読む。読み取り自体の否定対照込み） |
+| 24 | 敵対的な askpass と VS Code 相当の helper が両方生きていても、自前 helper だけが呼ばれる | ✅ | 同上（否定対照 2 本: 設定を外すと helper が勝つ / global を空にすると askpass が勝つ） |
+| 25 | 打ち消しは URL 限定（gitlab.com では既存 helper が残る） | ✅ | 同上 |
+| 26 | 認証成功後の `store` が自前 helper にだけ渡る（否定対照込み） | ✅ | 同上 |
 | 27 | 打ち消しは `.git/config` の helper にも及ぶ（否定対照込み） | ✅ | 同上（N-2 の一角） |
 | 28 | system gitconfig への打ち消しは global の helper に負ける | ✅ | 同上（環境変数を選んだ理由の回帰） |
-| 29 | `git-askpass`: トークンあり / 不在 / 空 の三値 | ✅ | 同上 |
-| 30 | `git-auth-check`: 正常時は黙り、打ち消しが外れたら名指しで警告する | ✅ | 同上 + `tests/prod-context.test.sh`（配線） |
+| 29 | URL に username が埋まっていても helper の username が使われる | ✅ | 同上（`copyGitConfig` が持ち込む `insteadOf` 対策） |
+| 30 | `git-credential-gh-token`: トークンあり / 不在 / 空 / 読めない（mode 000）/ store・erase の no-op | ✅ | 同上（不在・空・読めないはいずれも `quit=1`。mode 000 は root 実行時 skip） |
+| 31 | トークン不在時に git が非ゼロで落ち、敵対的な askpass が呼ばれない（否定対照込み） | ✅ | 同上（`quit=1` が連鎖を止めている証拠） |
+| 32 | `git-auth-check`: 一致なら黙る / 空 / 別物 で警告の文面が分かれる | ✅ | 同上 + `tests/prod-context.test.sh`（配線） |
 
 ---
 
