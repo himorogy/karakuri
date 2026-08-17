@@ -148,7 +148,7 @@ security find-generic-password -s "<project>-prod-env" -w | \
 - `export ` 接頭辞は**非対応**
 - 空値（`KEY=`）はエラー。取込件数 0 もエラー（I6）
 
-参照実装: **標準は Bitwarden CLI**（`templates/broker-bitwarden.sh`。rev.9 の実測で確定 — D30。bw は native ビルドを版 pin + SHA-256 照合で固定パスへ置く。カンマ区切りの複数項目マージに対応し、チーム共有の鍵束と個人の鍵束を別項目に分けて「共有→個人」の順で並べると、取込側の後勝ちにより個人側が同名キーを上書きする。unlock は 1 回）。macOS 単独の代替は `security` CLI（Keychain 項目は Secure Enclave 由来の鍵で暗号化され、ACL で毎回確認 / Touch ID / 常時許可を選べる。dotenv 全文を **base64 で 1 項目に**格納する — `-w` の対話登録プロンプトは 1 行しか受け付けず、複数行の dotenv をそのまま渡すと全体が 1 行に潰れて最初の変数の値として取り込まれることを実測した。rev.9。あわせて登録時は `-T ""` で信頼アプリを空にする — 省くと作成アプリが信頼リストに入り、以後の取得が認可プロンプトなしで通り契約 3 が静かに消える。取得時プロンプトが 2 回出る現象は partition list — Sierra 以降の第 2 認可層 — によるもので、`apple-tool:,apple:` を設定すると項目 ACL の 1 回だけになる。いずれも実測済みで、登録ツール `broker-macos-keychain-set.sh` が格納から partition list 設定までを行う）。Windows は Credential Manager 直接よりも 1Password / Bitwarden 等の CLI（生体認証アンロック + dotenv 出力）が実務的。**SOPS は不採用**: 標準の age 運用は復号鍵を `~/.config/sops/age/keys.txt` に平文常駐させるため契約 2 に違反する。KMS / ハードウェアプラグインを足せば回避できるが、鍵束を git 管理しない以上、ファイル暗号化ツールを挟む動機自体がない。
+参照実装: **標準は Bitwarden CLI**（`templates/host/broker-bitwarden.sh`。rev.9 の実測で確定 — D30。bw は native ビルドを版 pin + SHA-256 照合で固定パスへ置く。カンマ区切りの複数項目マージに対応し、チーム共有の鍵束と個人の鍵束を別項目に分けて「共有→個人」の順で並べると、取込側の後勝ちにより個人側が同名キーを上書きする。unlock は 1 回）。macOS 単独の代替は `security` CLI（Keychain 項目は Secure Enclave 由来の鍵で暗号化され、ACL で毎回確認 / Touch ID / 常時許可を選べる。dotenv 全文を **base64 で 1 項目に**格納する — `-w` の対話登録プロンプトは 1 行しか受け付けず、複数行の dotenv をそのまま渡すと全体が 1 行に潰れて最初の変数の値として取り込まれることを実測した。rev.9。あわせて登録時は `-T ""` で信頼アプリを空にする — 省くと作成アプリが信頼リストに入り、以後の取得が認可プロンプトなしで通り契約 3 が静かに消える。取得時プロンプトが 2 回出る現象は partition list — Sierra 以降の第 2 認可層 — によるもので、`apple-tool:,apple:` を設定すると項目 ACL の 1 回だけになる。いずれも実測済みで、登録ツール `broker-macos-keychain-set.sh` が格納から partition list 設定までを行う）。Windows は Credential Manager 直接よりも 1Password / Bitwarden 等の CLI（生体認証アンロック + dotenv 出力）が実務的。**SOPS は不採用**: 標準の age 運用は復号鍵を `~/.config/sops/age/keys.txt` に平文常駐させるため契約 2 に違反する。KMS / ハードウェアプラグインを足せば回避できるが、鍵束を git 管理しない以上、ファイル暗号化ツールを挟む動機自体がない。
 
 - broker の stdout → パイプ → prod-entrypoint.sh の stdin へ直結し、entrypoint が**コンテナ内 tmpfs**（`/run/secrets/<VAR名>`、umask 077）へ書く（§4.6）。恒久平文ファイル（旧 `~/.config/<project>/.env.container`）は廃止する。
 - 環境変数を一切経由しないため、ホストシェルの environ（I2）にも、compose プロセスの environ にも、`docker inspect` の `Config.Env`（T4）にも現れない。
@@ -626,7 +626,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用に fine-scope �
 dev container は IDE（devcontainer 拡張）が起動するため、prod のような entrypoint への stdin 注入経路が無い。かわりに、**起動済みのコンテナへホストから注入する**。
 
 ```sh
-# ホスト側。templates/dev-inject.sh の骨子
+# ホスト側。templates/host/dev-inject.sh の骨子
 <dev 用 broker> | docker exec -i <dev-container> /usr/local/bin/secrets-ingest.sh
 ```
 
