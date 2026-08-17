@@ -31,9 +31,7 @@
 #                          既定（PATH 解決）に任せる
 #   KARAKURI_ORG           GitHub org の既定値。<org>/<repo> の org を省いた
 #                          ときに補われる
-#   KARAKURI_PROD_COMPOSE  compose.prod.yaml の配置先（prod 系の関数で必須。
-#                          ただし karakuri-prod-shell は compose ファイルを
-#                          読まずコンテナのラベルだけで引くため例外で不要）
+#   KARAKURI_PROD_COMPOSE  compose.prod.yaml の配置先（prod 系の関数で必須）
 #   KARAKURI_PROD_INSTALL  タスクの前に走らせる install コマンド。
 #                          既定は `pnpm install --frozen-lockfile`。
 #                          空文字を設定すると install 段を省く
@@ -824,7 +822,7 @@ FUNCS
 	_karakuri_help_env "KARAKURI_ORG" "任意" "${KARAKURI_ORG:-}" \
 		"<org>/<repo> の org を省いたときに補う。org を複数横断して扱うなら設定しないこと（設定すると、別 org のつもりで打った bare <repo> が黙って KARAKURI_ORG 側の org へ解決される）"
 
-	_karakuri_help_env "KARAKURI_PROD_COMPOSE" "prod 系の関数で必須（karakuri-prod-shell は例外で不要）" "${KARAKURI_PROD_COMPOSE:-}" \
+	_karakuri_help_env "KARAKURI_PROD_COMPOSE" "prod 系の関数で必須" "${KARAKURI_PROD_COMPOSE:-}" \
 		"compose.prod.yaml の配置先"
 
 	if [ "${KARAKURI_PROD_INSTALL+set}" = "set" ]; then
