@@ -127,6 +127,18 @@ exit "${FAKE_SSH_EXIT_CODE:-0}"
 FAKE_SSH
 chmod +x "$FAKE_BIN_DIR/ssh"
 
+# --- フェイク dock.sh / loopback-setup.sh -------------------------------------------
+# karakuri-dock / karakuri-loopback は引数を素通しするだけの薄いラッパーなので、
+# 見るべきものは「どの引数がそのまま届いたか」と「環境変数を足していないか」の
+# 2 つだけ。記録の仕方は dev-inject.sh のフェイクと同じにしてある。
+cat >"$FAKE_BIN_DIR/dock.sh" <<'FAKE_DOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"${FAKE_ARGV_FILE:?}"
+env >"${FAKE_ENV_FILE:?}"
+exit "${FAKE_DOCK_EXIT_CODE:-0}"
+FAKE_DOCK
+chmod +x "$FAKE_BIN_DIR/dock.sh"
+
 # --- 検査対象の compose ファイル -------------------------------------------------
 # コメント行の image: を無視できているかも同時に見たいので 1 行入れてある。
 BASE_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -502,6 +514,42 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_rc_nonzero "[$s] dev-inject rejects a project name containing '/'"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed project name"
 
+	# --- 薄いラッパー（dock / loopback） ------------------------------------------
+	# この 2 つは _karakuri_tool でスクリプトを引き、引数をそのまま渡すだけ。
+	# 引数の検査も usage もスクリプト側の仕事なので、ここで見るのは「素通しで
+	# あること」と「余計な環境変数を足していないこと」の 2 点になる。
+	echo "[$s] dock and loopback pass their arguments straight through"
+	reset_env
+	run_case karakuri-dock foo
+
+	assert_rc_zero "[$s] dock succeeds"
+	assert_argv_has "foo" "[$s] dock.sh receives the project name verbatim"
+	if [ "$(wc -l <"$FAKE_ARGV_FILE" 2>/dev/null)" = "1" ]; then
+		ok "[$s] dock.sh receives exactly one argument"
+	else
+		ng "[$s] dock.sh receives exactly one argument (argv: $(cat "$FAKE_ARGV_FILE" 2>/dev/null))"
+	fi
+	# broker も compose も関与しない。dev-inject と違って BROKER_* を組み立てて
+	# いないことを、フェイクが記録した環境そのもので見る。
+	if grep -qE '^(BROKER_|DEV_|PROD_)' "$FAKE_ENV_FILE" 2>/dev/null; then
+		ng "[$s] dock.sh is called without any broker or compose environment"
+	else
+		ok "[$s] dock.sh is called without any broker or compose environment"
+	fi
+
+	# スクリプトが無いときは _karakuri_tool のエラーで止まる。実行ビットを
+	# 落とすだけでは足りない（PATH を引く側は、シェルによっては実行ビットの
+	# 無いファイルも見つけてくる）ので、ファイルごと退避する。これで
+	# KARAKURI_TOOL_DIR 側と PATH 側の両方から同時に外れる。
+	reset_env
+	mv "$FAKE_BIN_DIR/dock.sh" "$WORKDIR/dock.sh.hidden"
+	run_case karakuri-dock foo
+	mv "$WORKDIR/dock.sh.hidden" "$FAKE_BIN_DIR/dock.sh"
+
+	assert_rc_nonzero "[$s] dock fails when dock.sh cannot be found"
+	assert_stderr_has "cannot find 'dock.sh'" "[$s] the error names dock.sh as the missing script"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] nothing is executed when dock.sh cannot be found"
+
 	# --- prod-shell: コンテナ特定を推測でやらない -------------------------------------
 	echo "[$s] prod-shell refuses to guess which container to enter"
 	reset_env
@@ -830,7 +878,8 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_rc_zero "[$s] karakuri-help succeeds"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] karakuri-help does not call prod-run.sh / dev-inject.sh / broker"
 
-	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject karakuri-prod-run \
+	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject \
+		karakuri-dock karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image karakuri-help; do
 		assert_stdout_has "$fn" "[$s] karakuri-help output mentions $fn"
@@ -880,7 +929,8 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	# --- 関数が全部定義されていること --------------------------------------------------
 	echo "[$s] every documented function is defined"
 	reset_env
-	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject karakuri-prod-run \
+	for fn in karakuri-pf karakuri-clean-pf karakuri-dev-inject \
+		karakuri-dock karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image \
 		karakuri-broker-command karakuri-broker-env karakuri-help; do

@@ -56,6 +56,7 @@
 #   karakuri-pf <name>                              port forwarding を張り直す
 #   karakuri-clean-pf [name...]                     port forwarding の後始末
 #   karakuri-dev-inject <project>                   dev container へ鍵を注入
+#   karakuri-dock <project>                         dev container の中で対話シェルを開く
 #   karakuri-prod-run <org/repo> <sha> <task> [args...]
 #   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
 #   karakuri-prod-base <org/repo> <sha>             対話作業の土台を起動
@@ -400,6 +401,46 @@ karakuri-dev-inject() {
 		"DEV_BROKER=${broker}" \
 		"DEV_COMPOSE_PROJECT=${project}-dev" \
 		"$dev_inject"
+}
+
+# karakuri-dock <project> — dev container の中で対話 zsh を開く。dock.sh を
+# 呼ぶだけの薄いラッパー。
+#
+# 関数にできるのは 2 つあるモードのうち片方だけである、というのがこの関数を
+# 読むときに知っておくべきこと。dock.sh には、対話 zsh を開く既定モードと、
+# `--stdio` で SSH のトランスポート（~/.ssh/config の ProxyCommand から
+# 呼ばれ、コンテナ内の sshd へ stdin/stdout を繋ぐ）になるモードがある。
+# 関数として提供できるのは前者だけで、後者は今までどおり ProxyCommand へ
+# dock.sh の絶対パスを書く必要がある:
+#
+#   Host devc-*
+#     ProxyCommand /path/to/dock.sh %h --stdio
+#
+# 理由は ssh 側にある。ssh は ProxyCommand を `/bin/sh -c` で起動するので、
+# 利用者の対話シェル（zsh / bash）に定義された関数はそこからは見えない。
+# source して定義した関数は、そのシェルのプロセスの中にしか存在しないため
+# である。したがって karakuri-dock を足しても ProxyCommand の行は短くならず、
+# 絶対パスを書く必要も消えない。この非対称を明記しておくのは、「関数を
+# 足したのだから ProxyCommand も `karakuri-dock %h --stdio` と書けるはずだ」
+# と読まれると、config を書き換えた時点で ssh が繋がらなくなり、しかも出る
+# メッセージ（ProxyCommand が sh から `command not found` で落ちる）から
+# 「関数は sh からは見えない」までは辿りにくいため。
+#
+# `--stdio` を渡すこと自体は素通しで通る（下記のとおり引数を検査しない）。
+# 禁じてはいないが、ssh から呼ばれない限り、SSH プロトコルのバイト列を
+# 端末へ吐くだけで使い道は無い。
+#
+# 引数の検査はここではしない。プロジェクト名の要否もオプションの綴りも
+# dock.sh 側が見ており、同じ規則を 2 箇所に持つと片方だけが古くなる
+# （karakuri-loopback / karakuri-prod-run と同じ判断）。引数 0 個のときも
+# そのまま渡し、usage はスクリプト側に出させる。
+karakuri-dock() {
+	local dock
+	dock="$(_karakuri_tool dock.sh)" || return 1
+
+	# 環境変数は渡さない。karakuri-dev-inject と違って broker は関与せず、
+	# dock.sh が読むのは自分の引数と docker の状態だけである。
+	"$dock" "$@"
 }
 
 # --- compose ファイルの解決 --------------------------------------------------------
@@ -973,6 +1014,8 @@ karakuri.sh が提供する関数:
       port forwarding の後始末（省略時は devc-* を全部畳む）
   karakuri-dev-inject <project>
       起動済みの dev container へ鍵を注入する
+  karakuri-dock <project>
+      dev container の中で対話シェルを開く（ssh の ProxyCommand には dock.sh の絶対パスが要る）
   karakuri-prod-run <org/repo> <sha> <task> [task-args...]
       install を挟んでタスクランナー経由で prod のタスクを実行する
   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
@@ -1043,6 +1086,7 @@ FUNCS
 #   alias pf='karakuri-pf'
 #   alias clean-pf='karakuri-clean-pf'
 #   alias dev-inject='karakuri-dev-inject'
+#   alias dock='karakuri-dock'
 #   alias prod-run='karakuri-prod-run'
 #   alias prod-exec='karakuri-prod-exec'
 #   alias prod-base='karakuri-prod-base'
