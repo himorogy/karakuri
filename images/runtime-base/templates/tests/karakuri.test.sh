@@ -81,18 +81,22 @@ FAKE_BROKER
 chmod +x "$FAKE_BIN_DIR/broker-bitwarden.sh"
 
 # --- フェイク docker -----------------------------------------------------------
-# karakuri.sh が docker を呼ぶのは 3 箇所: コンテナ特定 (compose ps -q)、
-# 土台へ入る (exec)、digest 解決 (buildx imagetools inspect)。サブコマンドで
-# 分岐して、それぞれ引数を記録する。
+# karakuri.sh が docker を呼ぶのは 3 箇所: コンテナ特定 (ps -q --filter
+# label=...)、土台へ入る (exec)、digest 解決 (buildx imagetools inspect)。
+# compose ファイルの変数展開に巻き込まれないよう、コンテナ特定は
+# `docker compose ps` ではなく素の `docker ps` をラベルで絞る形にしてある
+# （実機で GIT_REPO/GIT_REF 未設定のまま `docker compose ps` が
+# interpolation error で落ちた不具合の修正）。サブコマンドで分岐して、
+# それぞれ引数を記録する。
 cat >"$FAKE_BIN_DIR/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 case "${1:-}" in
-compose)
-	printf '%s\n' "$@" >"${FAKE_COMPOSE_ARGV_FILE:?}"
-	if [ -n "${FAKE_COMPOSE_PS_STDOUT:-}" ]; then
-		printf '%s\n' "$FAKE_COMPOSE_PS_STDOUT"
+ps)
+	printf '%s\n' "$@" >"${FAKE_PS_ARGV_FILE:?}"
+	if [ -n "${FAKE_PS_STDOUT:-}" ]; then
+		printf '%s\n' "$FAKE_PS_STDOUT"
 	fi
-	exit "${FAKE_COMPOSE_EXIT_CODE:-0}"
+	exit "${FAKE_PS_EXIT_CODE:-0}"
 	;;
 exec)
 	printf '%s\n' "$@" >"${FAKE_EXEC_ARGV_FILE:?}"
@@ -144,6 +148,16 @@ services:
     image: ${BASE_IMAGE}@sha256:REPLACE_WITH_ACTUAL_DIGEST
 EOF
 
+# 実機で踏んだ形そのもの: karakuri-image-digest はコメントを付けないが、
+# 利用者が版を手でメモする運用がある。行末コメントが digest の一部として
+# 読み込まれないことを見るための fixture。
+COMPOSE_PINNED_COMMENTED="$WORKDIR/compose.pinned-commented.yaml"
+cat >"$COMPOSE_PINNED_COMMENTED" <<EOF
+services:
+  prod:
+    image: ${BASE_IMAGE}@${BASE_DIGEST} # v1.2.2
+EOF
+
 BASE_SHA="1234567890abcdef1234567890abcdef12345678"
 BASE_CID="cafe0123deadbeef"
 
@@ -161,13 +175,13 @@ reset_env() {
 
 	export FAKE_ARGV_FILE="$WORKDIR/argv.$$.$RANDOM"
 	export FAKE_ENV_FILE="$WORKDIR/env.$$.$RANDOM"
-	export FAKE_COMPOSE_ARGV_FILE="$WORKDIR/compose-argv.$$.$RANDOM"
+	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$RANDOM"
 	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
 	export FAKE_BUILDX_ARGV_FILE="$WORKDIR/buildx-argv.$$.$RANDOM"
 	export FAKE_SSH_LOG="$WORKDIR/ssh-log.$$.$RANDOM"
 
-	export FAKE_COMPOSE_PS_STDOUT="$BASE_CID"
-	export FAKE_COMPOSE_EXIT_CODE=0
+	export FAKE_PS_STDOUT="$BASE_CID"
+	export FAKE_PS_EXIT_CODE=0
 	export FAKE_EXEC_EXIT_CODE=0
 	export FAKE_DIGEST="$BASE_DIGEST"
 	export FAKE_BUILDX_EXIT_CODE=0
@@ -432,10 +446,15 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	run_case karakuri-prod-shell app
 
 	assert_rc_zero "[$s] prod-shell succeeds when exactly one container matches"
-	if has_line "$FAKE_COMPOSE_ARGV_FILE" "prod-app"; then
-		ok "[$s] the container is looked up through compose project 'prod-<repo>'"
+	if has_line "$FAKE_PS_ARGV_FILE" "label=com.docker.compose.project=prod-app"; then
+		ok "[$s] the container is looked up through the compose project label 'prod-<repo>'"
 	else
-		ng "[$s] the container is looked up through compose project 'prod-<repo>' (argv: $(cat "$FAKE_COMPOSE_ARGV_FILE" 2>/dev/null))"
+		ng "[$s] the container is looked up through the compose project label 'prod-<repo>' (argv: $(cat "$FAKE_PS_ARGV_FILE" 2>/dev/null))"
+	fi
+	if has_line "$FAKE_PS_ARGV_FILE" "label=com.docker.compose.service=prod"; then
+		ok "[$s] the container is looked up through the compose service label 'prod'"
+	else
+		ng "[$s] the container is looked up through the compose service label 'prod' (argv: $(cat "$FAKE_PS_ARGV_FILE" 2>/dev/null))"
 	fi
 	for expected in exec -it -w /src "$BASE_CID" bash; do
 		if has_line "$FAKE_EXEC_ARGV_FILE" "$expected"; then
@@ -446,7 +465,7 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	done
 
 	reset_env
-	export FAKE_COMPOSE_PS_STDOUT=""
+	export FAKE_PS_STDOUT=""
 	run_case karakuri-prod-shell app
 
 	assert_rc_nonzero "[$s] prod-shell fails when no container matches"
@@ -454,8 +473,8 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_not_invoked "$FAKE_EXEC_ARGV_FILE" "[$s] docker exec is not invoked when no container matches"
 
 	reset_env
-	FAKE_COMPOSE_PS_STDOUT="$(printf 'cid-one\ncid-two')"
-	export FAKE_COMPOSE_PS_STDOUT
+	FAKE_PS_STDOUT="$(printf 'cid-one\ncid-two')"
+	export FAKE_PS_STDOUT
 	run_case karakuri-prod-shell app
 
 	assert_rc_nonzero "[$s] prod-shell fails when more than one container matches"
@@ -466,8 +485,20 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	run_case karakuri-prod-shell acme/app
 	assert_rc_nonzero "[$s] prod-shell rejects a repo name containing '/'"
 
+	# 実機で踏んだ不具合そのもの: 別の端末から prod-shell だけを叩くとき、
+	# 土台を起動した端末で渡した GIT_REPO / GIT_REF はそこには無い。以前の
+	# 実装は `docker compose ps` で compose ファイルを読ませていたため、
+	# environment 節の `${GIT_REPO:?...}` がここで展開されて落ちていた。
+	# 素の `docker ps --filter label=...` はこの展開を経由しないので、
+	# これらが未設定でも成功する。
+	echo "[$s] prod-shell does not need GIT_REPO/GIT_REF, unlike the compose-based lookup it replaced"
+	reset_env
+	unset GIT_REPO GIT_REF
+	run_case karakuri-prod-shell app
+	assert_rc_zero "[$s] prod-shell succeeds with GIT_REPO/GIT_REF unset"
+
 	# --- KARAKURI_PROD_COMPOSE の欠落 ------------------------------------------------
-	echo "[$s] KARAKURI_PROD_COMPOSE is required by the prod functions"
+	echo "[$s] KARAKURI_PROD_COMPOSE is required by the prod functions that actually run compose"
 	reset_env
 	unset KARAKURI_PROD_COMPOSE
 	run_case karakuri-prod-run acme/app "$BASE_SHA" deploy
@@ -476,10 +507,13 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_stderr_has "KARAKURI_PROD_COMPOSE" "[$s] the error names KARAKURI_PROD_COMPOSE"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] prod-run.sh is not invoked without a compose file"
 
+	# prod-shell は compose ファイルを読まずコンテナのラベルだけで引くので、
+	# KARAKURI_PROD_COMPOSE が無くても成功する（これも実機の不具合の一部:
+	# 別端末では KARAKURI_PROD_COMPOSE 自体を張っていないこともある）。
 	reset_env
 	unset KARAKURI_PROD_COMPOSE
 	run_case karakuri-prod-shell app
-	assert_rc_nonzero "[$s] prod-shell fails without KARAKURI_PROD_COMPOSE"
+	assert_rc_zero "[$s] prod-shell succeeds without KARAKURI_PROD_COMPOSE"
 
 	# --- 引数の個数 ------------------------------------------------------------------
 	echo "[$s] usage is printed when the argument count is wrong"
@@ -535,6 +569,31 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	export FAKE_DIGEST=""
 	run_case karakuri-image-digest 1.2.2
 	assert_rc_nonzero "[$s] image-digest fails when the registry lookup fails"
+
+	# --- image 行の行末コメント -------------------------------------------------------
+	# 実機で踏んだ不具合そのもの: 利用者が版を手でメモした
+	# `image: ...@sha256:... # v1.2.2` 形式の行末コメントが digest 文字列の
+	# 一部として読み込まれ、正しく pin されているのに「digest が入っていない」
+	# と誤診断されていた。
+	echo "[$s] a trailing YAML comment on the image: line is stripped, not read as part of the digest"
+	reset_env
+	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED_COMMENTED"
+	run_case karakuri-check-image 1.2.2
+	assert_rc_zero "[$s] check-image succeeds when the image: line has a trailing '# v1.2.2' comment"
+
+	reset_env
+	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED_COMMENTED"
+	run_case karakuri-image-digest 1.2.2
+	assert_stdout_is "image: ${BASE_IMAGE}@${BASE_DIGEST}" \
+		"[$s] image-digest resolves against the image name even when the current line has a trailing comment"
+
+	# コメントが無い場合（COMPOSE_PINNED）も従来どおり読めることの確認。
+	# 上の「image-digest / check-image」ブロックの各アサーションが
+	# COMPOSE_PINNED に対して既に検査しているので、ここでは崩れていないこと
+	# だけを重ねて確認する。
+	reset_env
+	run_case karakuri-check-image 1.2.2
+	assert_rc_zero "[$s] check-image still succeeds without a trailing comment"
 
 	# --- port forwarding -------------------------------------------------------------
 	echo "[$s] port forwarding is torn down before it is set up"

@@ -56,16 +56,22 @@ compose.prod.yaml はプロジェクト固有値を含まない設計なので�
 `.zshrc`:
 
 ```sh
-export KARAKURI_ORG=acme
 export KARAKURI_BW_BIN="$HOME/.local/bin/bw"
 export KARAKURI_PROD_COMPOSE="$HOME/.config/app/compose.prod.yaml"
+
+# 任意。扱う org が一つに定まる場合だけ設定する
+export KARAKURI_ORG=acme
 
 . ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh
 ```
 
 環境変数の並べ方（`BROKER_BW_ITEM` の項目名、`COMPOSE_PROJECT_NAME` の付け方）は
-`karakuri.sh` が引き受けるので、`.zshrc` に残るのは環境そのもの（bw の在処・org・compose
+`karakuri.sh` が引き受けるので、`.zshrc` に残るのは環境そのもの（bw の在処・compose
 ファイルの配置先）だけになる。起動は関数呼び出しになる。
+
+`KARAKURI_ORG` は必須ではない。**複数の org を扱っていて一つに定まらないなら、設定しない方がよい。**
+リポジトリは `<org>/<repo>` の 1 引数で渡せるので、org を毎回明示すれば済む。設定するのは
+「ほとんどの場合これ」という org がある場合だけで、その場合もスラッシュ付きで渡せば上書きできる。
 
 ```sh
 karakuri-prod-exec app 1234567890abcdef1234567890abcdef12345678 \

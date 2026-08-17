@@ -690,8 +690,12 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 呼び出し規約は [`templates/host/karakuri.sh`](./templates/host/karakuri.sh) にある。
 `.zshrc` / `.bashrc` からこれを `source` すると、broker 項目の命名・compose project 名・
 対話 prod 作業の二段構えといった規約が関数として入る。設定として残るのは
-`KARAKURI_BW_BIN` / `KARAKURI_ORG` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを
-指すものだけになる。関数の一覧と推奨 alias はファイル末尾のコメントにある。
+`KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
+関数の一覧と推奨 alias はファイル末尾のコメントにある。
+
+`KARAKURI_ORG` もあるが、こちらは**任意**である。リポジトリは `<org>/<repo>` の 1 引数で
+渡せるので、扱う org が複数あって一つに定まらないなら設定しない。設定するのは「ほとんどの
+場合これ」という org がある場合だけで、その場合もスラッシュ付きで渡せば上書きできる。
 
 ### prod でコマンドを実行する
 

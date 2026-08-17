@@ -191,7 +191,7 @@ H1 と組み合わせると、利用側の `PATH` 追加は `~/.config/karakuri/
 利用側に残す設定は環境変数で外に出します。
 
 - `KARAKURI_BW_BIN` — bw 実行ファイルの絶対パス
-- `KARAKURI_ORG` — GitHub org（prod 系関数の第 1 引数を省略できるようにする既定値）
+- `KARAKURI_ORG` — GitHub org。**任意**。扱う org が一つに定まる場合だけ設定し、複数あるなら設定しない（リポジトリは `<org>/<repo>` の 1 引数で毎回渡せる。§4.3 の引数形式を参照）
 - `KARAKURI_PROD_COMPOSE` — `compose.prod.yaml` の配置先
 
 ### 4.2 根拠

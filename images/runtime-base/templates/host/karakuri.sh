@@ -31,7 +31,9 @@
 #                          既定（PATH 解決）に任せる
 #   KARAKURI_ORG           GitHub org の既定値。<org>/<repo> の org を省いた
 #                          ときに補われる
-#   KARAKURI_PROD_COMPOSE  compose.prod.yaml の配置先（prod 系の関数で必須）
+#   KARAKURI_PROD_COMPOSE  compose.prod.yaml の配置先（prod 系の関数で必須。
+#                          ただし karakuri-prod-shell は compose ファイルを
+#                          読まずコンテナのラベルだけで引くため例外で不要）
 #   KARAKURI_PROD_INSTALL  タスクの前に走らせる install コマンド。
 #                          既定は `pnpm install --frozen-lockfile`。
 #                          空文字を設定すると install 段を省く
@@ -519,6 +521,34 @@ karakuri-prod-base() {
 # 別プロジェクトの prod へ入る。入った先には別プロジェクトの鍵が注入済みで、
 # /src には別プロジェクトのコードがある。鍵を持つコンテナの特定を推測で
 # 行わない、というのがこの構成全体の規律である。
+#
+# 「引く」のに `docker compose -p <project> -f <file> ps` は使わない。実機で
+# 踏んだ不具合: compose.prod.yaml の `environment:` は `${GIT_REPO:?...}` /
+# `${GIT_REF:?...}` を使っており、`ps` を含め compose ファイルを読む操作は
+# すべて変数展開の対象になる。土台を起動した端末には GIT_REPO / GIT_REF が
+# 渡っているが、後から shell を取りに来る別の端末にそれらを渡す理由がなく
+# （渡す先の compose 呼び出しは `ps` で、コンテナを作りはしない）、未設定の
+# まま `ps` を打つとそこで interpolation error になり、コンテナが実際に
+# 動いていても引けなかった。
+#
+# 代わりに `docker ps` を compose 自身が付けるラベルで絞る。
+# `com.docker.compose.project` と `com.docker.compose.service` は
+# docker/compose が生成するコンテナに必ず付ける識別子で、project 名と
+# service 名のどちらも compose ファイルの中身を一切読まずに厳密一致で
+# 引ける（compose-go の labels.go で定義されている、compose v2 の
+# 安定した公開仕様）。0 件・複数件で止める既存の規律はそのまま維持する
+# （`docker ps -q` は稼働中のコンテナだけを返す点も、以前の
+# `docker compose ps` と同じ）。これは以前の「名前から作った文字列で引いて
+# head -1 で選ぶ」実装への逆戻りではない。ラベルは compose 自身が
+# コンテナへ焼き込む識別子であり、こちらが名前を組み立てて一致を期待する
+# ものではない。
+#
+# 副次的に、この関数はもう KARAKURI_PROD_COMPOSE を読まない。要求を残す
+# 手もあったが、この関数が実際に依存しているのは compose ファイルではなく
+# ラベルだけであり、使わない環境変数を必須にすると「この端末にも
+# compose.prod.yaml を置く／揃える必要がある」という誤解を招く。他の
+# prod 系関数（karakuri-prod-run 等）は実際に `docker compose run` を
+# 起動する側なので、そちらは従来どおり必須のままにする。
 karakuri-prod-shell() {
 	if [ "$#" -ne 1 ]; then
 		echo "Usage: karakuri-prod-shell <repo>   (the same repo name you passed to karakuri-prod-base)" >&2
@@ -528,15 +558,12 @@ karakuri-prod-shell() {
 	local repo="$1"
 	_karakuri_plain_name "repo" "$repo" || return 1
 
-	if [ -z "${KARAKURI_PROD_COMPOSE:-}" ]; then
-		echo "karakuri: KARAKURI_PROD_COMPOSE is not set. Point it at the compose.prod.yaml you keep outside the dev workspace (for example ~/.config/${repo}/compose.prod.yaml)" >&2
-		return 1
-	fi
-
 	local project="prod-${repo}"
 	local cid
-	cid="$(docker compose -p "$project" -f "$KARAKURI_PROD_COMPOSE" ps -q prod)" || {
-		echo "karakuri-prod-shell: 'docker compose -p ${project} ps' failed" >&2
+	cid="$(docker ps -q \
+		--filter "label=com.docker.compose.project=${project}" \
+		--filter "label=com.docker.compose.service=prod")" || {
+		echo "karakuri-prod-shell: 'docker ps' failed" >&2
 		return 1
 	}
 
@@ -586,7 +613,21 @@ _karakuri_compose_image_ref() {
 		return 1
 	fi
 
-	printf '%s\n' "$lines" | sed -e 's/^[[:space:]]*image:[[:space:]]*//' -e 's/[[:space:]]*$//'
+	# 行頭の `image:` を落としたあと、行末の YAML コメントも落とす。YAML の
+	# 規則では、空白の後に続く `#` からが行末コメントで、クォートされた
+	# スカラーの中の `#` はコメントではない。ここでは後者（クォート）は
+	# 対応しない: docker image の参照文字列（レジストリ/名前/タグ/digest）
+	# が取りうる文字集合に `#` は含まれないため、クォートしてまで書く動機が
+	# なく、実機でも見た例がない。対応してしまうと、閉じクォートの位置を
+	# 誤検出したときに digest の一部を切り落とすという、無対応より悪い
+	# 失敗モードを自分で作り込むことになる。したがって「空白 + `#`
+	# 以降を落とす」だけで足り、クォートは検査対象にしない。
+	# `karakuri-image-digest` が吐く行にコメントは付かないが、利用者が
+	# `# v1.2.2` のように手でメモを足す運用まで壊さないためにこの一段を足す。
+	printf '%s\n' "$lines" |
+		sed -e 's/^[[:space:]]*image:[[:space:]]*//' \
+			-e 's/[[:space:]][[:space:]]*#.*$//' \
+			-e 's/[[:space:]]*$//'
 }
 
 # _karakuri_image_name <ref> — 参照からタグと digest を落として、イメージ名
@@ -718,3 +759,8 @@ karakuri-check-image() {
 #   export KARAKURI_BW_BIN="$HOME/.local/bin/bw"
 #   export KARAKURI_ORG=acme
 #   export KARAKURI_PROD_COMPOSE="$HOME/.config/acme/compose.prod.yaml"
+#
+# KARAKURI_ORG は任意。扱う org が 1 つに決まる人向けの省略記法でしかない。
+# 複数の org を横断して触るなら設定せず、毎回 <org>/<repo> の形で渡すこと
+# （設定してしまうと、別 org のつもりで打った bare <repo> が黙って
+# KARAKURI_ORG 側の org へ解決される）。
