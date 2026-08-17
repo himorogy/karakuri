@@ -2236,19 +2236,19 @@ m6_n2_credential_helper() {
 }
 measure_git M6 "named volume 再利用: credential.helper 経由の GH_TOKEN 窃取の試み" m6_n2_credential_helper
 
-# --- git: github.com の credential helper 打ち消し (実イメージでの確認) ----------
+# --- git: github.com の credential helper 固定 (実イメージでの確認) --------------
 #
-# git は credential helper を先に呼び、資格情報が返った時点で解決を確定する。
-# GIT_ASKPASS はどの helper も返さなかった場合のフォールバックでしかないので、
-# helper が 1 本でも生きていると /run/secrets/GH_TOKEN を読む経路は素通りされ、
-# しかも認証は成功するので失敗としては現れない。イメージは GIT_CONFIG_COUNT 系で
-# github.com の helper を打ち消している。
+# git は credential helper を設定順に呼び、最初に資格情報を返した helper で解決を
+# 確定する。GIT_ASKPASS はどの helper も答えなかった場合のフォールバックでしかなく、
+# しかも VS Code は統合ターミナルの environ へ GIT_ASKPASS を注入して上書きしてくる。
+# そこでイメージは GIT_CONFIG_COUNT=2 を使い、スロット 0 の空値で github.com 向けに
+# 積まれた helper を全て捨て、スロット 1 で自前の helper を絶対パスで積み直している。
 #
-# 打ち消しのロジックそのものは tests/git-credential.test.sh が docker なしで
-# 見ている。ここで見るのは「実際にビルドされたイメージの ENV にそれが載って
-# いるか」で、Dockerfile の ENV 行が消えたり別のレイヤで上書きされたりしたら
-# ここで落ちる。VS Code が書くのと同じ形 (global の generic な helper) を
-# コンテナ内で再現してから確認する。
+# 打ち消しと積み直しのロジックそのものは tests/git-credential.test.sh が docker なしで
+# 見ている。ここで見るのは「実際にビルドされたイメージの ENV にそれが載っていて、
+# 実効値が自前 helper 1 本になっているか」で、Dockerfile の ENV 行が消えたり別の
+# レイヤで上書きされたりしたらここで落ちる。VS Code が書くのと同じ形 (global の
+# generic な helper) をコンテナ内で再現してから確認する。
 #
 # shellcheck disable=SC2016 # $(...) と "$..." はこのスクリプトではなくコンテナ
 # 内の sh に評価させる。
@@ -2258,12 +2258,12 @@ m6_credential_reset() {
 		chmod +x /tmp/vscode-helper.sh
 		git config --global credential.helper /tmp/vscode-helper.sh
 		echo "ENV=[$(env | grep ^GIT_CONFIG_ | sort | tr "\n" " ")]"
-		echo "github.com (打ち消しあり)=[$(git config --get-urlmatch credential.helper https://github.com)]"
-		echo "github.com (否定対照: ENV を外す)=[$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 git config --get-urlmatch credential.helper https://github.com)]"
+		echo "github.com (固定あり)=[$(git config --get-urlmatch credential.helper https://github.com)]"
+		echo "github.com (否定対照: ENV を外す)=[$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 git config --get-urlmatch credential.helper https://github.com)]"
 		echo "gitlab.com (打ち消しは URL 限定)=[$(git config --get-urlmatch credential.helper https://gitlab.com)]"
 	'
 }
-measure M6 "github.com の credential helper 打ち消しがイメージに載っているか" m6_credential_reset
+measure M6 "github.com の credential helper 固定がイメージに載っているか" m6_credential_reset
 
 # shellcheck disable=SC2016 # 同上。
 a6_credential_reset() {
@@ -2271,14 +2271,36 @@ a6_credential_reset() {
 		printf "#!/bin/sh\nexit 0\n" > /tmp/vscode-helper.sh
 		chmod +x /tmp/vscode-helper.sh
 		git config --global credential.helper /tmp/vscode-helper.sh
-		[ -z "$(git config --get-urlmatch credential.helper https://github.com)" ] || exit 1
-		[ -n "$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 git config --get-urlmatch credential.helper https://github.com)" ] || exit 2
-		[ -n "$(git config --get-urlmatch credential.helper https://gitlab.com)" ] || exit 3
+		[ "$(git config --get-urlmatch credential.helper https://github.com)" = /usr/local/bin/git-credential-gh-token ] || exit 1
+		[ "$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 git config --get-urlmatch credential.helper https://github.com)" = /tmp/vscode-helper.sh ] || exit 2
+		[ "$(git config --get-urlmatch credential.helper https://gitlab.com)" = /tmp/vscode-helper.sh ] || exit 3
 	'
 }
-assert M6 "github.com の helper が打ち消され、否定対照 (ENV なし) と他ホストでは残る" a6_credential_reset
+assert M6 "github.com の helper が自前 1 本になり、否定対照 (ENV なし) と他ホストでは VS Code 相当が残る" a6_credential_reset
 
-# 打ち消しが黙って外れたときに気づける側 (git-auth-check) も、実イメージで
+# トークンが無いときに helper が連鎖ごと止めること。helper が「答えない」だけだと
+# git は次の helper や GIT_ASKPASS へフォールスルーして、そこで成功しうる。
+# prod container には /run/secrets/GH_TOKEN が無い状態で起動できるので、そのまま
+# `git credential fill` を流して quit=1 の効果を見る。GIT_ASKPASS には「答えて
+# しまう」ものを置き、それが呼ばれないことまで確かめる。
+#
+# shellcheck disable=SC2016 # 同上。
+a6_credential_quit() {
+	docker run --rm --user 1000:1000 -e HOME=/tmp "$IMG" sh -c '
+		printf "#!/bin/sh\necho ASKPASS_RAN >> /tmp/log\necho host-pw\n" > /tmp/askpass.sh
+		chmod +x /tmp/askpass.sh
+		: > /tmp/log
+		printf "protocol=https\nhost=github.com\n\n" | GIT_ASKPASS=/tmp/askpass.sh git credential fill > /tmp/out 2>/tmp/err
+		[ $? -ne 0 ] || exit 1
+		grep -q "told us to quit" /tmp/err || exit 2
+		[ ! -s /tmp/log ] || exit 3
+		grep -q "^password=" /tmp/out && exit 4
+		exit 0
+	'
+}
+assert M6 "GH_TOKEN 不在時、helper が quit=1 で連鎖を止め askpass へ落ちない" a6_credential_quit
+
+# 固定が黙って外れたときに気づける側 (git-auth-check) も、実イメージで
 # 「正常時は黙る / 外れたら喋る」の両方を見る。
 #
 # shellcheck disable=SC2016 # 同上。
@@ -2288,10 +2310,10 @@ a6_auth_check() {
 		chmod +x /tmp/vscode-helper.sh
 		git config --global credential.helper /tmp/vscode-helper.sh
 		[ -z "$(git-auth-check 2>&1)" ] || exit 1
-		[ -n "$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 git-auth-check 2>&1)" ] || exit 2
+		[ -n "$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 git-auth-check 2>&1)" ] || exit 2
 	'
 }
-assert M6 "git-auth-check が正常時は黙り、打ち消しが外れると警告する" a6_auth_check
+assert M6 "git-auth-check が正常時は黙り、固定が外れると警告する" a6_auth_check
 
 # --- git 設定優先順位 ------------------------------------------------------------
 m6_hookspath_precedence() {
