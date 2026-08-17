@@ -1025,7 +1025,7 @@ username=x-access-token password=TOKEN_FROM_SECRETS
 === store の宛先 ===
 OURS(store)                                  ← VS Code helper には渡らない
 
-=== URL に username 埋め込み (nori-y@) ===
+=== URL に username 埋め込み ===
 OURS(get) → username=x-access-token          ← insteadOf の持ち込みも上書きされる
 
 === トークン不在 ===

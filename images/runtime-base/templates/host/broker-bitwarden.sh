@@ -43,7 +43,7 @@
 #   bw sync                        # vault キャッシュの更新（初回の取得分）
 #
 #   Bitwarden 側に Secure Note を 1 項目作り、名前を「env/<project>/<環境>」の
-#   ように付ける（例: env/radwisp/dev）。中身は dotenv 形式のテキスト全文
+#   ように付ける（例: env/acme/dev）。中身は dotenv 形式のテキスト全文
 #   （複数行の KEY=value をまとめたもの）。この項目名を、呼ぶ側で
 #   BROKER_BW_ITEM として渡す。
 #
@@ -55,20 +55,20 @@
 # --- 使い方 -------------------------------------------------------------------
 #
 #   # 項目名を都度渡す（項目名は秘匿情報ではないので環境変数でよい）
-#   BROKER_BW_ITEM=env/radwisp/dev \
+#   BROKER_BW_ITEM=env/acme/dev \
 #     DEV_BROKER=~/.local/bin/broker-bitwarden.sh DEV_COMPOSE_PROJECT=... dev-inject.sh
 #
 #   # 複数項目のマージ: カンマ区切りで並べる。unlock は 1 回だけ（マスター
 #   # パスワードのプロンプトも 1 回）で、並び順のまま連結して出力する。
 #   # 取込側は同名の鍵を後から来た値で上書きするため、「チーム共有の鍵束を
 #   # 先に・個人の鍵束を後に」並べると個人側が勝つ:
-#   BROKER_BW_ITEM=env/radwisp/shared/dev,env/radwisp/dev ...
+#   BROKER_BW_ITEM=env/acme/shared/dev,env/acme/dev ...
 #   #（この規約上、項目名にカンマは使えない）
 #
 #   # またはプロジェクト別に 1 行のラッパーを置いて固定する
-#   #   ~/.local/bin/radwisp-dev-broker:
+#   #   ~/.local/bin/acme-dev-broker:
 #   #     #!/usr/bin/env bash
-#   #     BROKER_BW_ITEM=env/radwisp/shared/dev,env/radwisp/dev \
+#   #     BROKER_BW_ITEM=env/acme/shared/dev,env/acme/dev \
 #   #       exec "$HOME/.local/bin/broker-bitwarden.sh"
 #
 set -euo pipefail

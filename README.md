@@ -109,7 +109,7 @@ pnpm test      # 各パッケージのテスト
 
 `allowDomains` の `nodejs.org` がその例です。リモート接続の relay が `node-pty` を
 ビルドするため、node-gyp が Node のヘッダを取りに行きます。2026-08-03 に audit モードで
-観測しました（`104.16.213.131`）。`~/.orca-remote` / `~/.cache` / `~/.vscode-server` は
+観測しました（`104.16.213.131`）。`~/.cache` / `~/.vscode-server` は
 いずれもコンテナローカルなので、**再ビルドのたびに繰り返されます。外すとリモート接続が
 壊れます。**
 
