@@ -606,8 +606,13 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 `host/` 側は、**このリポジトリをタグ指定で clone して使う**。ファイルを個別にコピーしない。
 
 ```sh
-git clone --depth 1 --branch <tag> https://github.com/himorogy/karakuri.git ~/.config/karakuri
+git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git ~/.config/karakuri
 ```
+
+タグは `host-tools-v*` 系列を使う。イメージのリリースタグ（`runtime-base-v*`）とは別系列で、
+ホスト側ツールだけの版を表す。`templates/` は `.dockerignore` でビルドコンテキストから
+外れているため、ここが変わってもイメージの中身は変わらない。系列を分けておくと、
+ホスト側ツールの修正がイメージの再リリースを引き起こさない。
 
 `~/.config/karakuri/images/runtime-base/templates/host` を `PATH` に足すか、そこから
 `~/.local/bin/` へ symlink を張る。どちらでもよい。
@@ -623,7 +628,7 @@ git clone --depth 1 --branch <tag> https://github.com/himorogy/karakuri.git ~/.c
 ```sh
 git -C ~/.config/karakuri fetch --tags
 git -C ~/.config/karakuri log --oneline HEAD..origin/main -- images/runtime-base/templates/
-git -C ~/.config/karakuri checkout <new-tag>
+git -C ~/.config/karakuri checkout host-tools-v<new>
 ```
 
 clone 先は dev workspace の外に置くこと。**禁じているのは置き場所であって、git リポジトリの
