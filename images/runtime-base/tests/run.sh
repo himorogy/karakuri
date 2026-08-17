@@ -23,3 +23,7 @@ bash "$SCRIPT_DIR/hook.test.sh"
 # の外では参照先が存在しない記号が残っていないことの検査。棚卸しを一度やっても
 # 次に書けば戻るので、検査として置いている。
 bash "$SCRIPT_DIR/shipped-symbols.test.sh"
+
+# example/ の compose と配布テンプレートの compose が一致することの検査。
+# 二枚が別々に存在するのは意図的だが、片方だけを直せてしまう。
+bash "$SCRIPT_DIR/template-sync.test.sh"
