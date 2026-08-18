@@ -45,14 +45,14 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 
 `postStartCommand` から root 権限で実行されます。
 
-1. **先にネットワークを閉じる** — IPv6 は最終状態（loopback 以外すべて拒否）へ、IPv4 は bootstrap テーブル（loopback・リゾルバ・確立済みセッション・sshd のみ）へ
+1. **先にネットワークを閉じる** — IPv6 は最終状態（loopback 以外すべて拒否）へ、IPv4 は bootstrap テーブル（loopback・リゾルバ・確立済みセッションのみ）へ
 2. 閉じた状態のまま、DNS だけを使って allowlist を構築する
 3. `ipset swap` で差し替え、本番のフィルタテーブルを `iptables-restore` で一括適用する
 4. 自己検証を実行する
 
 **リビルド中に外部ネットワークを必要とする工程はありません。** 途中で強制終了された場合に何が保たれるかは [`docs/design.md`](./docs/design.md) §2.2。
 
-**失敗したら panic テーブル**（loopback と確立済み sshd 応答のみ許可、他は全 DROP）を適用して exit≠0 します。`firewall.json` の検証エラーも同様です。`iptables` が使えると確認する前の失敗だけは、panic テーブルすら適用できないためルール未適用で終了します。
+**失敗したら panic テーブル**（loopback のみ許可、他は全 DROP）を適用して exit≠0 します。**`docker exec` は iptables を経由しないため、この状態でもコンテナには入れます。**`firewall.json` の検証エラーも同様です。`iptables` が使えると確認する前の失敗だけは、panic テーブルすら適用できないためルール未適用で終了します。
 
 処理順序の詳細は [`docs/spec.md`](./docs/spec.md) §4.2、その根拠は [`docs/design.md`](./docs/design.md) §2.2・§2.8。
 
@@ -104,7 +104,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    バージョンは必ず固定する。このスクリプトは root 所有の /usr/local/bin に置かれ、
 #    4 のパスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の
 #    更新がそのままコンテナ内 root でのコード実行になる。
-RUN npm install -g @himorogy/egress-guard@0.1.1 \
+RUN npm install -g @himorogy/egress-guard@0.2.0 \
   && cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
         /usr/local/bin/init-project-firewall.sh \
   && chown root:root /usr/local/bin/init-project-firewall.sh \
@@ -256,10 +256,11 @@ init-project-firewall.sh --check-config
 
   // ホスト宛に開ける TCP ポート。相手はデフォルトゲートウェイと
   // host.docker.internal の 2 つで、サブネット全体ではない
-  "allowHostPorts": [5432],
+  "allowHostPorts": [5432]
 
-  // コンテナ内 sshd のポート。既定 22
-  "sshdPort": 22
+  // listen する sshd を運用する場合のみ書く。inbound を 1 本開ける宣言になる。
+  // 省略時は sshd 規則が一切出ない（既定値は無い）。下の「inbound」を読むこと
+  // "sshdPort": 22
 }
 ```
 
@@ -319,6 +320,24 @@ init-project-firewall.sh --print-allowlist
 **Docker Desktop ではこの 2 つが別のアドレスになります。** 実測ではゲートウェイ経由でホストに届かず、`host.docker.internal` 側でのみ到達しました（[`docs/design.md`](./docs/design.md) §2.15）。
 
 どちらも取得できない状態で `allowHostPorts` が指定されている場合は、要求された許可を黙って落とすのではなく exit≠0 で停止します。
+
+## inbound は既定で閉じています（`sshdPort`）
+
+**外から入ってくる接続は、loopback と確立済みセッションを除いてひとつも通しません。**
+
+これは「サービスを守る」ための規則ではなく、**egress 規制の一部**です。inbound 接続を 1 本許すと、以後その接続の上を流れる送信は確立済みセッション扱いになり、**allowlist を経由せずにデータを外へ出せます**（逆方向チャネル）。つまり **inbound を開けることは、egress の穴を 1 本開けること**です。
+
+コンテナ内で **listen する sshd** を動かしている場合だけ、そのポートを `firewall.json` に書きます。
+
+```json
+{ "version": 1, "sshdPort": 22 }
+```
+
+書いたポートは bootstrap テーブル・最終テーブル・panic テーブルのすべてで開きます。**指定は上記の穴を受け入れる宣言です。** 同居するコンテナからも叩ける口になる点は [`docs/design.md`](./docs/design.md) §4.4 を参照してください。
+
+**`docker exec` で入る運用（`sshd -i` を含む）では書く必要はありません。** その経路は iptables を通らないため、`sshdPort` を書かなくても影響を受けません。
+
+> **0.2.0 での破壊的変更:** 0.1.x では `sshdPort` の既定値が `22` で、**書かなくても 22 番の inbound が開いていました。** 0.2.0 では既定値が無くなり、**書かなければ開きません。** listen する sshd を運用している場合は `"sshdPort": 22` を明示してください。無効化のために `0` を書くことはできません（従来どおり拒否されます）— 無効化はキーを書かないことで表現します。
 
 ---
 

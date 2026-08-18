@@ -232,6 +232,39 @@ FAIL the effective table is still the bootstrap table (missing: ^-A OUTPUT -p ud
 FAIL the refused panic table did not take effect (unexpectedly present: sport 22)
 ```
 
+### テスト自体の欠陥: panic テーブルの同定を sshd 行と `:OUTPUT DROP` に頼っていた（修正済み）
+
+0.2.0 で `sshdPort` が opt-in になり（[`design.md`](./design.md) §2.22）、既定では **panic テーブルに sshd の行が出なくなりました。** 上の `restorefail` / `panicfail` はどちらも `sport 22` の有無を目印にしていたため、そのままでは目印を失います。
+
+判定を **`assert_is_panic_table` ヘルパー**へ作り直しました。panic テーブルは「何を含むか」ではなく「**何を含まないか**」で定義されるテーブルなので、単一の grep では同定できません。
+
+* 必須: 3 チェーンとも policy DROP、loopback の 2 行
+* 禁止: リゾルバ宛の DNS ACCEPT、`ctstate ESTABLISHED,RELATED`、`match-set`、`SET --add-set`、`-j LOG`、`-j REJECT`
+
+sshd 行の有無には依存しません。`restorefail` の `v4count` が 4（bootstrap → recorder 付き最終 → recorder 抜き最終 → panic）であることは**実際に走らせて変わっていないことを確認**したうえで残しました。目印だけを差し替えた形です。
+
+**作り直しの過程で、既存の弱い検査が 2 件見つかりました。** `verifyfail`（自己検証の失敗）と `anchordead`（ネットワーク死）の「panic に倒れたこと」の判定が `^:OUTPUT DROP` の一致だけで、**bootstrap テーブルでも最終テーブルでも緑になる**ものでした。**「テストが通っているが検査していない」形としては 4 度目です。** 2 件とも `assert_is_panic_table` へ強化しました。
+
+見つかった経緯は否定対照です。`on_exit` の IPv4 panic restore を丸ごとスキップする改変（panic テーブルが一度も適用されない状態）を掛けたところ 14 件が赤くなり、その内訳を読んで判明しました。
+
+```
+FAIL a rejected filter table falls back to the panic table ( not the panic table, it carries '--dport 53'; not the panic table, it carries 'ctstate ESTABLISHED,RELATED'; not the panic table, it carries '-j LOG';)
+FAIL the panic table is a restore of its own (v4count=3)
+FAIL a failed self verification falls back to the panic table ( ... it carries 'match-set'; ... 'SET --add-set'; ... '-j REJECT';)
+FAIL a dead network falls back to the panic table ( ... )
+```
+
+`sshdPort` そのものについて掛けた否定対照は次のとおりです。いずれも実装を一時的に壊し、赤くなることを確認してから戻しています。
+
+| 壊した箇所 | 赤くなった検査 |
+|---|---|
+| グローバルの `SSHD_PORT=""` を `"22"` に戻す | 2 件（設定読み込み前の panic のみ。`read_config` が上書きするため他は緑のまま、という切り分けができました） |
+| `jq '.sshdPort // empty'` を `// 22` に戻す | 6 件（最終・bootstrap・panic 2 箇所 × INPUT/OUTPUT） |
+| `[ -n "$SSHD_PORT" ]` のガードを `false` にする | 4 件（指定時に 3 テーブルすべてで規則が消えることを捕捉） |
+| スキーマで `sshdPort` を必須化 | 未指定・`null` の accept が赤 |
+| `validate_port "$SSHD_PORT"` の呼び出しを削除 | `0` / 負値 / 範囲外の reject が赤 |
+| スキーマの `sshdPort` 型検査を削除 | 文字列の reject のみ赤（`22.5` と `[22]` は `validate_port` 側でも止まる二重防御だと判明） |
+
 ---
 
 ## 4. 検証が見逃した欠陥

@@ -119,8 +119,11 @@ rejects validate_cidr \
 	'203.0.113.0/24 -j ACCEPT'
 
 echo "validate_port"
-accepts validate_port "1" "22" "5432" "65535"
-rejects validate_port "" "0" "-1" "65536" "08" "22abc" "1 2"
+accepts validate_port "1" "22" "4588" "5432" "65535"
+# 0 is refused like any other number that is not a port. It is not a spelling of
+# "disabled" - leaving the field out is - so accepting it would mean accepting a
+# value whose meaning nothing downstream agrees on.
+rejects validate_port "" "0" "-1" "65536" "99999" "08" "22.5" "22abc" "1 2"
 
 echo "ranges_overlap"
 if ranges_overlap "100.0.0.0" 8 "100.64.0.0" 10; then
@@ -259,7 +262,22 @@ check_config "non-array allowDomains" reject '{"version":1,"allowDomains":"examp
 check_config "non-string domain" reject '{"version":1,"allowDomains":[1]}'
 check_config "out of range port" reject '{"version":1,"allowHostPorts":[70000]}'
 check_config "non-integer port" reject '{"version":1,"allowHostPorts":[5432.5]}'
-check_config "bad sshdPort" reject '{"version":1,"sshdPort":0}'
+
+# sshdPort is opt-in: an absent field is a policy (no inbound port at all), not a
+# field waiting for a default. Both spellings of "absent" have to be accepted,
+# and a port that was written down has to be a real one - the schema gate is the
+# only place a value like 0 or "22" can still be stopped.
+check_config "an omitted sshdPort" accept '{"version":1}'
+check_config "a null sshdPort" accept '{"version":1,"sshdPort":null}'
+check_config "an explicit sshdPort" accept '{"version":1,"sshdPort":4588}'
+check_config "an sshdPort that happens to be 22" accept '{"version":1,"sshdPort":22}'
+check_config "the highest sshdPort" accept '{"version":1,"sshdPort":65535}'
+check_config "sshdPort 0" reject '{"version":1,"sshdPort":0}'
+check_config "a negative sshdPort" reject '{"version":1,"sshdPort":-1}'
+check_config "a non-integer sshdPort" reject '{"version":1,"sshdPort":22.5}'
+check_config "a string sshdPort" reject '{"version":1,"sshdPort":"22"}'
+check_config "an out of range sshdPort" reject '{"version":1,"sshdPort":65536}'
+check_config "an array sshdPort" reject '{"version":1,"sshdPort":[22]}'
 
 # Control characters have to die at the schema gate, because nothing below it
 # can see them any more. `jq -r` emits \u0000 as a real NUL byte, and both
