@@ -1,0 +1,75 @@
+#!/bin/sh
+# /usr/local/bin/git-auth-check
+#
+# github.com への https 認証が、イメージの意図した経路
+# (credential helper /usr/local/bin/git-credential-gh-token ->
+# /run/secrets/GH_TOKEN) に落ちているかを確認し、落ちていなければ警告する。
+#
+# なぜ askpass ではなく helper なのか。git は credential helper を設定順
+# (system -> global -> local -> 環境変数) に呼び、最初に資格情報を返した
+# helper で解決を確定する。GIT_ASKPASS は「どの helper も答えなかった場合」の
+# フォールバックでしかない。dev container では VS Code の Dev Containers 拡張が
+# global の gitconfig へ helper を書き込むうえ、統合ターミナルの environ へ
+# GIT_ASKPASS を注入して上書きしてくる。つまり askpass 側だけを固定しても
+# environ の注入に負ける。helper は gitconfig 側の設定であり、環境変数の
+# GIT_CONFIG_COUNT 系は全ての設定ファイルを読んだ後に適用されるので、こちらなら
+# environ の注入にも gitconfig の記述順にも左右されずに認証先を固定できる。
+#
+# イメージは GIT_CONFIG_COUNT=2 を使い、スロット 0 の空値で github.com 向けに
+# 積まれた helper を全部捨て、スロット 1 で自前の helper を絶対パスで積み直して
+# いる。結果として一覧に残るのは自前 1 本だけになり、認証はそこで確定して
+# askpass へ到達しない。認証成功後に git が全 helper へ配る store の宛先も
+# 自前 1 本だけになる。
+#
+# この検査が要るのは GIT_CONFIG_COUNT が git の持つ唯一のカウンタだからである。
+# 利用側が自分の設定を同じ仕組みで足すと、イメージが置いた 2 つのスロットが
+# 黙って消え、認証は askpass や別の helper へ落ちる。しかもホスト側の資格情報で
+# 成功してしまうため、失敗としては現れない。この検査はその「黙って」を潰す
+# ためだけにある。詳細は docs/prod-secret-isolation-design.md にある。
+#
+# 呼び出し元は prod-context (対話シェルの起動時)。対話判定と失敗の握り潰しは
+# 呼び出し元が持っているので、ここでは持たない。
+set -u
+
+expected=/usr/local/bin/git-credential-gh-token
+
+# --get-urlmatch は URL に一致する設定を、打ち消し (空文字の helper) を適用した
+# 後の状態で返す。意図どおりなら出力は自前の helper のパス 1 本になる。設定が
+# 1 件も無い場合も rc=0 で空を返すため、判定は rc ではなく出力そのもので行う。
+actual=$(git config --get-urlmatch credential.helper https://github.com 2>/dev/null) || actual=""
+
+[ "$actual" = "$expected" ] && exit 0
+
+# 値そのものを出す。helper の設定値は秘密ではなく (資格情報を返すコマンドで
+# あって資格情報ではない)、どこから来た設定かを特定するのに要る。
+if [ -z "$actual" ]; then
+	cat >&2 <<MSG
+git-auth-check: github.com の credential helper が 1 本も無い:
+  期待していたのは $expected
+  helper が 1 本も無いと、github.com への https 認証は GIT_ASKPASS か端末の
+  プロンプトへ落ちる。VS Code の Dev Containers 拡張は統合ターミナルの environ へ
+  GIT_ASKPASS を注入して上書きしてくるため、認証は /run/secrets/GH_TOKEN では
+  なくホスト側の資格情報で通りうる。認証自体は成功するので、失敗としては
+  現れない。
+MSG
+else
+	cat >&2 <<MSG
+git-auth-check: github.com の credential helper が別のものになっている:
+  $actual
+  期待していたのは $expected
+  git は最初に資格情報を返した helper で解決を確定するため、github.com への
+  https 認証は /run/secrets/GH_TOKEN ではなくこの helper が返す資格情報で通る。
+  認証成功後の store もこの helper へ配られるので、注入したトークンがこの
+  helper の書き戻し先 (dev ではホストの資格情報ストア) へ出る。
+MSG
+fi
+
+cat >&2 <<MSG
+  このイメージは GIT_CONFIG_COUNT=2 /
+  GIT_CONFIG_KEY_0=credential.https://github.com.helper / GIT_CONFIG_VALUE_0= (空)
+  で既存の helper を打ち消し、GIT_CONFIG_KEY_1=credential.https://github.com.helper
+  / GIT_CONFIG_VALUE_1=$expected で自前の helper を積んでいる。この 5 つが
+  上書きされていないか、GIT_CONFIG_COUNT を別の設定にも使っていないかを
+  確認すること。
+MSG
+exit 0

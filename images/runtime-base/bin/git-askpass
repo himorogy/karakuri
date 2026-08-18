@@ -1,0 +1,30 @@
+#!/bin/sh
+# /usr/local/bin/git-askpass
+#
+# GIT_ASKPASS の指定元は 2 つある。prod では prod-entrypoint.sh が clone/fetch
+# の直前に設定し、checkout 完了後に GH_TOKEN を破棄して GIT_ASKPASS も unset
+# するため、以降のコード (信頼しない checkout 済みコード) からは呼ばれない。
+# dev では devcontainer-base が ENV と /etc/environment の両方へ焼いており、
+# entrypoint を通らないので破棄もされない (dev の git 認証はこれが本線)。
+#
+# git がここへ到達するのは credential helper が 1 本も資格情報を返さなかった
+# 場合だけである。helper が生きているとそちらが先に確定し、この askpass は
+# 呼ばれない。runtime-base の Dockerfile が GIT_CONFIG_COUNT 系で github.com の
+# helper を打ち消しているのはそのためで、打ち消しが外れると以下の「トークンが
+# 無ければ非ゼロ終了」も発火しなくなる
+# (docs/prod-secret-isolation-design.md §4.6)。
+#
+# GH_TOKEN が /run/secrets に無いことをここでは許容する。public リポジトリ
+# の fetch はトークンなしでも動くべきで、entrypoint 側で GH_TOKEN の存在を
+# 必須にはしていない。認証が実際に必要な private リポジトリでトークンが
+# 無ければ、ここで非ゼロ終了して認証失敗を顕在化させる
+# (docs/prod-secret-isolation-design.md §4.6)。
+set -eu
+f=/run/secrets/GH_TOKEN
+case "$1" in
+Username*) echo "x-access-token" ;;
+Password*)
+  [ -s "$f" ] || { echo "GH_TOKEN not provided" >&2; exit 1; }
+  cat "$f"
+  ;;
+esac

@@ -6,6 +6,29 @@ on:
   pull_request:
 
 jobs:
+  # 平文 env のコミット検知。karakuri は各プロジェクトへこの検査を配る側
+  # だが、自分で使っていない伝播機構は壊れていても気付けないので、karakuri
+  # 自身も呼び出し側の 1 つとして通す。
+  #
+  # 呼び出し方がプロジェクト側のスタブ
+  # (images/runtime-base/templates/project/env-guard.yml) と違い、`himorogy/karakuri/
+  # .github/workflows/env-guard.yml@<commit sha>` ではなくローカルパス参照に
+  # なっているのは意図的である。他リポジトリを指す形にすると、PR で変更した
+  # 版ではなく公開済みの版が走ってしまい、その PR の変更が CI に掛からない。
+  # ローカルパス参照だと、呼ばれた workflow は作業ツリーのスキャナを見つけて
+  # そちらを使う (npm から取りにいかない)。self-call ではそれが正しい。
+  #
+  # 検査の実体は packages/env-guard/bin/env-guard-scan（コミット時の
+  # pre-commit hook が呼ぶのと同じ 1 本）で、workflow はそれを取り出して
+  # tracked ファイルの一覧を流すだけである。そのスキャナが平文を実際に
+  # 検出できること、および hook と CI が同じ判定を返すことの証明は、この
+  # 呼び出しではなく `pnpm test` から走る
+  # images/runtime-base/tests/env-guard.test.sh が行う（下の test ジョブ）。
+  # 緑になった検査は「検知できたから緑」なのか「検知できないから緑」なのか、
+  # 呼び出し側からは区別が付かない。
+  env-guard:
+    uses: ./.github/workflows/env-guard.yml
+
   test:
     runs-on: ubuntu-latest
 

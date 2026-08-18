@@ -1,0 +1,269 @@
+# ホストからコンテナ内サービスへの到達（port forwarding）
+
+コンテナ内で動くサービス（各アプリの dev サーバ、crit）へホストのブラウザから到達する方法をまとめます。
+
+本書は base イメージが提供する機構の説明です。ホスト名の割り当て・ポート一覧・`~/.ssh/config` の具体的な転送行はプロジェクトごとに決まるため、各プロジェクトの `.devcontainer/README.md` 側に置いてください（末尾「プロジェクト側で定めること」参照）。
+
+## なぜ `docker-compose.yaml` に `ports:` を書かないのか
+
+egress-guard が INPUT を DROP しており、許可されるのは以下の 3 つだけです。
+
+```
+:INPUT DROP
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -p tcp --dport $SSHD_PORT -m conntrack --ctstate NEW -j ACCEPT
+```
+
+publish してもパケットはコンテナに届いた時点で落ちます。RST が返らないため、ブラウザ上は「接続が pending のまま返らない」という症状になります。
+
+到達経路は 2 つあり、どちらも **compose の publish を使いません**。
+
+| 開発環境 | 経路 |
+|---|---|
+| VS Code | Dev Containers 拡張の自動転送。コンテナ内のヘルパーが `127.0.0.1:<port>` へ接続し、docker exec チャネル上を流す |
+| それ以外（wezterm 等） | ホスト側の SSH port forwarding（後述） |
+
+いずれも接続元がコンテナ内の loopback になるため、`-A INPUT -i lo -j ACCEPT` に当たります。
+
+2 つの経路は同時に生きられますが、**プロジェクトのホスト名で開けるのはどちらか一方だけです**（「どちらの経路を使うかは選ぶ必要がある」参照）。
+
+## SSH 利用者の設定
+
+### 1. `~/.ssh/config`
+
+```
+Host devc-<your-project>
+  HostName <your-project>
+  # プロジェクトのポート一覧に合わせて列挙する
+  LocalForward 127.0.1.1:4588 localhost:4588
+  LocalForward 127.0.1.1:<port> localhost:<port>
+
+Host devc-*
+  ProxyCommand ~/.config/karakuri/images/runtime-base/templates/host/dock.sh %h --stdio
+  User node
+  IdentityFile ~/.ssh/keys/<your-key>
+  IdentitiesOnly yes
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%n
+  ControlPersist no
+  ExitOnForwardFailure yes
+  # トランスポートは docker exec のローカルパイプで、ネットワーク経路が存在しない。
+  # ホスト鍵はコンテナ再作成のたびに変わるため、検証を切ってよい（後述）。
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+```
+
+接続は `ssh devc-<your-project>` です。転送を張り直すときは `karakuri-pf <your-project>` を使います（古い master を落としてから繋ぎ直します）。
+
+`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../templates/host/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
+
+**ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock <your-project>` で呼べますが、`ProxyCommand` は関数を経由できません。
+
+`dock.sh` は実行ファイルなので、`templates/host` を `PATH` に入れていれば `ProxyCommand dock.sh %h --stdio` とも書けます。ただし `ssh` を起動する側の環境の `PATH` に依存します（対話シェルから打つ分には効きますが、GUI アプリや別ツールが `ssh` を起動する経路では違う `PATH` になります）。**絶対パスを勧めます。**
+
+`HostName` は DNS では引かれません。`ProxyCommand` の `%h` に展開されて `dock.sh` へ渡すプロジェクト名になるだけです。`dock.sh` はこの名前から compose project 名 `<your-project>-dev` を組み立て、`com.docker.compose.project` と `com.docker.compose.service` のラベルでコンテナを引きます。**`docker-compose.yaml` の `name:` が `<your-project>-dev` である必要があります**（雛形のとおりであれば合っています）。`container_name` の書き方には依存しません。
+
+`LocalForward` の転送先 `localhost` はコンテナ内で解決されます。
+
+### 2. `/etc/hosts` と loopback エイリアス
+
+プロジェクトのホスト名を loopback アドレスへ割り当てます。
+
+```
+127.0.1.1 <your-project-hostname>
+```
+
+プロジェクトごとに別の loopback アドレス（`127.0.1.2` など）を割り当てれば、**プロジェクト間でポート番号を使い回せます**。どのアドレスをどのプロジェクトに割り当てるかは各自で決めてください。`127.0.1.x` を dev container 用、`127.0.2.x` を別マシンへの SSH 用、といった分け方もできます。ツール側は範囲を固定していません（`127.0.0.0/8` であることだけを検査します）。
+
+macOS では、`127.0.0.1` 以外の loopback アドレスは `ifconfig lo0 alias` で明示的に有効化しないと bind できません。しかも設定は再起動で消えます。`karakuri-loopback` がこの 2 つ（起動時の再適用と `/etc/hosts` への登録）をまとめて面倒を見ます。
+
+初回に 1 回だけ、LaunchDaemon を入れます。
+
+```sh
+karakuri-loopback install
+```
+
+以後、プロジェクトを追加するたびに 1 行です。
+
+```sh
+karakuri-loopback add 127.0.1.1 <your-project-hostname>
+```
+
+これで次の 3 つが揃います。
+
+- `/etc/karakuri/loopback-aliases` にアドレスが記録され、**再起動のたびに LaunchDaemon が張り直す**
+- その場で `ifconfig lo0 alias` も実行されるので、再起動を待たずに使える
+- `/etc/hosts` の管理ブロック（`# BEGIN karakuri (managed)` ～ `# END karakuri`）にホスト名が登録される
+
+現状は `karakuri-loopback list` で確認できます。設定ファイル・`lo0` の実際の状態・`/etc/hosts` の 3 つを並べて出すので、「`/etc/hosts` には書いたが alias を張り忘れている」といったズレがその場で分かります。
+
+`karakuri-loopback` は `sudo` を要求します（LaunchDaemon の配置と `/etc/hosts` の編集のため）。`karakuri.sh` が提供する関数のうち、特権が要るのはこれだけです。日常的に打つ `karakuri-pf` は `sudo` を必要としません。
+
+Linux ホストでは `127.0.0.0/8` 全体が最初から bind できるため、alias の段（`ifconfig` と LaunchDaemon）は飛ばされます。`/etc/hosts` の管理と設定ファイルへの記録は同じように行われるので、`karakuri-loopback add 127.0.1.1 <your-project-hostname>` はそのまま使えます。何を飛ばしたかは実行時に表示されます。
+
+`/etc/hosts` は Docker Desktop など他のツールも触るファイルです。`karakuri-loopback` はマーカーで囲んだ管理ブロックの中だけを書き換え、その外には触れません。編集前に `/etc/hosts.karakuri.bak` へ退避します。
+
+### 仕組み
+
+`/usr/local/sbin/sshd-inetd` は base イメージが焼いているラッパーで、`/run/sshd`（privilege separation ディレクトリ）を作り、ホスト鍵が無ければ生成してから `sshd -i -e` を exec します。`sshd -i` は inetd モードで、**listen ソケットを持たず** stdin/stdout 上で 1 接続だけを処理します。それを `docker exec -i` のパイプに繋いでいるため、SSH セッションは docker exec チャネルに乗ります。コンテナに TCP の口を開けずに済み、攻撃面が増えません。VS Code の自動転送と実質同じ経路を、ツール非依存で再現しています。
+
+`-u root` が必要なのは、`sshd` がホスト鍵（`/etc/ssh/ssh_host_*`、root のみ読める）を読むためです。
+
+**ラッパーを経由せず `sshd -i` を直接起動してはいけません。** `docker-compose.yaml` は `/run` を tmpfs にしているため、`/run/sshd` はコンテナを起動するたびに消えます。ラッパーが毎回作り直しているのはこのためで、飛ばすと `Missing privilege separation directory: /run/sshd` で接続が閉じます。原因（ラッパーを通っていないこと）から遠いメッセージなので、`ProxyCommand` にフォールバックを書かないでください。ラッパーが無いイメージに対しては、`docker exec` が `executable file not found` で明示的に失敗するのが正しい壊れ方です。
+
+`ExitOnForwardFailure yes` は、ホスト側のポートが既に使われている場合に接続ごと失敗させます。転送されないまま接続だけ成功して原因が分からなくなる状態を防ぎます。
+
+### ホスト鍵はコンテナごとに変わる
+
+`/etc/ssh/ssh_host_*` はイメージに焼かれていません（焼くと全コンテナが同一鍵になるため、ビルド時に削除しています）。ラッパーが初回接続時に生成するので、コンテナを作り直すたびにホスト鍵が変わります。
+
+上の設定例に `StrictHostKeyChecking no` を入れているのはこのためです。通常は勧められない設定ですが、ここではトランスポートが `docker exec` のローカルパイプで、そもそもネットワーク経路が存在しません。接続先のすり替えには Docker へのアクセス権が必要で、それを持たれた時点でホスト鍵検証の有無は結果を変えません。
+
+### 公開鍵は dev-inject で注入する
+
+公開鍵はイメージに焼けません（個人の鍵であり、全利用者共通の base に置くものではありません）。sshd は認可鍵を次の 2 か所から読みます（イメージの sshd_config で設定済み）。
+
+```
+AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys
+```
+
+標準の経路は 1 つ目です。broker の個人アイテムに `SSH_AUTHORIZED_KEYS` キーとして公開鍵を持たせれば、GH_TOKEN 等の secret と同じ dev-inject 1 回で注入されます。専用の注入スクリプトは要りません。具体的な手順 — アイテムの命名（全プロジェクト共通の個人アイテム `env/_common/dev`）・値の形式・`BROKER_BW_ITEM` のマージ順 — は [example/README.md](../../example/README.md) の「dev の起動」を参照してください。
+
+公開鍵は秘密情報ではありません。broker に載せるのは秘匿のためではなく、搬送と再注入のタイミング規律を secret と 1 本にまとめるためです。tmpfs なのでコンテナ停止で消えますが、消える条件も再注入の作法も secret と同じで、覚えることが増えません。dev-inject を忘れると git 認証も同時に失敗するため、SSH だけが静かに壊れることもありません。
+
+2 つ目の `~/.ssh/authorized_keys` は、broker を使わない導入形態（devcontainer-base を別の注入手段と組み合わせる場合）向けに残してあります。こちらはコンテナを作り直すと消えるため、都度の再投入が必要です。
+
+## VS Code 利用者の設定
+
+`/etc/hosts` に 1 行足すだけです。
+
+```
+127.0.0.1 <your-project-hostname>
+```
+
+loopback エイリアスも `~/.ssh/config` も不要です。Dev Containers 拡張が自動でポートを転送します。
+
+ただし **VS Code の自動転送は実質的に `127.0.0.1` へ bind されます**。そのため、複数プロジェクトを同時に開くとポートが衝突します。衝突すると VS Code は別のホストポートを自動で割り当てるため、決めたホスト名:ポートでは開けなくなります。同時に開くプロジェクトがある場合は、後述の方法で `CRIT_PORT` 等をずらしてください。
+
+`remote.localPortHost` という設定は存在しますが、当てにしないでください。ドキュメント上の選択肢は `localhost` と `allInterfaces` で、任意のアドレス（`127.0.1.1` など）を受けるかは確認できていません。加えて、dev container で `allInterfaces` が尊重されないという報告があります（[microsoft/vscode-remote-release#11131](https://github.com/microsoft/vscode-remote-release/issues/11131)）。**プロジェクト間でポート番号を使い回したい場合は、SSH の経路を使ってください。**
+
+## どちらの経路を使うかは選ぶ必要がある
+
+VS Code の自動転送（`127.0.0.1`）と SSH port forwarding（`127.0.1.1` など）は、bind するアドレスが違うので **同時に生きられます**。ポート番号が同じでも衝突しません。
+
+しかし `/etc/hosts` はホスト名を 1 つのアドレスにしか向けられません。
+
+```
+# これは書けるが、どちらに繋がるかが不定になる
+127.0.0.1 project-a.test
+127.0.1.1 project-a.test
+```
+
+文法上は合法（同じ名前に複数の A レコード）ですが、`getaddrinfo` が両方返し、どちらへ接続するかはクライアント次第です。片方でしか listen していなくてもフォールバックする保証はありません。**したがって、プロジェクトのホスト名で開く経路は、どちらか一方に決めてください。**
+
+- **VS Code 中心** — `127.0.0.1 <your-project-hostname>`。ポート番号は全プロジェクトでずらす必要がある
+- **ターミナル（SSH）中心** — `127.0.1.1 <your-project-hostname>`。アドレスをプロジェクトごとに変えられるので、ポート番号は使い回せる
+
+### 両立させない理由
+
+ホスト名を分ければ（`project-a.test` と `project-a-vscode.test`）名前解決は決定的になり、両方の経路が同時に使えます。しかし origin が 2 つになるため、プロジェクト側で次を **すべて** 二重に持つ必要があります。
+
+- dev サーバの `allowedHosts`（後述）
+- CORS の許可 origin
+- OAuth のコールバック URL（プロバイダ側にも 2 つ登録）
+- 絶対 URL の設定（`API_BASE_URL` 等）を起動元に応じて切り替える実装
+- クッキーは共有されないため、それぞれでログインする前提
+
+**現時点ではこれを前提にしません。** 割に合うだけの利点が無く、特に 4 点目はアプリケーション側の実装コストになります。両立が必要になった時点で、上を満たしたプロジェクトが個別に採ればよい構成です。
+
+## SSH の経路へ寄せる（VS Code の自動転送を止める）
+
+VS Code を使いながら転送だけ SSH に一本化することもできます。自動転送のバグ（ポートが別のコンテナへ転送される、勝手に別のホストポートが割り当てられる等）を踏んだ場合の逃げ道です。
+
+`devcontainer.json` の `customizations.vscode.settings` に次を入れます。
+
+```jsonc
+"remote.autoForwardPorts": false,
+"remote.restoreForwardedPorts": false,
+"otherPortsAttributes": { "onAutoForward": "ignore" }
+```
+
+**3 つとも要ります。** `remote.autoForwardPorts` だけでは止まらない経路（ターミナルに出た localhost リンクのクリック、出力の走査）が報告されています（[microsoft/vscode#161045](https://github.com/microsoft/vscode/issues/161045)、[#221888](https://github.com/microsoft/vscode/issues/221888)、[#129050](https://github.com/microsoft/vscode/issues/129050)）。`otherPortsAttributes` が全ポートに効く受け皿です。
+
+### 雛形では既定にしていない
+
+`examples/devcontainer.json` にはコメントアウトした状態で置いてあります。有効化する前に、**ホスト側ツールが入っていること**を確認してください。
+
+`docker-compose.yaml` は `ports:` を書かず、egress-guard が INPUT を DROP しています。到達経路は「VS Code の自動転送」と「SSH port forwarding」の 2 つだけで、後者はホスト側ツール・`~/.ssh/config`・loopback エイリアスの 3 つが揃って初めて動きます。3 つが揃わないまま自動転送を切ると、**コンテナ内のサービスへ到達する手段が無くなります**。しかも publish は塞がれているのではなく応答が返らない形で失敗するため、症状からは原因に辿り着けません。
+
+## crit のポート
+
+crit CLI 自体のデフォルトは**ランダムポート**です。base イメージが既定値を固定しています。
+
+```
+CRIT_PORT=4588
+```
+
+ポートが固定されているのは、ホスト側の `LocalForward` を静的に書けるようにするためです。
+
+一時的にずらしたい場合は起動時に指定します。
+
+```sh
+crit -p 4590
+```
+
+プロジェクトとして恒久的にずらす場合は、プロジェクトの Dockerfile で **ENV と `/etc/environment` の両方**を上書きします。
+
+```dockerfile
+ENV CRIT_PORT=4590
+RUN sed -i 's/^CRIT_PORT=.*/CRIT_PORT="4590"/' /etc/environment
+```
+
+両方が要るのは経路によって環境の出どころが違うためです。docker exec 経由のシェル（VS Code 含む）はコンテナの ENV を引き継ぎますが、SSH セッションは sshd が environ を引き継がず、PAM（pam_env）が `/etc/environment` から環境を組み立てます。**compose の `environment:` は SSH セッションに届かない**ので、そこで上書きしてはいけません（経路によって値が食い違います）。
+
+なお、指定したポートが既に使われている場合、crit は `address already in use` で**起動に失敗します**。黙ってランダムポートへ退避することはないため、衝突は必ず顕在化します。
+
+## dev サーバ側の `allowedHosts`
+
+Vite / Astro の dev サーバは、未知の Host ヘッダを持つリクエストを拒否します（DNS リバインディング対策）。`localhost` 以外のホスト名で開くには許可が必要です。
+
+```ts
+	server: {
+		host: true,
+		port: ...,
+		allowedHosts: [".test"],
+	},
+```
+
+`.test` は RFC 6761 で予約された TLD で公開 DNS に登録できないため、ワイルドカードで許可しても外部から悪用できません。**サービスを新規に追加する場合はこの設定も必要です。**
+
+## よく出るエラー
+
+### `connect_to localhost port <port>: failed.` が出続ける
+
+**転送は正常です。** 転送先のサービス（dev サーバ）が落ちているだけで、ブラウザが再接続を繰り返すたびに `ssh` がこれを吐きます。dev サーバを起動し直せば復活するので、転送を畳む必要はありません。
+
+`karakuri-pf` は `ssh -fN` の stderr を `${XDG_STATE_HOME:-~/.local/state}/karakuri/pf-<host>.log` へ逃がすので、端末は汚れません。中身を見たいときは `tail -f` してください。
+
+`karakuri-clean-pf` で畳めば止まりますが、これは転送ごと捨てる操作です。`ssh` を黙らせる目的で使わないでください。
+
+### `bind: Can't assign requested address`
+
+macOS で loopback エイリアスが張られていません。`karakuri-loopback add <addr>` で恒久化してください。`karakuri-pf` は接続前に `~/.ssh/config` の `LocalForward` を読んで検査するので、通常はこのメッセージではなく、どのアドレスが足りないかを名指しするメッセージが出ます。
+
+### `Missing privilege separation directory: /run/sshd`
+
+`ProxyCommand` がラッパー（`/usr/local/sbin/sshd-inetd`）を経由していないか、コンテナがラッパーを持たない古いイメージから作られています。`docker exec -u root <container> ls -l /usr/local/sbin/sshd-inetd` で確認してください。
+
+その場しのぎは `docker exec -u root <container> mkdir -p /run/sshd` ですが、`/run` は tmpfs なのでコンテナを再起動するたびに消えます。イメージを更新して、`ProxyCommand` を `dock.sh` に揃えるのが恒久策です。
+
+## プロジェクト側で定めること
+
+以下は base では決まらないため、各プロジェクトの `.devcontainer/README.md` に置いてください。
+
+- ホスト名（例: `<your-project>.test`）と、割り当てる loopback アドレス
+- ポート一覧（どのサービスが何番か、環境変数の原本はどこか）
+- `~/.ssh/config` の具体的な `LocalForward` 行
+- サービス URL・クッキーの `Domain` とホスト名の整合（`localhost` でログインが通らない等の注意）
+- `CRIT_PORT` を base の既定 4588 からずらすかどうか

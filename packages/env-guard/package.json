@@ -1,0 +1,38 @@
+{
+	"name": "@himorogy/env-guard",
+	"version": "0.1.0",
+	"description": "Refuses to let plaintext env files into git: one POSIX shell scanner shared by the pre-commit hook and CI",
+	"keywords": [
+		"dotenv",
+		"dotenvx",
+		"env",
+		"secrets",
+		"pre-commit",
+		"git-hooks",
+		"ci"
+	],
+	"homepage": "https://github.com/himorogy/karakuri/tree/main/packages/env-guard#readme",
+	"bugs": "https://github.com/himorogy/karakuri/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/himorogy/karakuri.git",
+		"directory": "packages/env-guard"
+	},
+	"license": "MIT",
+	"bin": {
+		"env-guard": "bin/env-guard.js",
+		"env-guard-scan": "bin/env-guard-scan"
+	},
+	"scripts": {
+		"lint:sh": "shellcheck -x --shell=bash --severity=style tests/*.sh",
+		"test": "bash tests/install.test.sh"
+	},
+	"files": [
+		"bin",
+		"hooks",
+		"README.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	}
+}

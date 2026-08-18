@@ -1,0 +1,50 @@
+#!/bin/sh
+# /usr/local/bin/wrangler  （実体は /opt/tools/bin/wrangler に退避してある）
+#
+# CLOUDFLARE_API_TOKEN を常時環境変数として保持せず、実行のたびに
+# /run/secrets/CLOUDFLARE_API_TOKEN の有無を見て注入するかどうかを決める
+# 薄いラッパー。意味論は三値 (存在→注入 / 空→エラー / 不在→素通し) で、
+# prod / dev のどちらでも同じに振る舞う。環境の判別はしない
+# (docs/prod-secret-isolation-design.md §4.3)。
+#
+# env -u NODE_OPTIONS は両分岐に付ける。Node の diagnostic report は
+# environmentVariables を含むため、NODE_OPTIONS 経由で意図せず有効化される
+# のを防ぐ対策であり、secret 注入の有無とは無関係に効くべきものだから。
+set -eu
+
+# この shim は 2 つの名前でインストールされる (_wrangler は同一ファイルへの
+# リンク)。呼び名で注入後の実体の解決先を切り替える:
+#
+#   wrangler  … PATH 遮蔽用 (対話シェル等の素の呼び出しを捕まえる)。実体
+#               /opt/tools/bin へ渡す。
+#   _wrangler … npm scripts からの明示呼び用。pnpm/npm は scripts 実行時に
+#               node_modules/.bin を PATH 先頭へ差し込むため、素の名前は
+#               プロジェクトローカルのバイナリに必ず負けて shim が迂回され、
+#               secret が注入されない (実測)。scripts には _wrangler と書いて
+#               shim を明示的に通し、注入後の実体解決を PATH に任せる —
+#               scripts 内ではプロジェクトが pin したローカル版が鍵付きで
+#               動き、ローカル版が無ければ PATH の次 = 遮蔽 shim 経由で
+#               /opt/tools/bin の実体に落ちる (名前が _wrangler → wrangler と
+#               一度だけ変わるので無限再帰にはならない)。
+#               (docs/prod-secret-isolation-design.md §4.3 / D31)
+case "${0##*/}" in
+_*) real=wrangler ;;
+*) real=/opt/tools/bin/wrangler ;;
+esac
+
+f=/run/secrets/CLOUDFLARE_API_TOKEN
+if [ -e "$f" ]; then
+  [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
+  # 読み取りは exec の引数内ではなく独立した文で行う。
+  # `exec env VAR="$(cat "$f")" ...` の形だと、cat が失敗しても終了コード
+  # は外側の env のものになるため set -e が発火しない。「ファイルは存在し
+  # 非空だが読めない (例: mode 000)」が空値の注入として素通りしてしまう
+  # — この設計が排除したい「秘密の欠落が沈黙した成功になる」形そのもの。
+  # v=$(cat "$f") || exit 1 と独立した文で読み、非空を再検査してから
+  # exec する (docs/prod-secret-isolation-design.md §4.3)。
+  v=$(cat "$f") || exit 1
+  [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
+  exec env -u NODE_OPTIONS \
+    CLOUDFLARE_API_TOKEN="$v" "$real" "$@"
+fi
+exec env -u NODE_OPTIONS "$real" "$@"

@@ -1,0 +1,115 @@
+#!/bin/sh
+# /usr/local/bin/prod-context
+#
+# 対話シェルの起動時に、注入済みの secret 鍵名 (値ではない) と
+# /run/prod-ref の内容を表示する。「持っているべき鍵の一覧」はプロジェクト
+# 固有なので runtime-base には持てない。注入済みのものを列挙するだけに
+# 留め、無いものが映らないことで気づかせる
+# (docs/prod-secret-isolation-design.md §4.3)。
+#
+# /run/secrets の「ファイル名」だけを出す。ファイル名は環境変数名そのもの
+# なので安全に出せるが、値は絶対に出さない。
+#
+# 置き場所: /etc/bash.bashrc から `. /usr/local/bin/prod-context` として
+# source する。profile.d はログインシェルでしか読まれず、
+# `docker exec -it <container> bash` は非ログインシェルなので取りこぼす。
+# /etc/bash.bashrc は bash が対話シェルとして起動するたびに読む。
+# devcontainer-base では zsh 用に /etc/zsh/zshrc にも同様に足す
+# (zsh は dev container 側にしかない。prod container に zsh は無い)。
+#
+# --- 対話シェルでのみ動く -------------------------------------------------------
+# 非対話 (`pnpm install` 等の RUN されるコマンドや、非対話の
+# `docker compose run` 内) で走ると、その出力を汚してしまう。
+# `case $- in *i*)` は「現在のシェルオプション文字列に i (interactive) が
+# 含まれるか」で判定する、bash/zsh 双方で使える標準的な対話判定。
+#
+# ここは source される前提の1行目付近なので、失敗時は「呼び出し元へ
+# return」で抜ける。万一このファイルが直接実行された場合 (source されて
+# いない場合) は return が使えない (bash/zsh とも
+# "can only 'return' from a function or sourced script" 相当のエラーに
+# なる) ため、その場合は exit へフォールバックする。どちらのエラー
+# メッセージも表に出さない (2>/dev/null)。
+case "$-" in
+*i*) ;;
+*)
+	# shellcheck disable=SC2317 # `exit 0` は return が使えない (source
+	# されていない) 場合のフォールバックであり、shellcheck の静的解析が
+	# 想定する「return は必ず抜ける」より広いケースを扱っている。
+	return 0 2>/dev/null || exit 0
+	;;
+esac
+
+# --- 失敗してもシェルを壊さない -------------------------------------------------
+# `/etc/bash.bashrc` / `/etc/zsh/zshrc` が (このプロジェクトの既定では
+# 設定していないが) `set -e` 相当の状態で source している可能性を考え、
+# 本体をサブシェルへ切り出して `|| true` で必ず成功扱いにする。サブシェル
+# 内であれば、途中のコマンドが失敗してもサブシェルの終了ステータスに
+# 畳み込まれるだけで、呼び出し元 (対話シェルそのもの) の起動を止めない。
+(
+	secrets_dir=/run/secrets
+	names=""
+	if [ -d "$secrets_dir" ]; then
+		# ここで glob (`for f in "$secrets_dir"/*`) は使えない。
+		# ディレクトリが存在して中身がゼロのとき、bash は展開されない
+		# 生パターン文字列をそのまま渡してくるので `[ -e "$f" ] ||
+		# continue` で弾けるが、zsh は既定 (nomatch) だとループ本体へ
+		# 入る前の「単語展開の時点」で "no matches found" となり、この
+		# サブシェルごと非ゼロ終了する。ループ本体のガードは展開後の
+		# 話なので防御にならない (以前ここに「-e で zsh の nullglob 既定
+		# off にも対応済み」と書いてあったのは誤りだった)。実害を
+		# 抑えているのは外側の `|| true` だけになっていた。prod は bash
+		# なので影響は dev 側に限られるが、そもそも展開で落ちない形に
+		# する。
+		#
+		# ls の出力をパースするのは一般には避けるべきだが、ここに並ぶ
+		# のは entrypoint が鍵名検査 ([A-Za-z0-9_] のみ) を通した名前で
+		# 作ったファイルであり
+		# (docs/prod-secret-isolation-design.md §4.6)、空白・改行・glob
+		# 文字を含む名前は来ない。
+		# shellcheck disable=SC2045 # 上記のとおり鍵名は [A-Za-z0-9_]
+		# のみで、ls 出力のパースが壊れる余地が無い。glob は zsh の
+		# nomatch で落ちるため使えない。
+		for name in $(ls -A "$secrets_dir" 2>/dev/null); do
+			names="$names $name"
+		done
+	fi
+
+	if [ -n "$names" ]; then
+		echo "prod-context: 注入済み:$names"
+	else
+		# /run/secrets が無い、または空。dev で鍵が入っていないことに
+		# ここで気づけるようにする一行。
+		echo "prod-context: /run/secrets に注入済みの鍵が無い"
+	fi
+
+	# /run/prod-ref は prod-entrypoint.sh が GIT_REF= / GIT_COMMIT= /
+	# MUTABLE_REF= の3行 (dotenv 形式ではなく単純な KEY=VALUE) を
+	# 書く (docs/prod-secret-isolation-design.md §4.6)。無ければ何も
+	# 出さない (prod-entrypoint.sh を経由せず起動した場合など)。
+	if [ -r /run/prod-ref ]; then
+		git_ref=""
+		git_commit=""
+		mutable_ref=""
+		while IFS='=' read -r k v; do
+			case "$k" in
+			GIT_REF) git_ref=$v ;;
+			GIT_COMMIT) git_commit=$v ;;
+			MUTABLE_REF) mutable_ref=$v ;;
+			esac
+		done <"/run/prod-ref"
+
+		if [ "$mutable_ref" = "1" ]; then
+			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit (mutable ref)"
+		else
+			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit"
+		fi
+	fi
+
+	# git の認証経路の検査。何も言わないのが正常で、github.com の credential
+	# helper が生き残っているときだけ喋る。ここから呼ぶのは、対話シェルの起動
+	# ごとに一度だけ走る場所がここしかないため (対話判定と失敗の握り潰しは上で
+	# 済んでいる)。検査の中身は /usr/local/bin/git-auth-check のコメント。
+	if [ -x /usr/local/bin/git-auth-check ]; then
+		/usr/local/bin/git-auth-check
+	fi
+) || true

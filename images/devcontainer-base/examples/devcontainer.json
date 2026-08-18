@@ -2,20 +2,22 @@
 // .devcontainer/devcontainer.json としてコピーし、<your-project> を差し替える。
 //
 // egress-guard が第一に推奨する Docker Compose 構成。ネットワーク・cap・ポート転送・
-// 環境変数・マウントは docker-compose.yml 側にある。理由と、Compose を使わない場合の
+// 環境変数・マウントは docker-compose.yaml 側にある。理由と、Compose を使わない場合の
 // 代替 (initializeCommand でユーザー定義ネットワークを用意する案) は
 // packages/egress-guard/README.md の「ネットワーク構成（推奨）」を参照。
 {
 	"name": "<your-project>",
 
-	"dockerComposeFile": "docker-compose.yml",
+	"dockerComposeFile": "docker-compose.yaml",
 	"service": "dev",
 
-	// docker-compose.yml は親ディレクトリを /workspaces に載せているので、
+	// docker-compose.yaml は親ディレクトリを /workspaces に載せているので、
 	// リポジトリ本体はその 1 階層下に現れる。
 	//
-	// **マウント先と食い違わせないこと。** ずれると postCreateCommand が exit 127 で
-	// 落ちる。エラーはコマンドの側に出るので、原因がマウント先の不一致だと気づきにくい。
+	// **マウント先と食い違わせないこと。** ずれてもエラーでは止まらず、エディタが
+	// 空の（存在しない）フォルダを開く形で現れる。かつては postCreateCommand の
+	// 相対パス実行が exit 127 で落ちて検出器になっていたが、その形の実行は
+	// 無くなったので、症状から原因に辿り着きにくい。
 	"workspaceFolder": "/workspaces/<your-project>",
 
 	"remoteUser": "node",
@@ -39,21 +41,63 @@
 					"zsh": {
 						"path": "zsh"
 					}
-				}
+				},
+
+				// VS Code が統合ターミナルの environ へ GIT_ASKPASS を注入して
+				// 上書きしてくるのを止める。github.com はイメージ側の credential
+				// helper が先に確定するため必須ではないが、それ以外のホストへの
+				// https 認証でもこの注入は起きるため、ここでも重ねて止めておく。
+				"git.terminalAuthentication": false
+
+				// --- ポート転送を SSH の経路へ一本化する場合 ---------------------
+				//
+				// 下の 3 つを有効にすると、Dev Containers 拡張の自動転送が止まり、
+				// 到達経路がホスト側の SSH port forwarding だけになる。自動転送の
+				// 不具合（別コンテナへ転送される・勝手に別のホストポートが割り
+				// 当てられる）を踏んだ場合の逃げ道であり、プロジェクト間でポート
+				// 番号を使い回したい場合の前提でもある。詳細と、なぜホスト名を
+				// どちらか一方の経路にしか向けられないのかは、base の
+				// PORT-FORWARDING.md を参照。
+				//
+				// **3 つとも要る。** remote.autoForwardPorts だけでは止まらない
+				// 経路（ターミナルに出た localhost リンクのクリック、出力の走査）
+				// が報告されている。otherPortsAttributes が全ポートに効く受け皿。
+				//
+				// **有効にする前にホスト側ツールが入っていることを確認すること。**
+				// docker-compose.yaml は ports: を書かず、egress-guard が INPUT を
+				// DROP している。到達経路は「自動転送」と「SSH port forwarding」の
+				// 2 つしかなく、後者はホスト側ツール・~/.ssh/config・loopback
+				// エイリアスの 3 つが揃って初めて動く。揃わないまま自動転送を
+				// 切ると、コンテナ内のサービスへ到達する手段が無くなる。しかも
+				// publish は塞がれているのではなく応答が返らない形で失敗するため、
+				// 症状からは原因に辿り着けない。
+				//
+				// "remote.autoForwardPorts": false,
+				// "remote.restoreForwardedPorts": false,
+				// "otherPortsAttributes": { "onAutoForward": "ignore" }
 			}
 		}
 	},
 
-	// 平文 env がワークスペースに残っていないかを検査する。これはホスト側で走る。
-	// enclave-env を使わないなら消すこと。
-	"initializeCommand": "sh node_modules/@himorogy/enclave-env/scripts/init-check-dev.sh",
+	// 平文 env の検査に initializeCommand は要らない。ベースイメージが core.hooksPath を
+	// 焼き込んでおり、コンテナ内でのコミットは全リポジトリで pre-commit hook に通る。
+	// ホストの GUI git クライアントのようにコンテナの外からコミットする経路には
+	// この設定が届かないので、そちらは @himorogy/env-guard をプロジェクトに入れて塞ぐ。
 
 	// 取得を伴うセットアップはここに置く。firewall の適用後には外から取ってこられない。
 	//
 	// 注意: features も postCreateCommand も egress-guard が適用される「前」に、
 	// 復号キーが注入済みのコンテナ内で走る。egress-guard はコンテナ作成中の通信を
 	// 保護しない。詳細は README の「保護範囲」を参照。
-	"postCreateCommand": "bash ./.devcontainer/post-create.sh",
+	//
+	// 個人設定フック（/personal は docker-compose.yaml がホスト側ディレクトリを
+	// ro mount している）もここで実行する。個人セットアップの実体はツール取得で、
+	// firewall 適用後では宛先が許可されておらずブロックされるため、他の取得を伴う
+	// セットアップと同じくこの段に置く。作成時 1 回という postCreate の意味論も
+	// インストール系に合う。firewall 前の実行だが、フック本体はホスト側 ro で
+	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルと同じく
+	// 開発者本人だけ。信頼水準は変わらない。
+	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。

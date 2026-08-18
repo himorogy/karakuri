@@ -1,0 +1,39 @@
+#!/bin/sh
+# /usr/local/bin/gh  （実体は /opt/tools/bin/gh に退避してある）
+#
+# GH_TOKEN を常時環境変数として保持せず、実行のたびに /run/secrets/GH_TOKEN
+# の有無を見て注入するかどうかを決める薄いラッパー。wrangler の shim と同型
+# (意味論は三値: 存在→注入 / 空→エラー / 不在→素通し。環境の判別はしない。
+# docs/prod-secret-isolation-design.md §4.3)。
+#
+# env -u NODE_OPTIONS は両分岐に付ける。理由は shims/wrangler と同じ:
+# Node の diagnostic report は environmentVariables を含むため NODE_OPTIONS
+# 経由で意図せず有効化されるのを防ぐが、これは secret 注入の有無と無関係に
+# 効くべきもののため。
+set -eu
+
+# 2 つの名前 (gh / _gh) でインストールされ、呼び名で実体の解決先を切り替える。
+# _gh は npm scripts からの明示呼び用 — pnpm/npm が node_modules/.bin を PATH
+# 先頭へ差し込んでも shim を確実に通すための名前。詳細は shims/wrangler の
+# 同セクションを参照 (docs/prod-secret-isolation-design.md §4.3 / D31)。
+case "${0##*/}" in
+_*) real=gh ;;
+*) real=/opt/tools/bin/gh ;;
+esac
+
+f=/run/secrets/GH_TOKEN
+if [ -e "$f" ]; then
+  [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
+  # 読み取りは exec の引数内ではなく独立した文で行う。
+  # `exec env VAR="$(cat "$f")" ...` の形だと、cat が失敗しても終了コード
+  # は外側の env のものになるため set -e が発火しない。「ファイルは存在し
+  # 非空だが読めない (例: mode 000)」が空値の注入として素通りしてしまう
+  # — この設計が排除したい「秘密の欠落が沈黙した成功になる」形そのもの。
+  # v=$(cat "$f") || exit 1 と独立した文で読み、非空を再検査してから
+  # exec する (docs/prod-secret-isolation-design.md §4.3)。
+  v=$(cat "$f") || exit 1
+  [ -n "$v" ] || { echo "empty secret: $f" >&2; exit 1; }
+  exec env -u NODE_OPTIONS \
+    GH_TOKEN="$v" "$real" "$@"
+fi
+exec env -u NODE_OPTIONS "$real" "$@"

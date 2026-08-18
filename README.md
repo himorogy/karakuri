@@ -22,37 +22,44 @@ egress-guard 本体を収録している。各プロジェクトは `FROM` で�
 
 - [**`@himorogy/egress-guard`**](./packages/egress-guard) — allowlist に無い宛先への
 外向き通信を遮断する egress ファイアウォール。**漏洩先を限定する**
-- [**`@himorogy/enclave-env`**](./packages/enclave-env) — dotenvx による暗号化と実行時
-ガードで、**本番用の秘密情報をエージェントの手元に置かない**ようにする env 管理 CLI
+- [**`@himorogy/env-guard`**](./packages/env-guard) — 平文のまま書かれた env ファイルが
+git に入るのを止める検査。pre-commit hook と CI が**同じ 1 本のスクリプト**を呼びます。
+**秘密がリポジトリに残らないようにする**
 
 ### 三者の関係
 
 ```
 ghcr.io/himorogy/devcontainer-base:1     ← images/devcontainer-base
   ├─ Node / pnpm / git / gh / ripgrep / crit …
-  └─ egress-guard 本体（スクリプトと sudoers）
-        ↑ ARG EGRESS_GUARD_VERSION で pin
+  ├─ egress-guard 本体（スクリプトと sudoers）
+  │     ↑ ARG EGRESS_GUARD_VERSION で pin
+  └─ env-guard のスキャナと pre-commit hook
+        ↑ core.hooksPath をイメージに焼いてあるので全リポジトリに効く
 
 プロジェクトの .devcontainer/Dockerfile
   ├─ FROM ghcr.io/himorogy/devcontainer-base:1
   └─ firewall.json（許可ドメイン。プロジェクトごとに異なる）
 
 プロジェクトの package.json
-  └─ @himorogy/enclave-env（devDependency）
+  └─ @himorogy/env-guard（devDependency）
 ```
 
-egress-guard は**イメージ側**に、enclave-env は**プロジェクトの依存**として入ります。
-前者は root 権限が要りコンテナ起動時に効くもの、後者はコマンドとして呼ぶもの、という違いです。
+egress-guard は**イメージ側だけ**に入ります。root 権限が要り、コンテナ起動時に効くものだからです。
+
+env-guard は**イメージ側とプロジェクトの依存の両方**に入ります。コンテナの中でコミットする限り
+イメージ側の hook が効きますが、ホストの GUI git クライアントのように**コンテナの外から
+コミットする経路**にはイメージの設定が届きません。そちらを塞ぐために、パッケージとしても
+配っています。
 
 ---
 
 ## エージェントを前提にした設計
 
-egress-guard と enclave-env は、どちらも同じ前提の上に立っています。
+egress-guard と env-guard は、どちらも同じ前提の上に立っています。
 
 **エージェントは指示に従わないことがあり、プロンプトインジェクションを受けることもあります。**
-「エージェントが正しく振る舞う」ことを前提にせず、通信先と秘密情報のそれぞれに、
-エージェントの側からは外せない形で手を打っています。
+「エージェントが正しく振る舞う」ことを前提にせず、データの出ていく先（通信と、コミット）の
+それぞれに、エージェントの側からは外しにくい形で手を打っています。
 
 守れる範囲と守れない範囲は、それぞれの README と `docs/` に書いてあります。
 **どちらも万能ではありません。**
@@ -102,7 +109,7 @@ pnpm test      # 各パッケージのテスト
 
 `allowDomains` の `nodejs.org` がその例です。リモート接続の relay が `node-pty` を
 ビルドするため、node-gyp が Node のヘッダを取りに行きます。2026-08-03 に audit モードで
-観測しました（`104.16.213.131`）。`~/.orca-remote` / `~/.cache` / `~/.vscode-server` は
+観測しました（`104.16.213.131`）。`~/.cache` / `~/.vscode-server` は
 いずれもコンテナローカルなので、**再ビルドのたびに繰り返されます。外すとリモート接続が
 壊れます。**
 

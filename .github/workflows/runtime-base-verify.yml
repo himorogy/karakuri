@@ -1,0 +1,151 @@
+name: runtime-base-verify
+
+# images/runtime-base/tests/verify-docker.sh (docker が要る検証項目。
+# docs/prod-secret-isolation-design.md §10) を実行するワークフロー。
+# この dev container には docker が無い (設計の前提条件そのものであり、
+# 入れない) ため、verify-docker.sh は手元では一度も実行できず、この
+# ワークフローが唯一の実行環境になる。
+#
+# runtime-base.yml (イメージのビルドと GHCR への push) とは別ワークフロー
+# にする。あちらはリリース目的でマルチアーキビルド + push を担い、こちらは
+# 検証目的で単一アーキ (amd64、ubuntu-latest ランナーのネイティブアーキ)
+# のローカルビルドのみを行う。検証したいのは PR の変更を含むイメージであり、
+# その時点ではまだ GHCR に push されていないため、pull はできない。
+# その場でビルドしてローカルの docker イメージストアに読み込む。
+#
+# verify-docker.sh は測定 (MEASURE, 未確定の設計判断の観測。個々のケースが
+# 失敗してもスクリプト全体は止めない) と表明 (ASSERT, 確定済みの性質。
+# 1 件でも失敗すればスクリプト全体が非ゼロ終了する) を区別して出力する。
+# このワークフローの役割は (a) その出力を job summary に残すこと (今回の
+# 一番の目的)、(b) ASSERT の失敗でのみジョブを赤くすることの 2 点で、
+# 判定ロジック自体はスクリプト側に閉じている。
+#
+# action は runtime-base.yml と同じ commit SHA pin を使い回す (新しい
+# action を増やさない)。QEMU は使わない (単一アーキのため)。GHCR への
+# push を行わないため docker/login-action と packages: write 権限は不要。
+# 動的なタグ生成もしない (常に runtime-base:verify 固定)ため
+# docker/metadata-action も不要。
+
+on:
+  pull_request:
+    paths:
+      - "images/runtime-base/**"
+      - "!images/runtime-base/**/*.md"
+      # イメージは packages/env-guard のスキャナと hook を named build
+      # context 経由で焼き込む。ここを見ていないと、スキャナだけを変えた
+      # 変更に対してイメージの検証が黙って飛ぶ。*.md だけ外すのは、
+      # 上と同じ理由 (paths を狭めるより広い側へずらす)。
+      - "packages/env-guard/**"
+      - "!packages/env-guard/**/*.md"
+      - ".github/workflows/runtime-base-verify.yml"
+  workflow_dispatch:
+  push:
+    tags:
+      - "runtime-base-v*"
+
+env:
+  CONTEXT: images/runtime-base
+
+# PR に続けて push したときの古い検証は捨てる。タグ push (リリース) は
+# 検証結果を残す必要があるため途中で止めない。
+concurrency:
+  group: runtime-base-verify-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # 単一アーキのローカルビルドしかしないので QEMU は不要。
+      # setup-buildx-action は build-push-action の load: true (ローカル
+      # docker イメージストアへの読み込み) に buildx driver を要るために使う。
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # まだ GHCR に push されていない (このブランチの変更を含む) イメージを
+      # 検証したいので pull せず、その場でビルドする。push: false /
+      # load: true でローカルの docker イメージストアにだけ読み込み、以降の
+      # ステップから `runtime-base:verify` として参照できるようにする。
+      - name: Build runtime-base image (verify 用、push しない)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ env.CONTEXT }}
+          # スキャナと pre-commit hook の実体は packages/env-guard にあり、
+          # ビルドコンテキストの外にある。コンテキストを広げる代わりに、
+          # 必要なディレクトリだけを named build context として追加で供給する。
+          # Dockerfile 側は `COPY --from=env-guard ...` で受ける。
+          # runtime-base.yml のビルドにも同じ行が要る（片方だけだと
+          # もう片方のビルドが COPY で落ちる）。
+          build-contexts: |
+            env-guard=packages/env-guard
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: runtime-base:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # verify-docker.sh は個々の MEASURE / ASSERT ケースの失敗を自分で
+      # 吸収し、ASSERT が 1 件でも失敗したときだけ非ゼロで終了する。この
+      # ステップ自体はデフォルトの `bash -e` だと非ゼロ終了時点でステップが
+      # 即座に失敗してしまい、後段の「summary へ書く」ステップに進めない
+      # (summary を残すことが今回の一番の目的なので、それでは困る)。
+      # `set +e` で errexit を切り、終了コードを outputs へ退避して、
+      # 実際にジョブを落とすかどうかは後段のステップで判断する。
+      #
+      # `| tee verify-output.txt` (元は `>verify-output.txt 2>&1` だけで
+      # ファイルにしか残らず、ブラウザで job summary を開かない限り結果を
+      # 見る手段が無かった): job のライブログ (stdout) にも同じ内容を
+      # 流しつつファイルにも残す。パイプの終了コードは tee のものになって
+      # しまうため、verify-docker.sh 自身の rc は PIPESTATUS[0] から取る
+      # (この run: ブロックは既定で bash なので PIPESTATUS が使える)。
+      - name: Run verify-docker.sh
+        id: verify
+        run: |
+          set +e
+          RUNTIME_BASE_IMAGE=runtime-base:verify \
+            bash images/runtime-base/tests/verify-docker.sh 2>&1 | tee verify-output.txt
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      # 測定パートが失敗していても (= 上のステップが非ゼロで終わっていても)
+      # ここには必ず到達させる。`if: always()` はその意図の明示。
+      - name: Publish results to job summary
+        if: always()
+        run: |
+          {
+            echo "## runtime-base verify-docker results"
+            echo
+            echo '```'
+            cat verify-output.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # ブラウザ (job summary / ライブログ) 以外からも結果を取れるように
+      # artifact としても残す。action pin は release.yml の
+      # actions/upload-artifact と同じ commit SHA を使い回す (新しい pin を
+      # 増やさない)。ASSERT が失敗してこの後のステップでジョブが赤くなる
+      # 場合でも出力は取れないと困るため `if: always()`。retention-days は
+      # デバッグ用の短命な出力なので短めに抑える。
+      - name: Upload verify-docker output as artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-base-verify-output
+          path: verify-output.txt
+          retention-days: 14
+
+      # ここでようやくジョブの成否を決める。verify-docker.sh の非ゼロ終了は
+      # ASSERT の失敗を意味する (MEASURE 単体の失敗ではスクリプト自体は
+      # 非ゼロにならない)。原文は上の job summary に既に載っているので、
+      # ここでは終了コードだけを見て失敗させる。
+      - name: Fail the job on ASSERT failures
+        if: steps.verify.outputs.rc != '0'
+        run: |
+          echo "verify-docker.sh exited with rc=${{ steps.verify.outputs.rc }} (ASSERT failure — see job summary for details)" >&2
+          exit 1

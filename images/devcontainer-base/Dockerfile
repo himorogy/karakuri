@@ -8,6 +8,15 @@
 # =============================================================================
 ARG CRIT_VERSION=v0.18.0
 
+# 下段の `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` が使う。
+# **ここから動かさないこと。** FROM の中で参照する ARG は、最初の FROM より前
+# (グローバルスコープ) で宣言されていなければならない。ステージの中で宣言した
+# ものは、その次の FROM からは見えない。見えないまま空文字に展開されると
+# `ghcr.io/himorogy/runtime-base:` という壊れた参照になり、pull を試みる前に
+# 「invalid reference format」で落ちる。イメージが取得できないのとは別の失敗で、
+# エラーだけを読むと取り違えやすい。
+ARG RUNTIME_BASE_VERSION=1
+
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS crit-builder
 
 ARG CRIT_VERSION
@@ -27,69 +36,138 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 # =============================================================================
 # devcontainer base
 #
-# 収録方針:
+# images/runtime-base を土台とし、そこに「能力」だけを積み増す。runtime-base
+# には node / pnpm / dotenvx / wrangler / git / gh、secret shim、
+# prod-entrypoint.sh、egress-guard 本体、git hook (core.hooksPath) が
+# 既に入っている。ここでの収録方針:
 #   入れる  … npm で入らないもの、または エージェントが直接使うもの
-#   入れない… 人間の対話体験にしか効かないもの   -> 後付けスクリプト
+#   入れない… 人間の対話体験にしか効かないもの   -> 個人フック (/personal/setup.sh)
 #             npm で入るもの (Biome, dprint 等) -> プロジェクトの devDependency
 #             プロジェクト固有のもの (psql 等)  -> プロジェクトの Dockerfile
+#             prod container でも使うもの       -> images/runtime-base 側
+#               (設計書 docs/prod-secret-isolation-design.md §4.5)
 # =============================================================================
-FROM node:24
+# RUNTIME_BASE_VERSION はファイル冒頭のグローバルスコープで宣言してある。
+FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}
 
 ARG USERNAME=node
-ARG TZ=Asia/Tokyo
-ARG PNPM_VERSION=11.20.0
-ARG EGRESS_GUARD_VERSION=0.1.1
 
-# --- ロケール / タイムゾーン --------------------------------------------------
-# LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定になる。
-# エージェント運用ではソート順の決定性を優先して C.UTF-8 を採用する。
-# ja_JP.UTF-8 が必要になったら locales パッケージ + locale-gen を追加すること。
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    TZ="${TZ}" \
-    DEVCONTAINER=true
+# TZ / LANG / LC_ALL は images/runtime-base の ENV としてこの層にも
+# 引き継がれているため、ここで ARG TZ を再宣言する必要はない。
 
-RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
-    && echo "${TZ}" > /etc/timezone
+# runtime-base は USER=node で終わっているため、apt-get や /etc 配下への
+# 書き込みなど root 権限が要る作業のために切り替える。
+USER root
 
-# --- OS パッケージ ------------------------------------------------------------
+ENV DEVCONTAINER=true
+
+# --- OS パッケージ (devcontainer 固有) -----------------------------------------
 # vim-tiny は git commit / rebase -i がエディタ不在で失敗しないための最小保険。
-# 実際に使うエディタ (micro 等) は後付けスクリプトが入れて EDITOR を上書きする。
+# 実際に使うエディタ (micro 等) は個人フックが入れて EDITOR を上書きする。
 #
-# egress-guard が要求するもののうち curl (GitHub meta API の取得と自己検証) は
-# node:24 に同梱されているため、ここには並べていない。上流が外したら追加すること。
+# git / gh / sudo / jq / iptables / ipset / iproute2 / dnsutils / aggregate は
+# prod container でも使うため images/runtime-base 側で既に入っている。ここで
+# 追加するのは対話体験・エージェント運用にしか効かないものだけ。
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git \
-      gh \
-      sudo \
       zsh \
       less \
       procps \
       man-db \
       unzip \
       gnupg2 \
-      jq \
       ripgrep \
       fd-find \
       vim-tiny \
-      iptables \
-      ipset \
-      iproute2 \
-      dnsutils \
-      aggregate \
+      openssh-server \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && rm -f /etc/ssh/ssh_host_* \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- sshd (inetd モード専用) ----------------------------------------------------
+# ホストからの SSH port forwarding 用。listen する sshd デーモンは起動しない。
+# ホスト側 ~/.ssh/config の ProxyCommand が
+#   docker exec -i -u root <container> /usr/local/sbin/sshd-inetd
+# でこのラッパーを起動し、SSH セッションは docker exec のパイプ上を流れる。
+# コンテナに TCP の口は開かない。詳細は PORT-FORWARDING.md。
+#
+# openssh-server の postinst はビルド時にホスト鍵を生成してしまう。上の RUN で
+# 削除しているのは、鍵がイメージに焼かれて全コンテナ同一鍵になるのを防ぐため。
+# ラッパーが初回接続時にコンテナごとの鍵を生成する。
+#
+# mkdir -p /run/sshd は privilege separation ディレクトリ。/run を tmpfs にする
+# 構成 (examples/docker-compose.yaml) では起動のたびに消えるため、毎回作る。
+RUN printf '%s\n' \
+      '#!/bin/sh' \
+      '# sshd を inetd モードで起動する。ProxyCommand (docker exec) 専用。' \
+      'set -eu' \
+      'mkdir -p /run/sshd' \
+      'ls /etc/ssh/ssh_host_*_key >/dev/null 2>&1 || ssh-keygen -A' \
+      'exec /usr/sbin/sshd -i -e "$@"' \
+    > /usr/local/sbin/sshd-inetd \
+    && chmod 0755 /usr/local/sbin/sshd-inetd \
+    && printf '%s\n' \
+         '# 認可鍵は dev-inject (broker) が /run/secrets へ注入したものを第一に読む。' \
+         '# 専用の注入スクリプトを不要にするため。GH_TOKEN 等の secret と同じ 1 回の' \
+         '# dev-inject で SSH も有効になる (公開鍵は秘密ではない。搬送の一本化が目的)。' \
+         '# ~/.ssh/authorized_keys は broker を使わない導入形態向けに残す。' \
+         'AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys' \
+       > /etc/ssh/sshd_config.d/60-authorized-keys.conf
 
 # --- crit ---------------------------------------------------------------------
 # Claude Code 連携がコンテナ内の crit CLI とローカル daemon を前提とするため、
-# ホストではなくコンテナ側に置く。
+# ホストではなくコンテナ側に置く。prod container はエージェントを含まないため
+# (設計書 §2.1)、crit は devcontainer-base 側だけの「能力」である。
 COPY --from=crit-builder /out/crit /usr/local/bin/crit
 
-# 0.0.0.0 で待ち受けないと devcontainer.json の runArgs (-p) による転送が届かない。
+# CRIT_HOST は設定しない (crit の既定 127.0.0.1 に委ねる)。crit は認証を持たず、
+# リポジトリのファイルを読め、設定された agent_cmd を起動しうるため、意図的に
+# loopback のみへ bind する設計になっている。到達経路は VS Code の自動転送も
+# SSH port forwarding もコンテナ内 loopback から接続するため、これで足りる。
+# compose の ports: publish は egress-guard の INPUT DROP でそもそも届かない
+# (PORT-FORWARDING.md)。旧来の 0.0.0.0 上書きは publish 前提の名残であり廃止した。
+#
+# CRIT_PORT: crit の既定はランダムポート。ホスト側 ~/.ssh/config の LocalForward
+# を静的に書けるよう、イメージが既定値を固定する。プロジェクト側の上書き方法は
+# PORT-FORWARDING.md (compose の environment: では SSH セッションに届かない)。
+#
 # 更新チェックは起動の決定性と egress の予測可能性のために無効化する。
-# プロジェクトごとの CRIT_PORT は devcontainer.json 側で設定する。
-ENV CRIT_HOST=0.0.0.0 \
-    CRIT_NO_UPDATE_CHECK=1
+#
+# GIT_ASKPASS: git の認証を /run/secrets/GH_TOKEN から取る (注入されていなければ、
+# 認証が要る操作が非ゼロ終了して顕在化する)。スクリプト本体は runtime-base が焼く。
+ENV CRIT_PORT=4588 \
+    CRIT_NO_UPDATE_CHECK=1 \
+    GIT_ASKPASS=/usr/local/bin/git-askpass
+
+# Dockerfile の ENV は docker exec 経由のシェル (VS Code 含む) にしか届かない。
+# sshd はクライアント側の environ を引き継がず、セッションの環境は PAM (pam_env)
+# が /etc/environment から組み立てる。SSH セッションにも同じ値を届けるため、
+# ENV と /etc/environment の両方に書く (値の原本は上の ENV。ここは転記)。
+#
+# GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 / GIT_CONFIG_KEY_1 /
+# GIT_CONFIG_VALUE_1 は runtime-base が焼く。スロット 0 で github.com の
+# credential helper を一旦すべて捨て、スロット 1 で自前の helper
+# (/usr/local/bin/git-credential-gh-token) を積み直すためのもので、VS Code の
+# Dev Containers 拡張が global gitconfig へ helper を書き込み、さらに統合
+# ターミナルの environ へ GIT_ASKPASS を注入して上書きしてくる以上、dev で最も
+# 効かせたい 5 つである。ここへ転記しないと SSH セッションだけ上書きが外れ、
+# その経路の git だけがホスト側の資格情報で通る。
+# 値の原本は runtime-base 側なので、名前が変わったら空を転記して黙って穴が開く。
+# それを避けるため、転記の前に存在を確かめて落とす (VALUE_0 は空が正常値なので
+# 対象にできない。KEY_0 が在れば VALUE_0 も在るという前提を取る。VALUE_1 は
+# 自前 helper の絶対パスで非空が正常値のため、KEY_1 と併せて確認対象にする)。
+RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ] \
+    && [ -n "${GIT_CONFIG_KEY_1}" ] && [ -n "${GIT_CONFIG_VALUE_1}" ]
+
+RUN printf '%s\n' \
+      "CRIT_PORT=\"${CRIT_PORT}\"" \
+      "CRIT_NO_UPDATE_CHECK=\"${CRIT_NO_UPDATE_CHECK}\"" \
+      "GIT_ASKPASS=\"${GIT_ASKPASS}\"" \
+      "GIT_CONFIG_COUNT=\"${GIT_CONFIG_COUNT}\"" \
+      "GIT_CONFIG_KEY_0=\"${GIT_CONFIG_KEY_0}\"" \
+      "GIT_CONFIG_VALUE_0=\"${GIT_CONFIG_VALUE_0}\"" \
+      "GIT_CONFIG_KEY_1=\"${GIT_CONFIG_KEY_1}\"" \
+      "GIT_CONFIG_VALUE_1=\"${GIT_CONFIG_VALUE_1}\"" \
+    >> /etc/environment
 
 RUN crit --version
 
@@ -104,13 +182,22 @@ RUN mkdir -p /commandhistory \
 
 # --- zsh 最小設定 --------------------------------------------------------------
 # /etc/zsh/zshrc は interactive shell でのみ読まれる。
-# プロンプト装飾 (starship) と fzf keybinding は後付けスクリプトが ~/.zshrc に置く。
+# プロンプト装飾 (starship) と fzf keybinding は個人フックが ~/.zshrc に置く。
+#
+# prod-context (images/runtime-base 由来) は /etc/bash.bashrc からは既に
+# source されているが、zsh は devcontainer-base 側にしかない (prod
+# container に zsh は無い) ため、ここで zshrc にも同じ source 行を足す。
+# zsh は POSIX 互換モードで prod-context を解釈でき (対話判定の
+# `case $- in *i*)` は zsh でも効き、/run/secrets の列挙は glob ではなく
+# `ls -A` で行うため zsh の nomatch 既定でも落ちない)、bash 用に書き分ける
+# 必要はない (設計書 §4.3 rev.6)。
 RUN printf '%s\n' \
       'autoload -Uz compinit && compinit' \
       'HISTFILE=/commandhistory/.zsh_history' \
       'HISTSIZE=10000' \
       'SAVEHIST=10000' \
       'setopt SHARE_HISTORY APPEND_HISTORY' \
+      '. /usr/local/bin/prod-context' \
     >> /etc/zsh/zshrc
 
 # --- ディレクトリ --------------------------------------------------------------
@@ -123,67 +210,9 @@ RUN mkdir -p /workspaces /home/${USERNAME}/.claude /home/${USERNAME}/.codex \
 
 WORKDIR /workspaces
 
-# --- pnpm ----------------------------------------------------------------------
-ENV PNPM_HOME=/usr/local/share/pnpm \
-    NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-# PATH に載せるのは ${PNPM_HOME}/bin であって ${PNPM_HOME} ではない。
-# pnpm 10 は PNPM_HOME 直下に global bin を置いていたが、11 は bin/ の下に置く。
-# 古いレイアウトのままだと pnpm add -g したものが PATH に載らず、
-# pnpm bin -g が "global bin directory is not in PATH" で失敗する。
-ENV PATH="${PNPM_HOME}/bin:${NPM_CONFIG_PREFIX}/bin:${PATH}"
-
-RUN mkdir -p "${PNPM_HOME}/bin" "${NPM_CONFIG_PREFIX}" \
-    && chown -R ${USERNAME}:${USERNAME} /usr/local/share
-
-USER ${USERNAME}
-
-# バージョンを固定しないとビルド日時で pnpm が変わり、
-# 各プロジェクトの packageManager フィールドと乖離する。
-RUN npm install -g pnpm@${PNPM_VERSION} \
-    && pnpm --version
-
-# --- egress-guard --------------------------------------------------------------
-# スクリプト本体と sudoers は base に入れる。どちらも全プロジェクトで同一で、
-# root 所有の場所に置く必要があり、npm では入らない領域を触るため。
-#
-# base に入らないのは実効設定 (firewall.json) だけ。プロジェクトごとに内容が
-# 異なるうえ、COPY 元がプロジェクトのビルドコンテキストにあり base のビルド時
-# には存在しない。プロジェクト側の Dockerfile で入れる (examples/Dockerfile)。
-#
-# バージョンは ARG で固定する。このスクリプトは下で root 所有の /usr/local/bin に
-# 置かれ、パスワードなし sudo の対象になる。dist-tag のまま追従させると、
-# パッケージ側の更新がそのままコンテナ内 root でのコード実行になる。
-#
-# npm のグローバル領域 (NPM_CONFIG_PREFIX) は node 所有のため、install は node の
-# まま実行する。root で入れると root 所有のファイルが混ざり、以後 node での
-# -g install が権限で失敗しうる。root が担当するのは配置と権限付与だけ。
-RUN npm install -g @himorogy/egress-guard@${EGRESS_GUARD_VERSION}
-
-USER root
-
-# sudoers は固定パスを名指しする必要があるため、グローバル node_modules を参照
-# させずにコピーする。NPM_CONFIG_PREFIX 配下は node が書き換えられるので、sudo で
-# 実行を許したファイルそのものを node が差し替えられる状態にはできない。
-#
-# sudoers 末尾の "" は「引数を取らない実行のみ許可」の意。実効設定を
-# /etc/egress-guard に固定し探索を廃止した設計意図を、引数経由での設定差し替えを
-# 塞ぐことで sudoers 側でも担保する。この "" を落とすと防御が無効になる。
-#
-# visudo -c は構文検証。sudoers.d 配下に構文エラーがあると、その後の sudo 呼び出し
-# 全体がパースエラーで失敗する。この行を編集して引用符や改行を壊すとビルドは通り、
-# 派生プロジェクトの起動時に初めて表面化するため、base のビルド時に落とす。
-RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-         /usr/local/bin/init-project-firewall.sh \
-    && chown root:root /usr/local/bin/init-project-firewall.sh \
-    && chmod 755 /usr/local/bin/init-project-firewall.sh \
-    && printf '%s ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
-         "${USERNAME}" > /etc/sudoers.d/node-firewall \
-    && chmod 0440 /etc/sudoers.d/node-firewall \
-    && visudo -cf /etc/sudoers.d/node-firewall
-
-USER ${USERNAME}
-
 ENV SHELL=/bin/zsh
+
+USER ${USERNAME}
 
 # このイメージは USER=node で終わる。派生 Dockerfile で root 作業が要る場合は
 # 明示的に USER root へ切り替え、最後に USER node へ戻すこと。

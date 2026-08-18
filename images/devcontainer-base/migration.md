@@ -14,9 +14,25 @@ pnpm 10 を使っている devcontainer を、この base image（pnpm 11）へ�
 
 ## 前提
 
-**base image はまだ GHCR に存在しない。** [`.github/workflows/devcontainer-base.yml`](../../.github/workflows/devcontainer-base.yml)
-が一度も実行されていない。移行の第一歩は、このワークフローを走らせて
-`ghcr.io/himorogy/devcontainer-base:1` を作ること。
+**本書の雛形が前提とする base は v2 系（`devcontainer-base-v2.0.0` として公開済み）。**
+sshd 同梱・`GIT_ASKPASS` / `CRIT_PORT` の焼き込み・個人フックは v2 からで、
+v1 系には無い。
+
+**2.2.0 で github.com への https 認証の挙動が変わる。** base が github.com の credential helper を
+イメージ自前のもの（`/run/secrets/GH_TOKEN` を読む）へ固定するため、VS Code が転送するホスト側の
+資格情報では認証されなくなり、`GH_TOKEN` の注入が必須になる（public repo の clone と ssh remote、
+github.com 以外のホストは影響しない）。
+
+2.1.0 も同じことを狙って github.com の credential helper を打ち消したが、**VS Code の統合
+ターミナルでは効いていなかった** — VS Code は helper だけでなく `GIT_ASKPASS` も environ へ
+注入して上書きするため、認証はそちらへ迂回してホスト側の資格情報で通っていた。実際に挙動が
+変わるのは 2.2.0 から。
+
+**挙動の変更をマイナーで入れている。** 正式リリース前で、利用側がまだこのリポジトリ自身と
+移行中のプロジェクトに限られるため。浮動タグ `:2` を参照しているプロジェクトは、次のリビルドで
+この変更を受け取る。**リビルドの前に dev-inject へ移行済みであることを確かめること。**
+狙いと外し方は [`images/runtime-base/README.md`](../runtime-base/README.md) の
+「git の認証（github.com）」。
 
 以下、**実測済み**と**リリースノート由来（未実測）**を分けて記す。実測は 2026-08-04 に
 karakuri monorepo（pnpm 11.20.0 / Node 24 / linux-arm64）で行ったもの。
@@ -155,7 +171,7 @@ base image は `node:24` なのでコンテナ側は問題ない。**CI の `set
 「更新したのに反映されない」の原因になる。**書く場所は構成で変わる。**
 
 ```yaml
-# Docker Compose 構成（雛形はこちら）— docker-compose.yml
+# Docker Compose 構成（雛形はこちら）— docker-compose.yaml
 services:
   dev:
     build:
@@ -189,7 +205,7 @@ services:
 ### 4.3 プロジェクト側に残るもの
 
 - `firewall.json`（実効設定。プロジェクトごとに異なるため base には入らない）
-- `NET_ADMIN` / `NET_RAW`。**Compose 構成では `docker-compose.yml` の `cap_add` に書く。**
+- `NET_ADMIN` / `NET_RAW`。**Compose 構成では `docker-compose.yaml` の `cap_add` に書く。**
   `dockerComposeFile` を使うと `runArgs` は黙って無視されるため、`devcontainer.json` に
   書き戻しても効かず、egress-guard の適用だけが失敗する
 - `postStartCommand` と `waitFor`
@@ -197,11 +213,11 @@ services:
 
 ### 4.4 Compose 構成へ移す場合に一緒に動かすもの
 
-雛形は Compose 構成（[`examples/docker-compose.yml`](./examples/docker-compose.yml)）に
-なっている。`runArgs` 方式から移すなら、次はすべて `docker-compose.yml` 側へ移す。
+雛形は Compose 構成（[`examples/docker-compose.yaml`](./examples/docker-compose.yaml)）に
+なっている。`runArgs` 方式から移すなら、次はすべて `docker-compose.yaml` 側へ移す。
 `devcontainer.json` に残しても効かない。
 
-| `devcontainer.json`（効かなくなる） | `docker-compose.yml`（移す先） |
+| `devcontainer.json`（効かなくなる） | `docker-compose.yaml`（移す先） |
 |---|---|
 | `runArgs: ["--name=..."]` | `container_name` |
 | `runArgs: ["--cap-add=..."]` | `cap_add` |
@@ -218,7 +234,7 @@ services:
 要る。** 引き継ぎたい場合は `docker volume ls` で実名を調べ、`external: true` で名前を
 合わせる。
 
-**`docker-compose.yml` のマウント先と `devcontainer.json` の `workspaceFolder` を
+**`docker-compose.yaml` のマウント先と `devcontainer.json` の `workspaceFolder` を
 一致させること。** ずれると `postCreateCommand` が exit 127 で落ちる。エラーはコマンドの
 側に出るため、原因がマウント先の不一致だと気づきにくい。
 
@@ -232,7 +248,7 @@ services:
 **雛形はリポジトリ本体ではなく親ディレクトリを載せる。**
 
 ```yaml
-# docker-compose.yml — ../.. は .devcontainer から見て「リポジトリの親」
+# docker-compose.yaml — ../.. は .devcontainer から見て「リポジトリの親」
 volumes:
   - ../..:/workspaces:cached
 ```
@@ -261,10 +277,17 @@ volumes:
 - **Claude Code は Feature**（`ghcr.io/anthropics/devcontainer-features/claude-code`）。
   `curl | bash` と違い、版が `devcontainer-lock.json` に固定される。**このロックファイルは
   コミットすること**
-- **それ以外は `post-create.sh`**（[`examples/post-create.sh`](./examples/post-create.sh)）。
-  `postCreateCommand` から呼ぶ。codex の導入と `gh auth setup-git` を置いてある
+- **それ以外は個人フック**（ホスト側 `~/.config/devc-personal/setup.sh`。雛形の
+  compose が `/personal:ro` に mount し、`postCreateCommand` が実行する）。codex 等の
+  個人ツールはここへ。git の認証は base が焼く `GIT_ASKPASS` が
+  `/run/secrets/GH_TOKEN` から取るため、旧雛形にあった `gh auth setup-git` は不要になった。
+  2.2.0 以降は不要になっただけでなく**効かない** — base が github.com の credential helper を
+  自前のものへ固定するので、`gh auth setup-git` が global gitconfig へ書く helper は github.com
+  について呼ばれない
 
-`postCreateCommand` に長いワンライナーを書いていた構成からは、中身をこのスクリプトへ移す。
+`postCreateCommand` に長いワンライナーを書いていた構成からは、中身を個人フックへ移す。
+プロジェクト共通で必要なセットアップが残る場合だけ、自前の post-create.sh を作って
+`postCreateCommand` に連結する。
 
 **どちらも egress-guard が適用される前に走る。** Feature の取得も `npm install` も
 制限されない。逆に言えば、firewall の適用後に外から取ってくる作業は成立しないので、

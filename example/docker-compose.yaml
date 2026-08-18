@@ -1,0 +1,97 @@
+# プロジェクト側 docker-compose.yaml の雛形。
+# .devcontainer/docker-compose.yaml としてコピーし、<your-project> と CRIT_PORT を差し替える。
+#
+# egress-guard が第一に推奨する構成が Compose。理由はネットワークにある。
+# Compose はプロジェクトごとにユーザー定義ネットワーク (<name>_default) を自動で作り、
+# その上でだけ Docker の埋め込みリゾルバ 127.0.0.11 が使える。デフォルトブリッジだと
+# ホスト側の DNS アドレス宛に外向きの穴が 1 つ開く。
+# 判断の根拠は packages/egress-guard/README.md の「ネットワーク構成（推奨）」。
+#
+# **runArgs は dockerComposeFile を使うと黙って無視される。** ポート転送・cap・環境変数・
+# マウントは、devcontainer.json ではなくこのファイルに書く。
+
+# ネットワーク名がこれを接頭辞に決まる (<name>_default)。
+# プロジェクトごとに違う値にすること。1 つのネットワークを共有すると、同居する
+# コンテナが相互に名前解決して到達できる。
+name: dotfiles-dev
+
+services:
+  dev:
+    # runArgs の --name の置き換え。
+    container_name: dotfiles-dev-container
+
+    build:
+      # このファイルからの相対。firewall.json も .devcontainer/ にある前提。
+      context: .
+      dockerfile: Dockerfile
+      # **必須。** 浮動タグ :2 を参照するので、これがないとローカルに残った古い base が
+      # 使われ続け、リビルドしても更新が反映されない。
+      # devcontainer.json の "build": { "options": ["--pull"] } は dockerComposeFile を
+      # 使うと効かないため、Compose 側のこれが代わりになる。
+      pull: true
+
+    # runArgs の --cap-add の置き換え。egress-guard が iptables と ipset を触るために要る。
+    # **これが効いていないと postStartCommand が失敗する。** 案 A の成否そのもの。
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # containerEnv の置き換え。**devcontainer.json の containerEnv は Compose 構成では
+    # 効かない。** 環境変数はここに書く。
+    environment:
+      NODE_OPTIONS: --max-old-space-size=2048
+      CLAUDE_CONFIG_DIR: /home/node/.claude
+      # CRIT_PORT (既定 4588)、GIT_ASKPASS、github.com の credential helper を自前のものへ
+      # 固定する GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / VALUE_0 / KEY_1 / VALUE_1 は base が ENV と
+      # /etc/environment の両方で設定済み。ここには書かない — compose の environment: は
+      # docker exec 経由のシェルにしか届かず、SSH セッションには効かないため、上書きすると
+      # 経路によって値が食い違う (base の PORT-FORWARDING.md 参照)。
+
+    # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
+    # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと
+    # root 所有で作られ、node ユーザーが /run/secrets を作れず書けない。
+    # tmpfs はコンテナを停止 → 再起動するだけでも消えるので、起動のたびに
+    # ホスト側の dev-inject スクリプトを実行し直すこと。
+    tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]
+
+    # dev 鍵（dotenvx の local / dev 復号キーや dev 用のトークン）は env_file では
+    # 注入しない。env_file はホスト上に恒久的な平文ファイルを要求し、コンテナの
+    # environ にも常駐して docker inspect や全子プロセスから見えてしまう。
+    # かわりに、コンテナ起動後にホスト側の dev-inject スクリプトで上の tmpfs
+    # （/run/secrets）へ注入する。
+
+    # ports: は置かない。egress-guard が INPUT を DROP しており publish は届かない。
+    # コンテナ内のサービスへは VS Code の自動転送か SSH port forwarding
+    # (どちらもコンテナ内 loopback 発) で到達する。base の PORT-FORWARDING.md 参照。
+
+    volumes:
+      # workspaceMount の置き換え。このファイルからの相対なので、../.. は
+      # **リポジトリの親ディレクトリ**。リポジトリ本体ではない。
+      #
+      # 親を載せるのは git worktree を使うため。worktree の共通 git dir は
+      # 別ディレクトリ (<親>/<repo>/.git) にあり、リポジトリ本体だけをマウントすると
+      # 解決できずに壊れる。同居する兄弟ディレクトリがコンテナから見えるのは
+      # 引き換え。worktree を使わないなら ..:/workspaces/<your-project> でよい。
+      #
+      # **devcontainer.json の workspaceFolder と必ず一致させること。** ずれても
+      # エラーでは止まらず、エディタが空のフォルダを開く形で現れる。
+      - ../..:/workspaces:cached
+
+      # 個人設定フック。ホスト側の共通ディレクトリを read-only で見せ、
+      # /personal/setup.sh があれば postCreateCommand が実行する。
+      # 根拠は base の examples/docker-compose.yaml のコメントを参照。
+      - ~/.config/devc-personal:/personal:ro
+
+      # mounts の置き換え。**${devcontainerId} は Compose では使えない**ため固定名にする。
+      # 名前が固定なので、プロジェクトをまたいで衝突しないよう <your-project> を含める。
+      - dotfiles-history:/commandhistory
+      - dotfiles-claude-config:/home/node/.claude
+      - dotfiles-codex-config:/home/node/.codex
+
+    # base イメージの CMD は node なので、そのままだと即終了する。
+    command: sleep infinity
+
+volumes:
+  dotfiles-history:
+  dotfiles-claude-config:
+  dotfiles-codex-config:

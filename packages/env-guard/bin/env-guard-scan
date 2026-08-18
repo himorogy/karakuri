@@ -1,0 +1,278 @@
+#!/bin/sh
+# /usr/local/bin/env-guard-scan
+#
+# 平文の env が git に入らないよう検査する共有スキャナ。
+#
+# 設計: docs/prod-secret-isolation-design.md §4.7, §8.1, §8.2
+#
+# ----------------------------------------------------------------------------
+# なぜ 1 本にまとめたか
+#
+# 以前は「コミット時は dotenvx precommit、CI は workflow 内のインライン
+# 走査」と実装が 2 つあった。パターンだけ揃えても判定が別物である限り
+# 「hook は通るのに CI で落ちる」（およびその逆）は消えない。判定を 1 本に
+# 寄せ、消費者ごとに違うのは「どのファイルを見るか」だけにする。
+#
+#   コミット時の hook … git diff --cached --name-only（staged）
+#   CI の workflow  … git ls-files（tracked）
+#
+# したがってこのスクリプトの入力は「検査対象ファイルの一覧」だけである
+# （stdin から 1 行 1 パス）。一覧の作り方はここの責務ではない。同じ一覧を
+# 与えれば、どちらの入口から来ても出力も終了コードも完全に一致する。
+# ----------------------------------------------------------------------------
+#
+# 使い方:
+#   git ls-files | env-guard-scan
+#   git diff --cached --name-only | env-guard-scan
+#
+# パスはカレントディレクトリからの相対として解釈する。上記 2 つの git
+# コマンドはどちらもリポジトリルートからの相対パスを出すので、リポジトリ
+# ルートで実行すること（git hook は常にルートで実行される）。
+#
+# 終了コード:
+#   0  問題なし（検査件数を必ず出力する。0 件検査で緑になったのか、N 件
+#      検査して全部通ったのかを、出力だけで区別できるようにするため）
+#   1  平文の値を検出した / .env.keys があった / 検査を完走できなかった
+#
+# 検査を完走できない場合は必ず 1 で終わる（fail-closed）。「設定が読めな
+# かったので既定で通した」「走査に失敗したので 0 件として通した」を作らない。
+#
+# 出力に値（`=` より後）は決して書かない。出すのはパス・行番号・鍵名まで。
+# CI のログはリポジトリのファイルとは保持期間も配信経路（通知・org のログ
+# 保持設定・artifact）も違う。保持期間と可視範囲の違う場所へ secret を
+# 写さないのは、この設計を通しての方針である（prod-entrypoint.sh が
+# パース失敗時に入力行を出さず行番号だけを出すのと同じ理由）。
+
+set -u
+
+# --- 設定ファイル ------------------------------------------------------------
+#
+# リポジトリルートの env-guard.conf でプロジェクトごとに上書きできる。
+# 不在なら既定値。書式は 1 行 1 ディレクティブ:
+#
+#   # コメントは行頭のみ
+#   pattern (^|/)\.env          … 検査対象とするパスの拡張正規表現
+#   pattern (^|/)production\.env$
+#   allow   *.env.container.example  … 検査から外すパスの glob
+#
+# pattern 行が 1 行でもあれば既定の pattern を「置き換える」（追加ではない）。
+# allow 行も同様。指定しなかった側は既定のまま。
+#
+# このファイルは絶対に source / eval しない。リポジトリの中身は信頼しない
+# 側が書ける。hook は dev container の中で走るので、そこでリポジトリの内容を
+# 実行させたら防御ではなく攻撃経路になる。読むのは行単位のパースのみで、
+# 値はパターン文字列としてしか使わない。
+#
+# ファイル名を `.env-guard.conf` のようにドットで始めないのは、既定の
+# pattern `(^|/)\.env` に自分自身が一致してしまい、設定ファイルが env
+# ファイルとして検査されて必ず落ちるため。
+CONFIG_NAME=env-guard.conf
+
+DEFAULT_PATTERNS='(^|/)\.env
+(^|/)secret\.env\.'
+DEFAULT_ALLOW='*.env.container.example'
+
+die() {
+  for _m in "$@"; do
+    printf '%s\n' "$_m" >&2
+  done
+  exit 1
+}
+
+# --- リポジトリルート ---------------------------------------------------------
+# .env.keys の走査と設定ファイルの位置に要る。取れないなら検査できていない
+# ので通さない。
+if ! root=$(git rev-parse --show-toplevel 2>&1); then
+  die "❌ env-guard: could not determine the repository root." \
+    "   git rev-parse --show-toplevel failed: $root" \
+    "   Nothing was inspected, so this is not a pass."
+fi
+
+tmp=$(mktemp -d) || die "❌ env-guard: could not create a temporary directory."
+trap 'rm -rf "$tmp"' EXIT
+pat_file="$tmp/patterns"
+allow_file="$tmp/allow"
+pat_over="$tmp/patterns.override"
+allow_over="$tmp/allow.override"
+: >"$pat_over"
+: >"$allow_over"
+
+printf '%s\n' "$DEFAULT_PATTERNS" >"$pat_file"
+printf '%s\n' "$DEFAULT_ALLOW" >"$allow_file"
+
+config="$root/$CONFIG_NAME"
+if [ -e "$config" ]; then
+  if [ ! -f "$config" ] || [ ! -r "$config" ]; then
+    die "❌ env-guard: $CONFIG_NAME exists but could not be read." \
+      "   Refusing to fall back to the defaults: the configuration that was" \
+      "   meant to apply is unknown, so nothing here can be called a pass."
+  fi
+
+  n=0
+  # read は行頭・行末の空白を落とし、-r で backslash を素通しする。
+  # `|| [ -n "$directive" ]` は末尾に改行が無いファイルの最終行のため。
+  while read -r directive value || [ -n "$directive" ]; do
+    n=$((n + 1))
+
+    case "$directive" in
+      '' | '#'*) continue ;;
+    esac
+
+    if [ -z "$value" ]; then
+      die "❌ env-guard: $CONFIG_NAME line $n: '$directive' needs a value."
+    fi
+
+    case "$directive" in
+      pattern) printf '%s\n' "$value" >>"$pat_over" ;;
+      allow) printf '%s\n' "$value" >>"$allow_over" ;;
+      *)
+        die "❌ env-guard: $CONFIG_NAME line $n: unknown directive '$directive'." \
+          "   Valid directives are 'pattern' and 'allow'." \
+          "   Refusing to guess what was meant."
+        ;;
+    esac
+  done <"$config"
+
+  if [ -s "$pat_over" ]; then
+    cp "$pat_over" "$pat_file"
+  fi
+  if [ -s "$allow_over" ]; then
+    cp "$allow_over" "$allow_file"
+  fi
+fi
+
+# --- .env.keys ---------------------------------------------------------------
+#
+# dotenvx は私鍵の環境変数が無いと .env.keys へ自動でフォールバックする。
+# workspace 内に置かれていると暗号化の意味が失われるため、存在自体を弾く。
+#
+# リポジトリルート直下だけでは足りない。フォールバックは対象の .env
+# ファイルに「隣接する」.env.keys を拾うため、monorepo の
+# apps/backend/.env.keys は実際に効いてしまう（既存 4 repo は karakuri 自身
+# を含めて monorepo である）。再帰的に探す。
+#
+# この検査だけは stdin のファイル一覧に依らずリポジトリ全体を見る。私鍵の
+# 危険は絶対的で、「今回のコミットに含まれていない」「絞り込みの外にある」は
+# 安全の理由にならないため。
+#
+# -print -quit で最初の 1 件を出した時点で find を止める。欲しいのは
+# 「1 件でもあるか」だけである。node_modules は除外する（依存パッケージが
+# 同梱する fixture 等での誤検知を避ける。コミット対象でもない）。
+#
+# find 自身の失敗（walk 中の権限エラー等）を「1 件も無かった」と取り違えない
+# よう、終了コードを明示的に捕まえて 3 通りを区別する。`found=$(find ...)` と
+# 素で書くと、find が非ゼロで終わったとき set -e が何も言わずに落ちるため、
+# 踏んだ人間が「どの検査で何が起きたのか」に辿り着けない。
+# `if found=$(...); then` の形なら代入の終了コードが if の条件として消費される。
+# 完走できなかった場合も通さない（fail-closed）。走査しきれていない以上、
+# .env.keys が無いことを主張できないため。
+if found=$(find "$root" -name .env.keys -not -path '*/node_modules/*' -print -quit); then
+  if [ -n "$found" ]; then
+    die "❌ env-guard: .env.keys found: $found" \
+      "   This file holds the dotenvx private keys. It must never be committed." \
+      "   Remove it from the working tree (and from git history if it got in)."
+  fi
+else
+  die "❌ env-guard: could not finish scanning for .env.keys under $root" \
+    "   (find exited with an error; see its message above)." \
+    "   Refusing to report a pass while this check is incomplete."
+fi
+
+# --- 一覧の走査 ---------------------------------------------------------------
+
+is_target() {
+  while IFS= read -r _pat; do
+    [ -n "$_pat" ] || continue
+    if printf '%s\n' "$1" | grep -qE "$_pat"; then
+      return 0
+    fi
+  done <"$pat_file"
+  return 1
+}
+
+is_allowed() {
+  _f=$1
+  _rc=1
+  while IFS= read -r _pat; do
+    [ -n "$_pat" ] || continue
+    # パターンは case のグロブとして展開したいので、意図的にクォートしない。
+    # shellcheck disable=SC2254
+    case "$_f" in
+      $_pat)
+        _rc=0
+        break
+        ;;
+    esac
+  done <"$allow_file"
+  return "$_rc"
+}
+
+findings=0
+inspected=0
+given=0
+
+while IFS= read -r file || [ -n "$file" ]; do
+  [ -n "$file" ] || continue
+  given=$((given + 1))
+
+  # 設定ファイル自身は検査しない。既定のパターンには一致しない名前を
+  # 選んであるが、pattern を上書きした結果ここへ来ることはありうる。
+  [ "$file" != "$CONFIG_NAME" ] || continue
+
+  is_target "$file" || continue
+
+  # 削除された・別 branch にしかない等で実体が無いものは飛ばす。
+  [ -f "$file" ] || continue
+
+  if is_allowed "$file"; then
+    echo "env-guard: skipped by allow list: $file"
+    continue
+  fi
+
+  inspected=$((inspected + 1))
+  lineno=0
+
+  # 末尾に改行が無いファイルでも最終行を落とさないようにする。
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+
+    case "$line" in
+      '' | '#'* | DOTENV_PUBLIC_KEY*) continue ;;
+    esac
+
+    if printf '%s\n' "$line" | grep -qE '^[A-Z0-9_]+="?encrypted:'; then
+      continue
+    fi
+
+    # 鍵名は `^[A-Z0-9_]+` に一致する部分なので出してよい。値は出さない。
+    # `=` が無い行からは鍵名を切り出せない。そこで行の先頭を鍵名として
+    # 出すと値そのものを出すのと同じことになる（壊れた行は secret 本体で
+    # ありうる）ので、その場合は行番号だけにする。
+    key=$(printf '%s\n' "$line" | sed -n 's/^\([A-Z0-9_][A-Z0-9_]*\)=.*/\1/p')
+
+    if [ -n "$key" ]; then
+      echo "❌ env-guard: $file line $lineno: $key is not encrypted." >&2
+    else
+      echo "❌ env-guard: $file line $lineno is not an encrypted assignment." >&2
+    fi
+    findings=$((findings + 1))
+  done <"$file"
+
+  echo "env-guard: inspected $file"
+done
+
+if [ "$findings" -gt 0 ]; then
+  {
+    echo "❌ env-guard: FAILED — $findings problem(s) in $inspected inspected file(s)."
+    echo "   Encrypt them before committing:  dotenvx encrypt -f <file>"
+  } >&2
+  exit 1
+fi
+
+# 何件検査したかは必ず出す。0 件検査の緑と、N 件検査した緑を、出力だけで
+# 区別できないと「検査した風の緑」に気づけない。
+if [ "$inspected" -eq 0 ]; then
+  echo "env-guard: OK — nothing to inspect (no env file among the $given path(s) given)."
+else
+  echo "env-guard: OK — inspected $inspected file(s), no unencrypted values."
+fi
