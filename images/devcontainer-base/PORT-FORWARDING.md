@@ -108,6 +108,8 @@ Linux ホストでは `127.0.0.0/8` 全体が最初から bind できるため�
 
 `/usr/local/sbin/sshd-inetd` は base イメージが焼いているラッパーで、`/run/sshd`（privilege separation ディレクトリ）を作り、ホスト鍵が無ければ生成してから `sshd -i -e` を exec します。`sshd -i` は inetd モードで、**listen ソケットを持たず** stdin/stdout 上で 1 接続だけを処理します。それを `docker exec -i` のパイプに繋いでいるため、SSH セッションは docker exec チャネルに乗ります。コンテナに TCP の口を開けずに済み、攻撃面が増えません。VS Code の自動転送と実質同じ経路を、ツール非依存で再現しています。
 
+listen ソケットを持たない経路なので、egress-guard の `firewall.json` に `sshdPort` を書く必要はありません。書くと inbound が 1 本開き、`docker exec` を経由しない到達経路が生まれます。egress-guard は 0.2.0 で `sshdPort` を opt-in にし、省略時は sshd 向けの規則を一切出さなくなりました（0.1.x は未指定でも 22 を開けていました）。この雛形では書かないのが正解です。
+
 `-u root` が必要なのは、`sshd` がホスト鍵（`/etc/ssh/ssh_host_*`、root のみ読める）を読むためです。
 
 **ラッパーを経由せず `sshd -i` を直接起動してはいけません。** `docker-compose.yaml` は `/run` を tmpfs にしているため、`/run/sshd` はコンテナを起動するたびに消えます。ラッパーが毎回作り直しているのはこのためで、飛ばすと `Missing privilege separation directory: /run/sshd` で接続が閉じます。原因（ラッパーを通っていないこと）から遠いメッセージなので、`ProxyCommand` にフォールバックを書かないでください。ラッパーが無いイメージに対しては、`docker exec` が `executable file not found` で明示的に失敗するのが正しい壊れ方です。
