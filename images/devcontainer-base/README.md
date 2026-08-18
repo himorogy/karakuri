@@ -47,6 +47,10 @@ base に入れる条件は次のいずれか。
 
 ### 収録物
 
+runtime-base から継承するものを含む。以下で挙げる `ARG` のうち、この Dockerfile が
+持つのは `CRIT_VERSION` と `RUNTIME_BASE_VERSION` だけで、残りは runtime-base 側に
+ある（そちらを上げてから `RUNTIME_BASE_VERSION` の指すタグを取り直す）。
+
 - Node 24（`node:24` 由来）、pnpm（`ARG PNPM_VERSION` で pin）
 - `git` / `gh` / `sudo` / `zsh` / `less` / `procps` / `man-db` / `unzip` / `gnupg2`
 - `jq` / `ripgrep` / `fd-find`（`fd` として PATH に露出）
@@ -163,7 +167,8 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 
 前提として、ワークスペースの内容と lifecycle command が悪意を持たないこと、
 `firewall.json` と egress-guard パッケージのバージョンが管理下にあることを要求する。
-この Dockerfile が `ARG EGRESS_GUARD_VERSION` でバージョンを固定するのはこのため。
+runtime-base の Dockerfile が `ARG EGRESS_GUARD_VERSION` でバージョンを固定するのは
+このため。
 dist-tag のまま追従させると、パッケージ側の更新がそのままコンテナ内 root での
 コード実行になる。
 
@@ -338,8 +343,10 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   ビルド時に落とせる。追従漏れの検知は
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 GitHub releases と照合して
   Slack に出す（導入済み）
-- **`ARG EGRESS_GUARD_VERSION` の更新運用**。egress-guard を上げるには base の再ビルドが
-  要る。Renovate は入れていないので、上げる操作自体は手動のまま。上げ忘れは
+- **`ARG EGRESS_GUARD_VERSION` の更新運用**。この ARG は runtime-base 側にあるので、
+  egress-guard を上げるには runtime-base を再ビルドしてタグを出し直し、こちらを
+  `RUNTIME_BASE_VERSION` の指すタグで取り直す必要がある。Renovate は入れていないので、
+  上げる操作自体は手動のまま。上げ忘れは
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 npm と照合して Slack に出す
 
 ### 判断済み（再検討するときに読む）
