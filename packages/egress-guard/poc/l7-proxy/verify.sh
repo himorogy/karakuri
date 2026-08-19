@@ -106,18 +106,27 @@ check_v3_second_pass() {
 }
 
 check_v4() {
-	local target="anthropic.gallerycdn.vsassets.io"
-	echo "== V4: ワイルドカードACL (.gallerycdn.vsassets.io) で具体名 ($target) が通るか =="
-	if dc exec -T client curl -sS -o /dev/null --max-time 10 "https://$target/"; then
-		ok "V4-1: $target への接続がsquidを通って成立する"
-	else
-		ng "V4-1: $target への接続が失敗した"
-	fi
-	if dc logs egress-proxy 2>&1 | grep -q "$target"; then
-		ok "V4-2: proxyのログに $target がそのまま残る (allowed-domains.txtに書いていない具体名。サフィックスマッチの証拠)"
-	else
-		ng "V4-2: proxyのログに $target が見つからない"
-	fi
+	# 2026-08-19 の段階0の実測で、1つの拡張のインストールが
+	# <publisher>.gallerycdn.vsassets.io と <publisher>.gallery.vsassets.io の
+	# **両方**へCONNECTすることが分かった (allowed-domains.txt のコメント参照)。
+	# 片方だけ通っても拡張は入らないので、両系統を判定する。
+	# publisher 名は allowed-domains.txt に書いていないものを使う
+	# (サフィックスマッチが効いた証拠にするため)。
+	local targets="anthropic.gallerycdn.vsassets.io anthropic.gallery.vsassets.io"
+	echo "== V4: ワイルドカードACL (.gallerycdn / .gallery.vsassets.io) で具体名が通るか =="
+	local target
+	for target in $targets; do
+		if dc exec -T client curl -sS -o /dev/null --max-time 10 "https://$target/"; then
+			ok "V4-1: $target への接続がsquidを通って成立する"
+		else
+			ng "V4-1: $target への接続が失敗した"
+		fi
+		if dc logs egress-proxy 2>&1 | grep -q "$target"; then
+			ok "V4-2: proxyのログに $target がそのまま残る (allowed-domains.txtに書いていない具体名。サフィックスマッチの証拠)"
+		else
+			ng "V4-2: proxyのログに $target が見つからない"
+		fi
+	done
 }
 
 check_v5() {

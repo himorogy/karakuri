@@ -9,7 +9,7 @@
 L3 の実現層（`init-project-firewall.sh` の ipset ベースの allowlist）では表現できない 2 件——
 
 * `spec.md` §9.7: アドレスが動く（CDN drift）ドメインを allowlist に載せられない
-* `known-issues.md` #7: VS Code 拡張の配信 CDN（`*.gallerycdn.vsassets.io`）がワイルドカードを受理できないために allowlist できない
+* `known-issues.md` #7: VS Code 拡張の配信 CDN（`*.gallerycdn.vsassets.io` と `*.gallery.vsassets.io` の 2 系統）がワイルドカードを受理できないために allowlist できない
 
 ——が、SNI-only の L7 proxy を sidecar に置くことで実際に解消するかを確かめます。「L7 で通った」だけでは答えになりません。同じ環境で L3 だと落ちること（V1・V2）を先に示さないと、通った理由が proxy なのか環境差なのか区別できないため、対照実験を先に回す構成になっています。
 
@@ -29,7 +29,7 @@ L3 の実現層（`init-project-firewall.sh` の ipset ベースの allowlist）
 | ファイル | 役割 |
 |---|---|
 | `squid.conf` | 検証対象の Squid 設定。`proxy-selection-research.md` §4 をベースに、`dstdomain -n` を必須で入れてある（`design.md` §2.23 必須要件 2。下記「V6 の判定方法」参照） |
-| `allowed-domains.txt` | `deb.debian.org` と `.gallerycdn.vsassets.io` のみを許可する ACL。本実装での `firewall.json` → この形式への変換処理は対象外（poc-plan.md の未決事項） |
+| `allowed-domains.txt` | `deb.debian.org` と `.gallerycdn.vsassets.io` / `.gallery.vsassets.io` のみを許可する ACL。本実装での `firewall.json` → この形式への変換処理は対象外（poc-plan.md の未決事項） |
 | `Dockerfile.proxy` | Squid の自前ビルド。Docker Official Image が存在しないため。選定理由はファイル内コメント参照 |
 | `docker-compose.poc.yml` | sidecar 構成一式。`egress-proxy`（検証対象）、`client`（`.devcontainer/docker-compose.yml` の `dev` を模した最小クライアント）、`egress-proxy-v6` と `ptr-spoof-harness`（V6 専用、下記参照） |
 | `test-helpers/ptr-spoof-harness.py` | V6 のためだけの使い捨てツール。実装ではない |
@@ -62,7 +62,7 @@ docker compose -f docker-compose.poc.yml down -v
 | V1 | 現行 L3 で `deb.debian.org` が（2 回目に）落ちる対照実験 | `.devcontainer/firewall.json` に `deb.debian.org` を足して再ビルドし、直後と 1〜2 分後に `apt-get update` | **このディレクトリの対象外。** 既存ファイルを変更しないという制約のため、`verify.sh` は行わない。手で `.devcontainer/firewall.json` を編集して確認すること（編集後は元に戻す） |
 | V2 | 現行 L3 で VS Code 拡張が入らない対照実験 | `verification-record.md` §6.23 の手順（enforce と audit を比較） | 同上。対象外、手動 |
 | V3 | proxy 経由で `apt-get update` が（2 回とも）成立する | `verify.sh` が自動判定 | 自動 |
-| V4 | ワイルドカード ACL で拡張配信 CDN が入る | `verify.sh` が `anthropic.gallerycdn.vsassets.io` への接続とログ上の具体名一致を自動判定 | 自動（ただし下記「V4 の限界」参照） |
+| V4 | ワイルドカード ACL で拡張配信 CDN が入る（2 系統とも） | `verify.sh` が `anthropic.gallerycdn.vsassets.io` と `anthropic.gallery.vsassets.io` への接続とログ上の具体名一致を自動判定 | 自動（ただし下記「V4 の限界」参照） |
 | V5 | 未許可ドメインが拒否され、ログにドメイン名が残る | `verify.sh` が自動判定 | 自動 |
 | V6 | 名前の偽装（`dstdomain -n` の PTR 逆引き対策）が通らない | `verify.sh` が自動判定。判定方法は下記「V6 の判定方法」で詳説 | 自動 |
 | V7 | proxy が落ちたら閉じる（I2） | `verify.sh` が proxy 停止後の接続失敗を自動判定 | **部分的に自動。** L3 との統合込みの完全な fail-closed は検証できない（下記「V7 の限界」） |
@@ -77,7 +77,11 @@ docker compose -f docker-compose.poc.yml down -v
 
 ### V4 の限界
 
-`.gallerycdn.vsassets.io` への `curl` 接続の成立とログの具体名一致は確認できますが、**実際の VS Code 拡張インストールの成功は確認していません。** この devcontainer には VS Code Server も `code` / `code-server` CLI も存在しないため（下記「フェーズ1で実測できたこと」参照）、`known-issues.md` #7 が本当に解消するかどうかの最終判定には、VS Code Server が動くホスト環境での実測が別途必要です。
+`verify.sh` が確認するのは 2 系統への `curl` 接続の成立とログの具体名一致までで、**実際の VS Code 拡張インストールの成功は確認しません。** `client` は素の Debian で、VS Code Server が動いていないためです。
+
+**前提のうち 1 つは別途確認済みです。** 2026-08-19 に、VS Code でアタッチした devcontainer に `HTTPS_PROXY` を向けて `test-helpers/connect-sniffer.py` で観測し、**VS Code Server が proxy 設定を読むこと**と、**接続先が 2 系統あること**を実測しました（`known-issues.md` #7）。
+
+**残っているのは「実際に中継したときにインストールが成功するか」です。** sniffer は中継せず 502 を返して切るため、そこまでは分かりません。`known-issues.md` #7 の最終判定には、**Squid を実際に挟んだ状態で VS Code から拡張をインストールする**実測が要ります。
 
 ### V6 の判定方法
 
@@ -164,7 +168,7 @@ TEST-NET-3 は文書用に予約された実在しない帯で、`squid.conf` �
 
 ### 実測できなかったこと
 
-* **§8-9 VS Code Server の拡張ギャラリークライアントが `HTTPS_PROXY` を読むか（最優先項目）。** この devcontainer には `~/.vscode-server` が存在せず、`code` / `code-server` CLI も見つかりませんでした。**この devcontainer は VS Code Remote でアタッチされたセッションではない**ため、ここでは原理的に確認できません。**ホスト側で VS Code から devcontainer にアタッチし、拡張のインストールを試す実測が別途必要です。** `known-issues.md` #7 の解消可否はこの 1 点に懸かっています
+* **§8-9 VS Code Server の拡張ギャラリークライアントが `HTTPS_PROXY` を読むか（最優先項目）。→ 2026-08-19 に解決しました。** このディレクトリを作った環境（`~/.vscode-server` が無く、VS Code Remote でアタッチされていないセッション）では原理的に確認できませんでしたが、**VS Code でアタッチした devcontainer に `HTTPS_PROXY` を向けて `test-helpers/connect-sniffer.py` で観測したところ、読むことが確認できました。** あわせて接続先が 2 系統（`.gallerycdn.vsassets.io` / `.gallery.vsassets.io`）あることも分かり、`allowed-domains.txt` と V4 の判定を両系統に広げてあります。詳細は `known-issues.md` #7 と `design.md` §2.23
 * **§8-1 `http_access deny manager` だけで cache manager が塞がるか。** Squid バイナリが無いため未実行。`verify.sh` に自動判定を組み込んであるので、ホスト側でスタックを起動すればそこで確認できます
 * **§8-2 Squid イメージ候補の保守状況・サイズ。** `hub.docker.com` へこの devcontainer から到達できないため未確認のまま。`Dockerfile.proxy` は Docker Official Image（`debian:bookworm-slim`）+ Debian 本体の `squid` パッケージという、サードパーティ配布イメージに頼らない構成にすることでこの論点を回避しています
 * **§8-3 read-only bind mount + `read_only: true` での Squid 起動。** Squid バイナリが無いため未実行。`docker-compose.poc.yml` は `read_only: true` + 必要な tmpfs を設定した状態で作ってあり、`verify.sh` の起動前提チェックがホスト側で答えを出します

@@ -640,7 +640,7 @@ Squid を例に取ると、`dstdomain` ACL は既定で **IP リテラル宛の�
 
 `git`（https）・`curl`・`apt`・`npm`・`pnpm`・Claude Code はいずれも従います。**ただし大小文字の規則が揃っていません。** `curl` は `http_proxy` を小文字でしか読まず、`apt` も小文字のみです。**大文字と小文字の両方を必ず設定します。**
 
-**VS Code Server の拡張ダウンロードが従うかは未確認です。** 公式ドキュメントが「リモートホストで `HTTP_PROXY` / `HTTPS_PROXY` を設定せよ」と案内している一方、gallery クライアントがそれを読むという明文が見つかりませんでした。**この移行の主目的の一つが拡張の配信 CDN（[`known-issues.md`](./known-issues.md) #7）である以上、着手前に実測すべき最優先項目です。**
+**VS Code Server の拡張ダウンロードが従うかは、この移行の成否を決める一点でした。** 公式ドキュメントが「リモートホストで `HTTP_PROXY` / `HTTPS_PROXY` を設定せよ」と案内している一方、gallery クライアントがそれを読むという明文が無く、読まなければ主目的の一つ（[`known-issues.md`](./known-issues.md) #7）が明示型では解けないためです。**2026-08-19 に実測し、読むことを確認しました**（下記）。
 
 #### 明示型を実測して分かったこと
 
@@ -649,6 +649,27 @@ PoC の作成過程で、この devcontainer 内に自前の TCP リスナを立
 * **必須要件 1 が明示型で構造的に満たされることの裏付けが取れました。** `curl --resolve` は `CONNECT` のトンネル先には効かず、`CONNECT deb.debian.org:443` として名前がそのまま飛びます。**明示型では、クライアント側の操作だけで「名前は A だが接続先は B」という状態を作れません。** 残る攻撃経路は必須要件 2 の PTR 逆引きだけです
 * **`no_proxy` / `NO_PROXY` に `localhost` と `127.0.0.1` を入れるのは必須です。** `HTTPS_PROXY` を広く設定すると、**Claude Code がループバック宛に出す内部通信（hook 通知）まで proxy へ流れます。** 外部 API のためだけの設定ではありません
 * **`pnpm config set proxy` は効きません。** pnpm が読むのは環境変数です。設定キー経由で proxy を指定しても直接接続が成立してしまいます。**環境変数で渡すこと**が前提になります
+
+#### VS Code Server を実測して分かったこと（2026-08-19）
+
+VS Code でアタッチした devcontainer に `HTTPS_PROXY` を設定し、[`../poc/l7-proxy/test-helpers/connect-sniffer.py`](../poc/l7-proxy/test-helpers/connect-sniffer.py) を向けて拡張をインストールしました。
+
+**1. VS Code Server は `HTTPS_PROXY` を読みます。** これでこの移行の前提が成立しました。
+
+**2. 拡張の実体を配るホストは 2 系統あります。** 1 つの拡張のインストールで両方へ `CONNECT` が飛びました。
+
+```
+CONNECT davidanson.gallerycdn.vsassets.io:443
+CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホスト
+```
+
+**[`known-issues.md`](./known-issues.md) #7 は `*.gallerycdn.vsassets.io` だけを挙げていましたが、片方だけでは足りません。** 名前ベースの ACL へ変換する際は両方が要ります。#7 を更新しました。
+
+**3. 副産物 — `enforce` で静かに落ちている通信が見つかりました。** 同じ観測で `www.schemastore.org` と `json.schemastore.org` への `CONNECT` が出ています。**この 2 つは基底プロファイルにも `firewall.json` にも入っていません。** つまり現行の `enforce` 下では遮断されており、JSON スキーマの取得が失敗したまま**エディタは何事もなく動いています。**
+
+これは §2.11 の「`enforce` で支障が出ないことは、その宛先が不要だったことの証明にならない」の実例です。同時に、**proxy のアクセスログが現行の ipset 記録より有用であること**の実例でもあります。ipset には遮断先の IP しか残らず、そこから `schemastore.org` を復元するのは [`measuring-egress.md`](./measuring-egress.md) の手順を踏む作業になります。
+
+**基底プロファイルへ入れるかどうかは別の判断です。** ここでは観測事実として記録するに留めます（何を許可するかの判断基準は [`measuring-egress.md`](./measuring-egress.md)）。
 
 #### 実装候補: Squid（明示型 `CONNECT`、`ssl_bump` なし）
 

@@ -740,7 +740,7 @@ allowlist は**起動時に解決した A レコードの集合**です（§4.5�
 
 **実装候補は Squid（明示型 `CONNECT`、`ssl_bump` なし）です。まだ実測していません。** 選定理由とマイナス点は [`design.md`](./design.md) §2.23。
 
-**着手前に実測すること:** VS Code Server の拡張ダウンロードが `HTTPS_PROXY` に従うか。**この移行の主目的の一つが拡張の配信 CDN（[`known-issues.md`](./known-issues.md) #7）であるため、ここが従わなければ明示型では解決しません。**
+**移行の前提だった「VS Code Server の拡張ダウンロードが `HTTPS_PROXY` に従うか」は、2026-08-19 に実測して確認済みです**（[`known-issues.md`](./known-issues.md) #7、[`design.md`](./design.md) §2.23）。あわせて、**拡張の実体を配るホストが `.gallerycdn.vsassets.io` と `.gallery.vsassets.io` の 2 系統ある**ことが分かっています。名前ベース ACL へ変換する際は両方が要ります。
 
 ### 10.2 entrypoint での起動時 DROP
 
