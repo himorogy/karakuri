@@ -48,6 +48,32 @@ dc() {
 	docker compose -f "$COMPOSE_FILE" "$@"
 }
 
+# client で curl を実行する。**戻り値の 2 が肝。**
+#
+#   0 = curl が成功した
+#   1 = curl は動いたが失敗した (proxy が拒否した、到達できない等)
+#   2 = **判定不能。** curl そのものを実行できなかった (コマンドが無い、
+#       コンテナが動いていない等)
+#
+# 2 を 1 と混ぜてはいけない。「接続が失敗すること」を成功条件にしている項目
+# (V5・V6・V7) では、道具が無くて失敗したのか proxy が拒否したのかを区別
+# しないと ok が偽陽性になる。2026-08-19 の実行で実際にこれが起きた
+# (curl が入らず、V5-1・V6-1・V7-1 が揃って ok になっていた)。
+client_curl() {
+	local out rc
+	out="$(dc exec -T client curl "$@" 2>&1)"
+	rc=$?
+	case "$rc" in
+	126 | 127) return 2 ;;
+	esac
+	# docker exec 自体の失敗は rc が潰れることがあるのでメッセージでも見る。
+	if printf '%s\n' "$out" | grep -qE 'executable file not found|OCI runtime exec failed|is not running'; then
+		return 2
+	fi
+	printf '%s' "$out"
+	return "$rc"
+}
+
 require_docker() {
 	if ! command -v docker >/dev/null 2>&1; then
 		echo "docker が見つからない。このスクリプトはホスト側で実行すること (README.md 参照)。" >&2
@@ -91,16 +117,28 @@ wait_for_stack() {
 	return 1
 }
 
-setup_client() {
-	echo "== client の準備 (curl を proxy 経由で導入する。これ自体が V3 の前半でもある) =="
-	if dc exec -T client sh -c 'apt-get update >/tmp/v3-1.log 2>&1 && apt-get install -y --no-install-recommends curl >>/tmp/v3-1.log 2>&1'; then
-		ok "V3-1: apt-get update && apt-get install curl が proxy 経由で成立する (1回目)"
-	else
-		ng "V3-1: apt-get update / install curl が失敗した (1回目)"
-		dc exec -T client cat /tmp/v3-1.log >&2 || true
-		return 1
+# curl は Dockerfile.client でイメージに焼いてある。道具の導入を検証対象の
+# 経路 (proxy 越しの apt) に依存させると、道具が入らなかったときに以降の判定が
+# 全部「接続失敗」に見えてしまうため。ここではその前提が満たされているかだけを
+# 確かめる。
+require_client_tools() {
+	echo "== client の前提チェック =="
+	if dc exec -T client sh -c 'command -v curl >/dev/null 2>&1'; then
+		ok "前提: client に curl がある"
+		return 0
 	fi
-	return 0
+	ng "前提: client に curl が無い。curl を使う判定 (V4・V5・V6・V7・manager) は成立しない"
+	return 1
+}
+
+check_v3_first_pass() {
+	echo "== V3-1: apt-get update が proxy 経由で成立するか (1回目) =="
+	if dc exec -T client sh -c 'apt-get update >/tmp/v3-1.log 2>&1'; then
+		ok "V3-1: apt-get update が proxy 経由で成立する (1回目)"
+	else
+		ng "V3-1: apt-get update が失敗した (1回目)"
+		dc exec -T client cat /tmp/v3-1.log >&2 || true
+	fi
 }
 
 check_v3_second_pass() {
@@ -126,11 +164,12 @@ check_v4() {
 	echo "== V4: ワイルドカードACL (.gallerycdn / .gallery.vsassets.io) で具体名が通るか =="
 	local target
 	for target in $targets; do
-		if dc exec -T client curl -sS -o /dev/null --max-time 10 "https://$target/"; then
-			ok "V4-1: $target への接続がsquidを通って成立する"
-		else
-			ng "V4-1: $target への接続が失敗した"
-		fi
+		client_curl -sS -o /dev/null --max-time 10 "https://$target/" >/dev/null 2>&1
+		case $? in
+		0) ok "V4-1: $target への接続がsquidを通って成立する" ;;
+		2) skip "V4-1: $target" "client で curl を実行できなかった" ;;
+		*) ng "V4-1: $target への接続が失敗した" ;;
+		esac
 		if dc logs egress-proxy 2>&1 | grep -q "$target"; then
 			ok "V4-2: proxyのログに $target がそのまま残る (allowed-domains.txtに書いていない具体名。サフィックスマッチの証拠)"
 		else
@@ -145,11 +184,12 @@ check_v5() {
 	# ない名前でも安全にテストできる。
 	local target="denied-test.invalid"
 	echo "== V5: allowlist に無いドメイン ($target) が拒否され、ログにドメイン名が残るか =="
-	if dc exec -T client curl -sS -o /dev/null --max-time 8 "https://$target/" 2>/dev/null; then
-		ng "V5-1: 許可していないドメインへの接続が成立してしまった"
-	else
-		ok "V5-1: 許可していないドメインへの接続は失敗する"
-	fi
+	client_curl -sS -o /dev/null --max-time 8 "https://$target/" >/dev/null 2>&1
+	case $? in
+	0) ng "V5-1: 許可していないドメインへの接続が成立してしまった" ;;
+	2) skip "V5-1" "client で curl を実行できなかった。proxy が拒否したのか道具が無いのか区別できない" ;;
+	*) ok "V5-1: 許可していないドメインへの接続は失敗する" ;;
+	esac
 	if dc logs egress-proxy 2>&1 | grep -q "$target"; then
 		ok "V5-2: proxyのログに拒否したドメイン名が残る (audit収集の引き継ぎ先として必須)"
 	else
@@ -171,12 +211,24 @@ check_v6() {
 	# networks: v6-test-net のコメント参照)。
 	local harness_ip="203.0.113.53"
 	echo "== V6: dstdomain -n がPTR偽装を防いでいるか (design.md §2.23 必須要件2) =="
-	dc exec -T client curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
+	client_curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
+	if [ $? -eq 2 ]; then
+		skip "V6-1" "client で curl を実行できなかった。リクエストが飛んでいない以上、harness に接続が来ないのは当然であり判定にならない"
+		return
+	fi
 	sleep 1
+	# **リクエストが proxy まで届いたことを先に確かめる。** これが無いと、
+	# 「victim に接続が来なかった」理由が -n なのか、そもそもリクエストが
+	# 飛ばなかったのか区別できない (2026-08-19 の実行ではこれで ok が
+	# 偽陽性になっていた)。
+	if ! dc logs egress-proxy-v6 2>&1 | grep -q "$harness_ip"; then
+		skip "V6-1" "egress-proxy-v6 のログに $harness_ip 宛のリクエストが無い。proxy まで届いていないため -n の効果を判定できない"
+		return
+	fi
 	if dc logs ptr-spoof-harness 2>&1 | grep -q 'SPOOF SUCCEEDED'; then
 		ng "V6-1: PTR偽装が成立し、victimへの接続が実際に発生した (-n が効いていない)"
 	else
-		ok "V6-1: victim (harness) への接続は発生しなかった"
+		ok "V6-1: リクエストは proxy に届いたが、victim (harness) への接続は発生しなかった"
 	fi
 	if dc logs egress-proxy-v6 2>&1 | grep -qE "TCP_DENIED.*CONNECT $harness_ip"; then
 		ok "V6-2: squidのアクセスログにも該当IPへのdenyが残っている"
@@ -187,9 +239,12 @@ check_v6() {
 
 check_manager_denied() {
 	echo "== 補足 (research 未確認事項1): allowed なホストでも /squid-internal-mgr/ 経由でcache managerに触れないか =="
-	local code
-	code="$(dc exec -T client curl -sS -o /dev/null -w '%{http_code}' --max-time 8 -x http://egress-proxy:3128 'http://deb.debian.org/squid-internal-mgr/info' 2>/dev/null || true)"
-	if [ "$code" = "403" ]; then
+	local code rc
+	code="$(client_curl -sS -o /dev/null -w '%{http_code}' --max-time 8 -x http://egress-proxy:3128 'http://deb.debian.org/squid-internal-mgr/info' 2>/dev/null)"
+	rc=$?
+	if [ "$rc" -eq 2 ]; then
+		skip "manager" "client で curl を実行できなかった"
+	elif [ "$code" = "403" ]; then
 		ok "manager: allowed host 経由でも /squid-internal-mgr/ は403で拒否される"
 	else
 		ng "manager: 期待した403ではなく http_code=$code だった (手動確認を推奨)"
@@ -198,12 +253,25 @@ check_manager_denied() {
 
 check_v7() {
 	echo "== V7: proxyを止めるとproxy経由の経路が失われるか (I2の一部) =="
-	dc stop egress-proxy >/dev/null
-	if dc exec -T client curl -sS -o /dev/null --max-time 6 https://deb.debian.org/ 2>/dev/null; then
-		ng "V7-1: proxy停止後もdeb.debian.orgへ到達できてしまった"
-	else
-		ok "V7-1: proxy停止後はproxy経由の経路が失われる"
+	# 止める前に、同じ経路が生きていることを確かめる。これが無いと「元から
+	# 通っていなかった」場合も ok になる。
+	client_curl -sS -o /dev/null --max-time 10 https://deb.debian.org/ >/dev/null 2>&1
+	local before=$?
+	if [ "$before" -eq 2 ]; then
+		skip "V7-1" "client で curl を実行できなかった"
+		return
 	fi
+	if [ "$before" -ne 0 ]; then
+		skip "V7-1" "proxy を止める前から deb.debian.org へ到達できていない。停止後に失敗しても proxy を止めたためとは言えない"
+		return
+	fi
+	dc stop egress-proxy >/dev/null
+	client_curl -sS -o /dev/null --max-time 6 https://deb.debian.org/ >/dev/null 2>&1
+	case $? in
+	0) ng "V7-1: proxy停止後もdeb.debian.orgへ到達できてしまった" ;;
+	2) skip "V7-1" "client で curl を実行できなかった" ;;
+	*) ok "V7-1: 停止前は到達でき、proxy停止後はproxy経由の経路が失われる" ;;
+	esac
 	skip "V7-2: L3 (init-project-firewall.sh) と組み合わせたときの完全なfail-closed" \
 		"このPoCのclientにはL3制限を課していないため、http_proxyを無視した直接接続まで塞がれることは検証できない。本実装との統合が前提 (README.md参照)"
 	dc start egress-proxy >/dev/null
@@ -260,7 +328,8 @@ main() {
 		exit 1
 	fi
 
-	setup_client || true
+	require_client_tools || true
+	check_v3_first_pass
 	check_v3_second_pass
 	check_v4
 	check_v5

@@ -1,0 +1,32 @@
+# egress-guard L7 proxy PoC — クライアント側 (エージェント役) の Dockerfile
+#
+# .devcontainer の `dev` service を模した最小のクライアント。検証に使う道具
+# (curl) だけを焼き込む。
+#
+# **なぜ curl をイメージに焼くか（2026-08-19 の実測を受けて）:**
+#   当初は素の debian:bookworm-slim を使い、verify.sh が起動後に
+#   `apt-get install curl` していた。これには 2 つの問題があった。
+#
+#   1. apt の取得が client の cap_drop: [ALL] で落ちる。apt は _apt (uid 42) へ
+#      降格して取得するため SETUID / SETGID が要る (Squid が
+#      cache_effective_user へ降格するのと同じ構造の問題)。
+#   2. より悪いことに、curl が入らないと以降の curl を使う判定がすべて
+#      「接続が失敗した」に見え、**proxy が拒否したのか道具が無いのか区別が
+#      つかなくなる。** V5・V6・V7 が偽陽性で ok になっていた。
+#
+#   道具の導入を検証対象の経路 (proxy 越しの apt) に依存させたのが誤りだった。
+#   イメージビルド時に焼けば、この依存が消える。ビルドはホストの通常の
+#   ネットワークで行われるため、proxy の検証には影響しない。
+#
+# **V3 (apt-get update が proxy 経由で成立するか) は引き続き実行時に見る。**
+# それがこの PoC の検証項目そのものなので、ここで apt のインデックスを
+# 焼き込むことはしない。
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# ベースイメージの CMD は bash なので、そのままだと即終了する。
+CMD ["sleep", "infinity"]

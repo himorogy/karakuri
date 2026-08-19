@@ -31,6 +31,7 @@ L3 の実現層（`init-project-firewall.sh` の ipset ベースの allowlist）
 | `squid.conf` | 検証対象の Squid 設定。`proxy-selection-research.md` §4 をベースに、`dstdomain -n` を必須で入れてある（`design.md` §2.23 必須要件 2。下記「V6 の判定方法」参照） |
 | `allowed-domains.txt` | `deb.debian.org` と `.gallerycdn.vsassets.io` / `.gallery.vsassets.io` のみを許可する ACL。本実装での `firewall.json` → この形式への変換処理は対象外（poc-plan.md の未決事項） |
 | `Dockerfile.proxy` | Squid の自前ビルド。Docker Official Image が存在しないため。選定理由はファイル内コメント参照 |
+| `Dockerfile.client` | クライアント（エージェント役）。`curl` を焼き込んである。理由はファイル内コメント（道具の導入を検証対象の経路に依存させない） |
 | `docker-compose.poc.yml` | sidecar 構成一式。`egress-proxy`（検証対象）、`client`（`.devcontainer/docker-compose.yml` の `dev` を模した最小クライアント）、`egress-proxy-v6` と `ptr-spoof-harness`（V6 専用、下記参照） |
 | `test-helpers/ptr-spoof-harness.py` | V6 のためだけの使い捨てツール。実装ではない |
 | `verify.sh` | V3〜V9 を可能な範囲で自動判定するスクリプト。shellcheck クリーン（`shellcheck -x --shell=bash --severity=style verify.sh` で確認済み） |
@@ -149,7 +150,42 @@ egress-proxy-1 exited with code 139      ← SIGSEGV
 
 **`http_port` が 3128 で特権ポートではないため、この構成に不都合はありません。** むしろ root で動く瞬間が無くなる分、当初より攻撃面が小さくなっています。
 
-> **`read_only: true` が成立するかどうかは、これとは別の話です。** capability の問題で起動前に落ちていたため、read-only の可否はまだ判定できていません（`proxy-selection-research.md` §8 未確認事項 3）。次の実行で答えが出ます。
+### 2 回目の実行で分かったこと（2026-08-19）
+
+**Squid は起動しました。`read_only: true` のまま 4 サービスとも running になり、`proxy-selection-research.md` §8 未確認事項 3 に答えが出ました。** read-only bind mount + read-only ルートファイルシステム + `cap_drop: [ALL]` + 非 root で、Squid は動きます。
+
+確かな結果が出た項目:
+
+* **V8（I1: client から ACL ファイルへ到達できない）— PASS**
+* **V9（設定が壊れていると起動しない）— PASS。** 壊れた `squid.conf` で Squid は非 0 終了しました
+
+**一方で、`verify.sh` に判定上の欠陥が見つかりました。** これがこの回の最大の収穫です。
+
+**同じ原因（`cap_drop: [ALL]`）が client 側でも出ました。** apt は `_apt`（uid 42）へ降格して取得するため、`setegid` / `seteuid` に失敗して落ちます。
+
+```
+E: setegid 65534 failed - setegid (1: Operation not permitted)
+E: seteuid 42 failed - seteuid (1: Operation not permitted)
+```
+
+その結果 `curl` が入らず、**curl を使う判定がすべて「接続が失敗した」に見えました。** そして `verify.sh` は失敗の理由を区別していなかったため、次の 3 つが**偽陽性で `ok` になっていました。**
+
+```
+OCI runtime exec failed: exec: "curl": executable file not found in $PATH
+  ok   V5-1: 許可していないドメインへの接続は失敗する
+  ok   V6-1: victim (harness) への接続は発生しなかった
+  ok   V7-1: proxy停止後はproxy経由の経路が失われる
+```
+
+**「接続が失敗すること」を成功条件にする判定は、失敗の理由を区別しなければ意味を持ちません。** 特に V6 は必須要件 2 の関門なので、ここが偽陽性で通るのは看過できません。
+
+行った修正は 3 つです。
+
+1. **client の `cap_drop: [ALL]` を外しました。** client は「エージェントが動くコンテナ」を模したもので、本物の `.devcontainer/docker-compose.yaml` は cap_drop していません（むしろ `cap_add` で `NET_ADMIN` / `NET_RAW` を足しています）。**PoC の client だけを本物より絞ると、検証対象と無関係な失敗が出ます**
+2. **`curl` を `Dockerfile.client` でイメージに焼きました。** 道具の導入を検証対象の経路（proxy 越しの apt）に依存させたのが誤りでした。V3（`apt-get update` が proxy 経由で成立するか）は引き続き実行時に見ます
+3. **`verify.sh` に「判定不能」を導入しました。** `client_curl` ヘルパが、curl を実行できなかった場合（exit 126/127、`executable file not found` 等）を接続失敗と区別して返します。**判定不能なら `ok` も `FAIL` も出さず SKIP します。** あわせて次の 2 つの前提チェックを足しました
+   * **V6**: victim に接続が来なかったことを判定する前に、**リクエストが `egress-proxy-v6` まで届いたこと**をログで確認します。届いていなければ `-n` の効果は判定できません
+   * **V7**: proxy を止める前に、**同じ経路が生きていること**を確認します。元から通っていなければ、停止後に失敗しても proxy を止めたためとは言えません
 
 ### V7 の限界
 
@@ -196,7 +232,7 @@ egress-proxy-1 exited with code 139      ← SIGSEGV
 * **§8-9 VS Code Server の拡張ギャラリークライアントが `HTTPS_PROXY` を読むか（最優先項目）。→ 2026-08-19 に解決しました。** このディレクトリを作った環境（`~/.vscode-server` が無く、VS Code Remote でアタッチされていないセッション）では原理的に確認できませんでしたが、**VS Code でアタッチした devcontainer に `HTTPS_PROXY` を向けて `test-helpers/connect-sniffer.py` で観測したところ、読むことが確認できました。** あわせて接続先が 2 系統（`.gallerycdn.vsassets.io` / `.gallery.vsassets.io`）あることも分かり、`allowed-domains.txt` と V4 の判定を両系統に広げてあります。詳細は `known-issues.md` #7 と `design.md` §2.23
 * **§8-1 `http_access deny manager` だけで cache manager が塞がるか。** Squid バイナリが無いため未実行。`verify.sh` に自動判定を組み込んであるので、ホスト側でスタックを起動すればそこで確認できます
 * **§8-2 Squid イメージ候補の保守状況・サイズ。** `hub.docker.com` へこの devcontainer から到達できないため未確認のまま。`Dockerfile.proxy` は Docker Official Image（`debian:bookworm-slim`）+ Debian 本体の `squid` パッケージという、サードパーティ配布イメージに頼らない構成にすることでこの論点を回避しています
-* **§8-3 read-only bind mount + `read_only: true` での Squid 起動。→ 2026-08-19 に、起動を妨げていた要因が 1 つ判明しました**（下記「起動しなかった原因」）。`read_only` 自体が成立するかは、ホスト側での再実行待ちです
+* **§8-3 read-only bind mount + `read_only: true` での Squid 起動。→ 2026-08-19 に解決しました。成立します。** read-only bind mount + read-only ルートファイルシステム + `cap_drop: [ALL]` + 非 root（uid 13）で Squid は起動します。そこへ至るまでに踏んだ問題は下記「起動しなかった原因」
 * **未確認事項 3（`dstdomain -n` の PTR 偽装再現）。** Squid バイナリが無いため未実行。`verify.sh` の V6 として自動化してあります（上記参照）
 * **§8-13 `nc -X connect` が使えるか（git over ssh 経由の CONNECT）。** `nc` / `netcat` はこの devcontainer に入っていませんでした。ただし git over ssh が `HTTP_PROXY` 系の環境変数を読まないことは `proxy-selection-research.md` §5 が `ssh_config(5)` の一次情報で既に確定させており、これは実測ではなく仕様の話なので優先度は低いままです
 * **git over ssh の `ProxyCommand` 経由での動作。** 上記の理由により未実施

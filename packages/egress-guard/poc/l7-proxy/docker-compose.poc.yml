@@ -63,10 +63,22 @@ services:
   # 本体はこの PoC で変更しない。ここでは検証に要るツール (curl, apt) が
   # 揃っている素の Debian イメージを proxy 経由で使う。
   client:
-    image: debian:bookworm-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.client
     depends_on:
       - egress-proxy
-    cap_drop: [ALL]
+
+    # **cap_drop: [ALL] は書かない。** 2026-08-19 の実測で、これを付けると
+    # apt が _apt (uid 42) へ降格できずに落ちることが分かった
+    #   E: setegid 65534 failed / E: seteuid 42 failed
+    # V3 は「apt-get update が proxy 経由で成立するか」を見る項目なので、
+    # apt が capability の都合で落ちてしまうと検証にならない。
+    #
+    # そもそも client は「エージェントが動くコンテナ」を模したものであり、
+    # 本物の .devcontainer/docker-compose.yaml は cap_drop していない
+    # (むしろ cap_add で NET_ADMIN / NET_RAW を足している)。PoC の client
+    # だけを本物より絞ると、検証対象 (proxy の ACL) と無関係な失敗が出る。
     security_opt: ["no-new-privileges:true"]
     environment:
       # curl は http_proxy を小文字でしか読まない。apt も小文字のみ。
