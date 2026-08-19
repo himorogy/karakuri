@@ -76,8 +76,18 @@ wait_for_stack() {
 		tries=$((tries + 1))
 		sleep 2
 	done
-	ng "起動前提: 一部のサービスが running にならなかった。'docker compose -f docker-compose.poc.yml ps' で確認すること"
-	dc ps || true
+	ng "起動前提: 一部のサービスが running にならなかった"
+	# 失敗したサービスは 'ps' の既定 (running のみ) に出てこないので -a で出す。
+	# ここでログまで出さないと、利用者が手で logs を叩き直すことになる。
+	echo "--- docker compose ps -a ---" >&2
+	dc ps -a >&2 || true
+	local svc
+	for svc in egress-proxy egress-proxy-v6 ptr-spoof-harness client; do
+		echo "--- logs: $svc ---" >&2
+		dc logs --no-log-prefix --tail 40 "$svc" >&2 2>&1 || true
+	done
+	echo "--- squid の設定チェック (fatalf の行が出るはず) ---" >&2
+	dc run --rm --entrypoint squid egress-proxy -k parse -f /etc/squid/squid.conf >&2 2>&1 || true
 	return 1
 }
 
