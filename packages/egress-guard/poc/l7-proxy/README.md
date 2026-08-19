@@ -6,7 +6,7 @@
 
 **これは未検証の PoC であり、egress-guard の実装ではありません。** `packages/egress-guard/scripts/` 配下の本体には一切触れておらず、ここにあるものは `packages/egress-guard/docs/spec.md` §10.1 の L7 proxy 移行に着手する前に、[`docs/design.md`](../../docs/design.md) §2.23 の判断（sidecar 配置・明示型 CONNECT・TLS 非終端）が実際に成立するかを確かめるための使い捨て検証環境です。ここの `squid.conf` / `docker-compose.poc.yml` をそのまま本実装へ持ち込むことは想定していません。
 
-検証項目 V1〜V10 の定義は [`poc-plan.md`](#出典) にあります（本 PoC 用に scratchpad からこのディレクトリへ内容を引き継いでいます。原本は `packages/egress-guard/docs/verification-record.md` §6.24 として本編へ移すまでの作業用ファイルです）。
+**検証項目 V1〜V10 の定義は下記「V1〜V10 の判定方法」にあります。** 実行記録は [`../../docs/verification-record.md`](../../docs/verification-record.md) §6.24 として本編へ移してあります。
 
 ## この PoC が答える問い
 
@@ -38,6 +38,7 @@ L3 の実現層（`init-project-firewall.sh` の ipset ベースの allowlist）
 | `Dockerfile.client` | クライアント（エージェント役）。`curl` を焼き込んである。理由はファイル内コメント（道具の導入を検証対象の経路に依存させない） |
 | `docker-compose.poc.yml` | sidecar 構成一式。`egress-proxy`（検証対象）、`client`（`.devcontainer/docker-compose.yml` の `dev` を模した最小クライアント）、`egress-proxy-v6` と `ptr-spoof-harness`（V6 専用、下記参照） |
 | `test-helpers/ptr-spoof-harness.py` | V6 のためだけの使い捨てツール。実装ではない |
+| `proxy-selection-research.md` | proxy 実装の選定調査（2026-08-04）。`squid.conf` のコメントはこの文書の節番号を参照している |
 | `verify.sh` | V3〜V9 を可能な範囲で自動判定するスクリプト。shellcheck クリーン（`shellcheck -x --shell=bash --severity=style verify.sh` で確認済み） |
 
 `.devcontainer/docker-compose.yml`（本体）は読むだけで変更していません。`docker-compose.poc.yml` は別ファイルとして独立に起動・破棄できます。
@@ -245,7 +246,8 @@ OCI runtime exec failed: exec: "curl": executable file not found in $PATH
 
 ## 出典
 
-* `proxy-selection-research.md`、`poc-plan.md` — セッションの scratchpad にある調査結果と検証項目定義（このリポジトリには同梱していません。作業時の一次資料です）
+* [`proxy-selection-research.md`](./proxy-selection-research.md) — proxy 実装の選定調査（2026-08-04）。`squid.conf` のコメントが参照している節番号はこの文書のものです
+* `poc-plan.md` — 検証項目 V1〜V10 の定義。**内容はこの README に引き継いだため、同梱していません**
 * [`../../docs/design.md`](../../docs/design.md) §2.23 — sidecar 配置・TLS 非終端の設計判断
 * [`../../docs/spec.md`](../../docs/spec.md) §9.7、§10.1
 * [`../../docs/known-issues.md`](../../docs/known-issues.md) #7
