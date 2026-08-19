@@ -121,51 +121,56 @@ jobs:
             fi
           done
 
-          # --- 3. base image が pin している egress-guard の版 ---
+          # --- 3. runtime-base が pin している egress-guard の版 ---
           # egress-guard のスクリプト本体は base image に焼かれており、
-          # プロジェクト側から差し替えられない。上げるレバーは base の ARG しか
-          # ないため、上げ忘れると全プロジェクトが古い版のまま動き続ける。
+          # プロジェクト側から差し替えられない。上げるレバーは runtime-base の
+          # ARG しかないため、上げ忘れると全プロジェクトが古い版のまま動き続ける。
           # 落ちるのはセキュリティ制御そのものなので、乖離をここで見る。
-          BASE_DOCKERFILE="images/devcontainer-base/Dockerfile"
+          RUNTIME_BASE_DOCKERFILE="images/runtime-base/Dockerfile"
           GUARD_PACKAGE="@himorogy/egress-guard"
 
-          if [ -f "$BASE_DOCKERFILE" ]; then
-            TEXT="${TEXT}*devcontainer-base*\n"
+          if [ -f "$RUNTIME_BASE_DOCKERFILE" ]; then
+            TEXT="${TEXT}*runtime-base*\n"
 
-            PINNED=$(sed -n 's/^ARG EGRESS_GUARD_VERSION=//p' "$BASE_DOCKERFILE" | head -1)
+            PINNED=$(sed -n 's/^ARG EGRESS_GUARD_VERSION=//p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
             GUARD_LATEST=$(npm view "$GUARD_PACKAGE" version 2>/dev/null) || GUARD_LATEST=""
 
             if [ -z "$PINNED" ]; then
-              TEXT="${TEXT}⚠️ ${BASE_DOCKERFILE} から ARG EGRESS_GUARD_VERSION を読めない\n\n"
+              TEXT="${TEXT}⚠️ ${RUNTIME_BASE_DOCKERFILE} から ARG EGRESS_GUARD_VERSION を読めない\n\n"
               escalate warn
             elif [ -z "$GUARD_LATEST" ]; then
               TEXT="${TEXT}⚠️ ${GUARD_PACKAGE} の最新版を取得できない\n\n"
               escalate warn
             elif [ "$PINNED" != "$GUARD_LATEST" ]; then
-              TEXT="${TEXT}⚠️ egress-guard の pin が ${PINNED}、最新は ${GUARD_LATEST}。base の再ビルドが要る\n\n"
+              TEXT="${TEXT}⚠️ egress-guard の pin が ${PINNED}、最新は ${GUARD_LATEST}。runtime-base の再ビルドが要る\n\n"
               escalate warn
             else
               TEXT="${TEXT}✅ egress-guard ${PINNED} は最新\n\n"
             fi
+          fi
 
-            # --- 4. base image が pin している crit の版 ---
-            # crit は無認証でリポジトリを読め agent_cmd を起動しうるため、
-            # latest 追従にはせず ARG で pin している（侵害リリースの自動流入を
-            # 防ぐ。egress-guard の pin と同じ判断）。かわりに追従漏れをここで見る。
-            CRIT_REPO="tomasz-tomczyk/crit"
+          # --- 4. devcontainer-base が pin している crit の版 ---
+          # crit は無認証でリポジトリを読め agent_cmd を起動しうるため、
+          # latest 追従にはせず ARG で pin している（侵害リリースの自動流入を
+          # 防ぐ。egress-guard の pin と同じ判断）。かわりに追従漏れをここで見る。
+          DEVCONTAINER_BASE_DOCKERFILE="images/devcontainer-base/Dockerfile"
+          CRIT_REPO="tomasz-tomczyk/crit"
 
-            CRIT_PINNED=$(sed -n 's/^ARG CRIT_VERSION=//p' "$BASE_DOCKERFILE" | head -1)
+          if [ -f "$DEVCONTAINER_BASE_DOCKERFILE" ]; then
+            TEXT="${TEXT}*devcontainer-base*\n"
+
+            CRIT_PINNED=$(sed -n 's/^ARG CRIT_VERSION=//p' "$DEVCONTAINER_BASE_DOCKERFILE" | head -1)
             CRIT_LATEST=$(gh api "repos/${CRIT_REPO}/releases/latest" \
               --jq .tag_name 2>/dev/null) || CRIT_LATEST=""
 
             if [ -z "$CRIT_PINNED" ]; then
-              TEXT="${TEXT}⚠️ ${BASE_DOCKERFILE} から ARG CRIT_VERSION を読めない\n\n"
+              TEXT="${TEXT}⚠️ ${DEVCONTAINER_BASE_DOCKERFILE} から ARG CRIT_VERSION を読めない\n\n"
               escalate warn
             elif [ -z "$CRIT_LATEST" ]; then
               TEXT="${TEXT}⚠️ ${CRIT_REPO} の最新リリースを取得できない\n\n"
               escalate warn
             elif [ "$CRIT_PINNED" != "$CRIT_LATEST" ]; then
-              TEXT="${TEXT}⚠️ crit の pin が ${CRIT_PINNED}、最新は ${CRIT_LATEST}。base の再ビルドが要る\n\n"
+              TEXT="${TEXT}⚠️ crit の pin が ${CRIT_PINNED}、最新は ${CRIT_LATEST}。devcontainer-base の再ビルドが要る\n\n"
               escalate warn
             else
               TEXT="${TEXT}✅ crit ${CRIT_PINNED} は最新\n\n"
