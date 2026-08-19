@@ -789,7 +789,9 @@ README は「`dockerComposeFile` を使うと `runArgs` は無視される」と
 >
 > **`enforce` では 2 つ足りません。** `gallerycdn` の遮断と整合します。
 >
-> **ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、この差がどこから来るのかは未確認です（別経路で取得しているのか、キャッシュから復元されたのか）。**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
+> **ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
+>
+> **この差の出どころには 2026-08-19 に説明がつきました**（§6.24 の「副産物」）。`gallery.vsassets.io` が `marketplace.visualstudio.com` と同じアドレスを返すため、IP でしか判定しない L3 ではそちらだけが通ります。仮説の域は出ていません。
 
 ---
 
@@ -848,6 +850,50 @@ W: Some index files failed to download. They have been ignored, or old ones used
 **この出力は §9.7 の当初の記録より情報量があります。** CNAME 先の名前（`debian.map.fastlydns.net`）と、**起動時スナップショットに入っていなかった実際の接続先 IP（`199.232.162.132`）**が両方見えています。allowlist が「起動時に解決した A レコードの集合」であることの帰結が、そのままエラーメッセージに出た形です。
 
 **V3-2（proxy 経由なら 90 秒後も成立）と並べて、対照が取れました。** L7 で通った理由が proxy であって環境差ではないことが確定します。
+
+#### 通しの検証 — Squid 越しに VS Code 拡張が入りました
+
+**V4 が確かめたのは `curl` での接続成立までで、「実際に拡張が入るか」は別の問いでした。** [`known-issues.md`](./known-issues.md) #7 の解消可否はそこに懸かっていたため、通しで確かめました。
+
+**手順:** PoC の Squid を残したまま、VS Code でアタッチしている devcontainer を PoC のネットワークへ繋ぎ、`HTTPS_PROXY` をその Squid へ向けて拡張をインストールしました。
+
+> **`mode` は `audit` にしています。** `enforce` のままだと devcontainer から Squid へ到達できません。Squid の IP は Compose ブリッジ上の RFC1918 で、I6（私設アドレスは allowlist に載らない）が効くためです。**これは L7 移行後に「proxy 宛のみ許可」の縮小テーブルが解決する部分**で、その実装がまだ無いための代用です。
+>
+> **`audit` にすると proxy を無視した直接接続でも拡張は入ってしまいます。** したがって「拡張が入ったこと」は判定になりません。**判定は proxy のアクセスログです。**
+
+**結果:**
+
+```
+172.28.0.5 TCP_TUNNEL/200  95204 CONNECT davidanson.gallerycdn.vsassets.io:443 - HIER_DIRECT/23.52.106.41
+172.28.0.5 TCP_TUNNEL/200   8436 CONNECT davidanson.gallery.vsassets.io:443    - HIER_DIRECT/150.171.74.16
+172.28.0.5 TCP_TUNNEL/200 358055 CONNECT davidanson.gallerycdn.vsassets.io:443 - HIER_DIRECT/23.52.106.41
+172.28.0.5 TCP_TUNNEL/200  15377 CONNECT davidanson.gallerycdn.vsassets.io:443 - HIER_DIRECT/23.52.106.41
+```
+
+* **クライアントは `172.28.0.5`** — V4 のときの PoC client（`172.28.0.3`）とは別で、時刻も約 68 分後。devcontainer からのアクセスです
+* **358 KB の転送** — カタログ API の応答ではなく VSIX の実体です
+* **2 系統とも `TCP_TUNNEL/200`** — どちらも拒否されずに中継されています
+* **`HIER_DIRECT/<IP>`** — Squid が上流 proxy を使わず、**自分で名前を解決した先へ直接接続**しています（[`design.md`](./design.md) §2.23 必須要件 1 が動いている証跡）
+
+**[`known-issues.md`](./known-issues.md) #7 は、L7 proxy 移行で解消することが実証されました。** 項目そのものは実装が入るまで残ります。
+
+#### 副産物 — §6.23 の未解明点に説明がつきました
+
+§6.23 は「`enforce` でも 2 つは入っており、この差がどこから来るのかは未確認」と書いていました。**上のログの接続先アドレスが手がかりになります。**
+
+```
+davidanson.gallerycdn.vsassets.io → 23.52.106.41     (Akamai)
+davidanson.gallery.vsassets.io    → 150.171.74.16
+marketplace.visualstudio.com      → 150.171.73.16 / 150.171.74.16   （#7 の 2026-08-03 の記録）
+```
+
+**`gallery.vsassets.io` は `marketplace.visualstudio.com` と同じアドレスを返しています。**
+
+`marketplace.visualstudio.com` は基底プロファイルの `vscode` バンドルに入っているため、そのアドレスは ipset に載ります。**IP でしか判定しない L3 では、`gallery.vsassets.io` 宛の通信が「たまたま同じアドレスだから」通ります。** `gallerycdn`（Akamai、別系統）だけが落ちる、という非対称がここから説明できます。
+
+**これは仮説です。** 観測しているのは「両者が同じアドレスを返した」ことだけで、`enforce` 下でどちらの経路が成否を分けたかを直接確かめたわけではありません。ただし §6.23 の「一部だけ入る」という挙動と整合します。
+
+**この形は [`design.md`](./design.md) §2.10 が挙げた「正しく解決できたようにしか見えない」の親戚です。** allowlist に書いていない名前が、書いてある別の名前と同じアドレスを共有しているために通る。**名前で判定する層に移せば、この偶然への依存も消えます。**
 
 #### 確かめられていないこと（SKIP）
 

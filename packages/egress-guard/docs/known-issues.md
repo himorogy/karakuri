@@ -141,7 +141,11 @@ allowlist に載せる手段が両方とも塞がっています。
 
 **この項目の核である「ワイルドカードが書けないから allowlist できない」は、名前で判定する層に移せば解消します。**
 
-**残っているのは 1 つだけです。** PoC が確かめたのは `curl` での接続成立までで、**Squid を実際に挟んだ状態で VS Code から拡張をインストールしたわけではありません。** proxy 追従（上記）と ACL の成立（PoC）が別々に確認できている以上、通る見込みは高いものの、**通しでの実測はまだです。**
+**通しでも確認しました（同日）。** VS Code でアタッチした devcontainer から Squid 越しに拡張をインストールし、proxy のアクセスログに 2 系統とも `TCP_TUNNEL/200` が残ることを確かめています（[`verification-record.md`](./verification-record.md) §6.24）。**この項目は L7 proxy 移行で解消することが実証されました。**
+
+**項目としては、実装が入るまでここに残します。** 現時点で存在するのは PoC であって、`init-project-firewall.sh` の縮小も `firewall.json` からの ACL 変換もまだありません。
+
+> **あわせて分かったこと:** `gallery.vsassets.io` は `marketplace.visualstudio.com` と同じアドレスを返します。上の 2026-08-03 の表で「重なりがありません」としたのは `gallerycdn` 側についてであり、**`gallery` 側は重なっていました。** `enforce` でも一部の拡張が入る理由がここから説明できます（[`verification-record.md`](./verification-record.md) §6.24 の副産物）。
 
 コンテナ内に DNS 連動の allowlist を挟む案でも解消しますが、**別の理由で却下しました**（[`design.md`](./design.md) §2.20）。
 
