@@ -702,7 +702,17 @@ I1 の直接のコストです。`--check-config` で内容の検証だけは再
 
 allowlist は**起動時に解決した A レコードの集合**です（§4.5）。したがって `allowDomains` が成立するのは、**アドレスがその起動の間ずっと変わらないドメインに限られます。**
 
-`deb.debian.org`（Fastly、**TTL 25 秒**）で実測しています。適用時に取ったスナップショットと、その 1 分後に `apt` が実際に接続した先が食い違い、`No route to host` になりました。**`allowDomains` に書いてあるのに落ちる**という形で現れ、同じ日に `nodejs.org` は通っています。**CDN の性質によって成否が分かれます。** 「書けば通る」とは限らないという意味で、これは §9.1（ワイルドカード不可）と同じ性質の制限です。
+`deb.debian.org`（Fastly、**TTL 25 秒**）で実測しています。適用時に取ったスナップショットと、その 1 分後に `apt` が実際に接続した先が食い違い、`No route to host` になりました。
+
+**2026-08-19 に再現しています**（[`verification-record.md`](./verification-record.md) §6.24）。適用直後は成功し、約 4 分後に次のエラーになりました。
+
+```
+Err:1 http://deb.debian.org/debian bookworm InRelease
+  Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
+  - connect (113: No route to host)
+```
+
+**CNAME 先（`debian.map.fastlydns.net`）と、スナップショットに入っていなかった接続先アドレス（`199.232.162.132`）が両方見えています。** allowlist が「起動時に解決した A レコードの集合」であることの帰結が、そのままエラーに出た形です。**`allowDomains` に書いてあるのに落ちる**という形で現れ、同じ日に `nodejs.org` は通っています。**CDN の性質によって成否が分かれます。** 「書けば通る」とは限らないという意味で、これは §9.1（ワイルドカード不可）と同じ性質の制限です。
 
 現行実現層（L3 の IP 集合）の制限であり、実現層の交代（§10.1）で消えます。**コンテナ内に DNS 連動の allowlist を挟む案は却下しました**（[`design.md`](./design.md) §2.20）。実害の詳細は [`../README.md`](../README.md) の「アドレスが動くドメインは `allowDomains` に書けません」。
 

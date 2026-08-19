@@ -815,9 +815,43 @@ README は「`dockerComposeFile` を使うと `runArgs` は無視される」と
 | manager | ok | `http_access deny manager` だけで `/squid-internal-mgr/` が 403 になる |
 | 起動前提 | ok | **`read_only: true` + read-only bind mount + `cap_drop: [ALL]` + 非 root で Squid が起動する** |
 
+#### V1（対照実験）— 同じ日に L3 側で再現しました
+
+**「L7 で通った」だけでは答えになりません。** 同じホスト・同じ日に「L3 だと落ちる」ことを示さなければ、通った理由が proxy なのか環境差なのか区別できません。V1 はそのための対照実験です。
+
+**実施環境:** 同じホスト（macOS / Docker Desktop）、同じ日。ただし**別のコンテナ**です — PoC のスタックではなく、`egress-guard` を `enforce` で適用している通常の devcontainer（`allowDomains` に `deb.debian.org` を含む構成）で行いました。比較したいのは実現層であって、コンテナの同一性ではありません。
+
+**非特権ユーザーでは検証になりません。** `apt-get update` は「①既存 lists を読む → ②lock を取る → ③取得」の順に進み、非 root では②で落ちます。
+
+```
+Reading package lists... Done
+E: Could not open lock file /var/lib/apt/lists/lock - open (13: Permission denied)
+```
+
+**この形は「通った」でも「落ちた」でもなく、HTTP リクエストが一度も発生していません。** ホストから `docker exec -u root` で叩く必要があります。
+
+**結果:**
+
+```
+# 1 回目（firewall 適用後）
+Hit:1 http://deb.debian.org/debian bookworm InRelease
+
+# 約 4 分後
+Err:1 http://deb.debian.org/debian bookworm InRelease
+  Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
+  - connect (113: No route to host)
+W: Some index files failed to download. They have been ignored, or old ones used instead.
+```
+
+**`No route to host`。[`spec.md`](./spec.md) §9.7 に記録されている失敗と同じ形が再現しました。**
+
+**この出力は §9.7 の当初の記録より情報量があります。** CNAME 先の名前（`debian.map.fastlydns.net`）と、**起動時スナップショットに入っていなかった実際の接続先 IP（`199.232.162.132`）**が両方見えています。allowlist が「起動時に解決した A レコードの集合」であることの帰結が、そのままエラーメッセージに出た形です。
+
+**V3-2（proxy 経由なら 90 秒後も成立）と並べて、対照が取れました。** L7 で通った理由が proxy であって環境差ではないことが確定します。
+
 #### 確かめられていないこと（SKIP）
 
-* **V1・V2（L3 側の対照実験）— 未実施。** 「L7 で通った」ことは示せましたが、**同じホスト・同じ日に「L3 だと落ちる」ことは示していません。** §9.7 には別日の実測記録がありますが、この回の結果と直接は突き合わせていません
+* **V2（`enforce` と `audit` で入る拡張を比べる対照実験）— 未実施**
 * **V7-2** — L3（`init-project-firewall.sh` の縮小後のテーブル）と組み合わせた完全な fail-closed。PoC の client には L3 制限を課していないため、`http_proxy` を無視した直接接続まで塞がれることは検証できていません
 * **V8-2** — ACL 変更に再ビルド相当の操作が要ることの目視確認
 * **V10** — 明示型を採ったため検証項目から外れました（[`design.md`](./design.md) §2.23 必須要件 3）

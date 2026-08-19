@@ -1,7 +1,8 @@
 # L7 proxy PoC（sidecar 版）
 
 > **2026-08-19 の実行結果: PASS=16 FAIL=0 SKIP=5。** V3〜V9 と補助項目がすべて通りました。記録は [`../../docs/verification-record.md`](../../docs/verification-record.md) §6.24。
-> **未実施は V1・V2（L3 側の対照実験）と、Squid を挟んだ状態での VS Code 拡張の実インストールです。**
+> **V1（L3 側の対照実験）も同じ日に再現しました** — 適用直後は成功し、約 4 分後に `No route to host`。
+> **未実施は V2 と、Squid を挟んだ状態での VS Code 拡張の実インストールです。**
 
 **これは未検証の PoC であり、egress-guard の実装ではありません。** `packages/egress-guard/scripts/` 配下の本体には一切触れておらず、ここにあるものは `packages/egress-guard/docs/spec.md` §10.1 の L7 proxy 移行に着手する前に、[`docs/design.md`](../../docs/design.md) §2.23 の判断（sidecar 配置・明示型 CONNECT・TLS 非終端）が実際に成立するかを確かめるための使い捨て検証環境です。ここの `squid.conf` / `docker-compose.poc.yml` をそのまま本実装へ持ち込むことは想定していません。
 
@@ -63,7 +64,7 @@ docker compose -f docker-compose.poc.yml down -v
 
 | 項目 | 内容 | 判定方法 | このリポジトリでの扱い |
 |---|---|---|---|
-| V1 | 現行 L3 で `deb.debian.org` が（2 回目に）落ちる対照実験 | `.devcontainer/firewall.json` に `deb.debian.org` を足して再ビルドし、直後と 1〜2 分後に `apt-get update` | **このディレクトリの対象外。** 既存ファイルを変更しないという制約のため、`verify.sh` は行わない。手で `.devcontainer/firewall.json` を編集して確認すること（編集後は元に戻す） |
+| V1 | 現行 L3 で `deb.debian.org` が（2 回目に）落ちる対照実験 | `firewall.json` に `deb.debian.org` を足して再ビルドし、直後と数分後に **`docker exec -u root <container> apt-get update`**（非 root では lock で落ちて HTTP に到達しない） | **このディレクトリの対象外**（`verify.sh` は既存ファイルを変更しない方針）。**2026-08-19 に実施し再現済み** — `verification-record.md` §6.24 |
 | V2 | 現行 L3 で VS Code 拡張が入らない対照実験 | `verification-record.md` §6.23 の手順（enforce と audit を比較） | 同上。対象外、手動 |
 | V3 | proxy 経由で `apt-get update` が（2 回とも）成立する | `verify.sh` が自動判定 | 自動 |
 | V4 | ワイルドカード ACL で拡張配信 CDN が入る（2 系統とも） | `verify.sh` が `anthropic.gallerycdn.vsassets.io` と `anthropic.gallery.vsassets.io` への接続とログ上の具体名一致を自動判定 | 自動（ただし下記「V4 の限界」参照） |
