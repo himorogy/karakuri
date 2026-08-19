@@ -250,7 +250,13 @@ main() {
 	fi
 
 	if ! wait_for_stack; then
-		dc down -v >/dev/null 2>&1 || true
+		# 起動に失敗したときこそ手で中を見たい。KEEP_UP=1 なら畳まない。
+		if [ "$KEEP_UP" = "1" ]; then
+			echo "KEEP_UP=1 のためスタックを残す。片付けは 'docker compose -f $COMPOSE_FILE down -v' で。" >&2
+		else
+			echo "スタックを畳む。残して調べるなら KEEP_UP=1 で再実行すること。" >&2
+			dc down -v >/dev/null 2>&1 || true
+		fi
 		exit 1
 	fi
 
