@@ -722,7 +722,7 @@ Err:1 http://deb.debian.org/debian bookworm InRelease
 
 **将来拡張は「I1〜I7 を保存したまま、実現層を替える・足す提案」として記述します。** 各提案には、(a) 何が解消するか、(b) 各不変条件がどう保存・強化されるか、(c) 増えるコスト、を明記します。不変条件を弱める提案はここには置かず、§1 の不変条件の書き換えを伴う仕様変更として扱います（§7 の項目 9）。
 
-### 10.1 L7 proxy 移行（本命・実現層の交代はこれ一本）
+### 10.1 L7 proxy 移行（本命。既定の実現層をこちらにする）
 
 **sidecar コンテナ**に proxy を置き、本スクリプトは「proxy 宛 + DNS 固定のみ許可」へ縮小する。ドメイン ACL は proxy 側の per-project 設定へ移す。**proxy は TLS を終端せず、ClientHello の SNI と平文 HTTP の Host ヘッダだけで判定する**（以下 SNI-only）。配置と TLS を終端しない判断の根拠は [`design.md`](./design.md) §2.23。
 
@@ -749,6 +749,16 @@ Err:1 http://deb.debian.org/debian bookworm InRelease
 4. **管理ポート・メトリクスポートを開かない。** sidecar は同一ネットワーク上のコンテナから到達可能です
 
 **実装候補は Squid（明示型 `CONNECT`、`ssl_bump` なし）です。** 選定理由とマイナス点は [`design.md`](./design.md) §2.23。**上の必須要件 1〜4 が満たされること、および §9.1・§9.7 が実際に解消することは PoC で確認済みです**（2026-08-19、[`verification-record.md`](./verification-record.md) §6.24）。**残っているのは L3 側との統合**（縮小後のテーブルと組み合わせた fail-closed）**と、同じ日の対照実験**（L3 だと落ちることの再現）です。
+
+#### L3 の allowlist 方式も選択肢として残す
+
+**当初は「実現層の交代」として L3 を置き換える想定でしたが、併存に改めました。** sidecar の Squid がアイドル時に 162 MiB を常駐するためです（実測は [`verification-record.md`](./verification-record.md) §6.24、判断の根拠は [`design.md`](./design.md) §2.24）。
+
+* `firewall.json` に実現層を明示するフィールドを置き、**省略時は L7**。L3 は書かないと選べません
+* **`l3` を選んだ場合、§9.1（ワイルドカード不可）と §9.7（CDN drift）が限界として残ります。** 適用ログにその旨を出します
+* スクリプトは 1 本のまま。分岐は最終テーブルの構成だけで、バリデーション・panic テーブル・DNS 固定・IPv6・記録は共通です
+
+**I1〜I7 はどちらの実現層でも保存されます。** 変わるのは I7 の限界（表現できないもの）だけです。
 
 **移行の前提だった「VS Code Server の拡張ダウンロードが `HTTPS_PROXY` に従うか」は、2026-08-19 に実測して確認済みです**（[`known-issues.md`](./known-issues.md) #7、[`design.md`](./design.md) §2.23）。あわせて、**拡張の実体を配るホストが `.gallerycdn.vsassets.io` と `.gallery.vsassets.io` の 2 系統ある**ことが分かっています。名前ベース ACL へ変換する際は両方が要ります。
 
