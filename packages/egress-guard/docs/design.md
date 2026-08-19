@@ -684,6 +684,10 @@ CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホ�
 * **管理系ポートが既定で閉じています。** `icp_port` / `snmp_port` / `htcp_port` はいずれも既定 0 です。cache manager は独立ポートではなく `http_port` 上のインバンドのため、`http_access deny manager` で塞ぎます（**この 1 行で十分かは未検証**）
 * **拒否ログにドメイン名が残ります。** 既定の logformat の `%ru` に `CONNECT host:port` が入るため、`audit` モードでの収集を現行の ipset 記録より高い情報量で引き継げます（時刻・許可分も残ります）
 
+**特権を持たせずに動くことは実測しました（2026-08-19）。** この節の前提は「SNI proxy は ipset を書かないので特権を必要としない」ことですが、Squid には 1 つ注意があります。**root で起動すると `cache_effective_user`（Debian の既定は `proxy`）へ降格しようとし、`CAP_SETUID` / `CAP_SETGID` が無い環境では降格に失敗して落ちます。** PoC では全 capability を落としているため、これを踏みました。
+
+**降格のために特権を戻すのではなく、最初から非 root で起動する形にしました。** 降格処理そのものが行われなくなり、`cap_drop: [ALL]` のまま動きます。`http_port` は特権ポートではないため不都合はありません。**この節の前提は保たれています。**
+
 **正直なマイナス点:**
 
 * **Docker Official Image が存在しません。** 自前ビルドと digest でのピン留めが要ります。§2.21 で Feature 化を却下した理由（サプライチェーン面が増える）と同じ問題が、ここでは避けられない形で現れます

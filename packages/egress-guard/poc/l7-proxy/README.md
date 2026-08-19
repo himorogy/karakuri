@@ -126,6 +126,31 @@ TEST-NET-3 は文書用に予約された実在しない帯で、`squid.conf` �
 
 この PoC は明示型なので、**確かめるべき挙動が存在しません。** `verify.sh` はこの理由を明示して SKIP します。透過型を採る場合にのみ問題になる項目です。
 
+### 起動しなかった原因（2026-08-19、修正済み）
+
+**最初にホストで回したとき、Squid の 2 サービスだけが起動しませんでした。** `client` と `ptr-spoof-harness` は上がっており、Compose もネットワークも正常でした。
+
+```
+ALERT: setgid: (1) Operation not permitted
+ALERT: initgroups: unable to set groups for User proxy and Group 13
+（延々と繰り返し）
+egress-proxy-1 exited with code 139      ← SIGSEGV
+```
+
+**原因は `cap_drop: [ALL]` です。** Squid は root で起動したあと `cache_effective_user`（Debian の既定は `proxy`、uid 13）へ降格しようとします。これには `CAP_SETUID` と `CAP_SETGID` が要りますが、sidecar は全 capability を落として動かしているため降格に失敗し、最終的に落ちていました。
+
+**`cap_add: [SETUID, SETGID]` で戻す修正は採りませんでした。** `design.md` §2.23 は「SNI proxy は ipset を書かないので特権を必要としない」ことを sidecar 配置の根拠にしています。降格のためだけに特権を持たせると、その根拠と食い違います。
+
+**採った修正は「降格させない」です。** 最初から uid 13 で起動すれば、Squid は降格処理そのものを行いません。
+
+* `docker-compose.poc.yml` の両 Squid サービスに `user: "13:13"`
+* `Dockerfile.proxy` に `USER proxy`（compose を経由せず `docker run` しても同じ条件になるように）
+* tmpfs は既定で root 所有になるため、`uid=13,gid=13` を明示
+
+**`http_port` が 3128 で特権ポートではないため、この構成に不都合はありません。** むしろ root で動く瞬間が無くなる分、当初より攻撃面が小さくなっています。
+
+> **`read_only: true` が成立するかどうかは、これとは別の話です。** capability の問題で起動前に落ちていたため、read-only の可否はまだ判定できていません（`proxy-selection-research.md` §8 未確認事項 3）。次の実行で答えが出ます。
+
 ### V7 の限界
 
 `verify.sh` は「proxy を止めると proxy 経由の経路が失われる」ことは確認します。しかし `design.md` §2.23 が主張する I2（**proxy が落ちたら外向き通信が全部落ちる**）の本当の強さは、`init-project-firewall.sh` が作る縮小後の iptables（proxy 宛 + DNS 固定のみ許可）との組み合わせで初めて成立します。
@@ -171,7 +196,7 @@ TEST-NET-3 は文書用に予約された実在しない帯で、`squid.conf` �
 * **§8-9 VS Code Server の拡張ギャラリークライアントが `HTTPS_PROXY` を読むか（最優先項目）。→ 2026-08-19 に解決しました。** このディレクトリを作った環境（`~/.vscode-server` が無く、VS Code Remote でアタッチされていないセッション）では原理的に確認できませんでしたが、**VS Code でアタッチした devcontainer に `HTTPS_PROXY` を向けて `test-helpers/connect-sniffer.py` で観測したところ、読むことが確認できました。** あわせて接続先が 2 系統（`.gallerycdn.vsassets.io` / `.gallery.vsassets.io`）あることも分かり、`allowed-domains.txt` と V4 の判定を両系統に広げてあります。詳細は `known-issues.md` #7 と `design.md` §2.23
 * **§8-1 `http_access deny manager` だけで cache manager が塞がるか。** Squid バイナリが無いため未実行。`verify.sh` に自動判定を組み込んであるので、ホスト側でスタックを起動すればそこで確認できます
 * **§8-2 Squid イメージ候補の保守状況・サイズ。** `hub.docker.com` へこの devcontainer から到達できないため未確認のまま。`Dockerfile.proxy` は Docker Official Image（`debian:bookworm-slim`）+ Debian 本体の `squid` パッケージという、サードパーティ配布イメージに頼らない構成にすることでこの論点を回避しています
-* **§8-3 read-only bind mount + `read_only: true` での Squid 起動。** Squid バイナリが無いため未実行。`docker-compose.poc.yml` は `read_only: true` + 必要な tmpfs を設定した状態で作ってあり、`verify.sh` の起動前提チェックがホスト側で答えを出します
+* **§8-3 read-only bind mount + `read_only: true` での Squid 起動。→ 2026-08-19 に、起動を妨げていた要因が 1 つ判明しました**（下記「起動しなかった原因」）。`read_only` 自体が成立するかは、ホスト側での再実行待ちです
 * **未確認事項 3（`dstdomain -n` の PTR 偽装再現）。** Squid バイナリが無いため未実行。`verify.sh` の V6 として自動化してあります（上記参照）
 * **§8-13 `nc -X connect` が使えるか（git over ssh 経由の CONNECT）。** `nc` / `netcat` はこの devcontainer に入っていませんでした。ただし git over ssh が `HTTP_PROXY` 系の環境変数を読まないことは `proxy-selection-research.md` §5 が `ssh_config(5)` の一次情報で既に確定させており、これは実測ではなく仕様の話なので優先度は低いままです
 * **git over ssh の `ProxyCommand` 経由での動作。** 上記の理由により未実施

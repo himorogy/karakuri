@@ -29,16 +29,31 @@ services:
       dockerfile: Dockerfile.proxy
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+
+    # **最初から proxy (uid 13) で起動する。root で起動して降格させない。**
+    #
+    # 2026-08-19 の実測: これを書かずに root で起動すると、Squid が
+    # cache_effective_user (Debian の既定は proxy) へ降格しようとして
+    #   ALERT: setgid: (1) Operation not permitted
+    #   ALERT: initgroups: unable to set groups for User proxy and Group 13
+    # を延々と吐き、最後に exit 139 (SIGSEGV) で落ちる。降格には CAP_SETUID と
+    # CAP_SETGID が要るが、cap_drop: [ALL] で落としているため。
+    #
+    # cap_add: [SETUID, SETGID] で戻す手もあるが採らない。design.md §2.23 は
+    # 「SNI proxy は ipset を書かないので特権を必要としない」ことを sidecar 配置の
+    # 根拠にしている。降格のためだけに特権を持たせると、その根拠と食い違う。
+    # 非 root で起動すれば Squid は降格処理そのものを行わない。
+    user: "13:13"
+
     # proxy-selection-research.md §8 未確認事項 3
-    # (read-only bind mount + read_only: true で Squid が起動するか) を
-    # ここで実測する。squid.conf 側で cache / pid / log を tmpfs に逃がして
-    # あるので、read_only: true でも書き込みが必要な箇所は無いはずだが、
-    # 「はず」であって実測はしていない。verify.sh が起動確認まで行う。
+    # (read-only bind mount + read_only: true で Squid が起動するか)。
+    # tmpfs は既定で root 所有になるため、uid/gid を明示しないと uid 13 で
+    # 動く Squid が書けない。
     read_only: true
     tmpfs:
-      - /var/spool/squid
-      - /var/log/squid
-      - /run
+      - /var/spool/squid:uid=13,gid=13
+      - /var/log/squid:uid=13,gid=13
+      - /run:uid=13,gid=13
     volumes:
       - ./squid.conf:/etc/squid/squid.conf:ro
       - ./allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
@@ -76,11 +91,14 @@ services:
       dockerfile: Dockerfile.proxy
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # egress-proxy と同じ理由 (上のコメント参照)。本番相当の設定で動かすことが
+    # V6 の前提なので、起動条件もそちらに揃える。
+    user: "13:13"
     read_only: true
     tmpfs:
-      - /var/spool/squid
-      - /var/log/squid
-      - /run
+      - /var/spool/squid:uid=13,gid=13
+      - /var/log/squid:uid=13,gid=13
+      - /run:uid=13,gid=13
     volumes:
       - ./squid.conf:/etc/squid/squid.conf:ro
       - ./allowed-domains.txt:/etc/squid/allowed-domains.txt:ro

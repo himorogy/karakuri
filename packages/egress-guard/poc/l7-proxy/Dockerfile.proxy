@@ -50,6 +50,24 @@ RUN mkdir -p /var/spool/squid /var/log/squid /run
 
 EXPOSE 3128
 
+# **非 root (Debian の proxy = uid 13) で起動する。**
+#
+# 2026-08-19 の実測: root で起動すると Squid は cache_effective_user
+# (Debian の既定は proxy) へ降格しようとし、CAP_SETUID / CAP_SETGID が無い
+# 環境では
+#   ALERT: setgid: (1) Operation not permitted
+#   ALERT: initgroups: unable to set groups for User proxy and Group 13
+# を吐き続けて exit 139 (SIGSEGV) で落ちる。sidecar は cap_drop: [ALL] で
+# 動かすため、降格のための特権も持たせない (design.md §2.23 は「SNI proxy は
+# 特権を必要としない」ことを sidecar 配置の根拠にしている)。
+#
+# 非 root で起動すれば Squid は降格処理そのものを行わない。http_port は 3128
+# なので特権ポートのバインドも要らない。
+#
+# docker-compose.poc.yml 側にも user: "13:13" を書いてあるが、こちらにも
+# 書いておくことで、compose を経由せず docker run しても同じ条件になる。
+USER proxy
+
 # -N: デーモン化しない (フォアグラウンドで動かし、コンテナのライフサイクルと
 #     プロセスのライフサイクルを一致させる)。
 # -f: squid.conf の場所を明示する。既定のまま docker-compose.poc.yml が
