@@ -11,7 +11,7 @@
     python3 connect-sniffer.py            # 既定 127.0.0.1:8899
     python3 connect-sniffer.py 0.0.0.0 8899
 
-design.md §2.22 の実装ではない。検証用の使い捨てツール。
+design.md §2.23 の実装ではない。検証用の使い捨てツール。
 """
 
 import socket

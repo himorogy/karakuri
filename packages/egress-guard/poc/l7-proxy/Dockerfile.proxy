@@ -37,7 +37,7 @@ RUN apt-get update \
 
 # squid.conf / allowed-domains.txt はイメージに焼き込まない。
 # docker-compose.poc.yml から read-only bind mount する
-# (design.md §2.22 の I1: ACL がエージェントのコンテナから見えないことと、
+# (design.md §2.23 の I1: ACL がエージェントのコンテナから見えないことと、
 # ACL の反映にイメージ再ビルド相当の操作が要ることを、sidecar のコンテナ境界
 # そのもので満たす)。
 

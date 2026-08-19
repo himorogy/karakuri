@@ -15,7 +15,7 @@
 #   docker compose -f docker-compose.poc.yml down -v
 #
 # V3〜V5, V7〜V9 は egress-proxy + client で確認する。
-# V6 (design.md §2.22 必須要件 2: PTR 逆引きによる名前偽装が通らないこと) だけは
+# V6 (design.md §2.23 必須要件 2: PTR 逆引きによる名前偽装が通らないこと) だけは
 # 別建てにしてある (egress-proxy-v6 + ptr-spoof-harness)。理由は
 # verify.sh の V6 のコメントと README.md「V6 の判定方法」を参照。
 

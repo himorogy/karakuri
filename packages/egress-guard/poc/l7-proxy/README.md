@@ -1,6 +1,6 @@
 # L7 proxy PoC（sidecar 版）
 
-**これは未検証の PoC であり、egress-guard の実装ではありません。** `packages/egress-guard/scripts/` 配下の本体には一切触れておらず、ここにあるものは `packages/egress-guard/docs/spec.md` §10.1 の L7 proxy 移行に着手する前に、[`docs/design.md`](../../docs/design.md) §2.22 の判断（sidecar 配置・明示型 CONNECT・TLS 非終端）が実際に成立するかを確かめるための使い捨て検証環境です。ここの `squid.conf` / `docker-compose.poc.yml` をそのまま本実装へ持ち込むことは想定していません。
+**これは未検証の PoC であり、egress-guard の実装ではありません。** `packages/egress-guard/scripts/` 配下の本体には一切触れておらず、ここにあるものは `packages/egress-guard/docs/spec.md` §10.1 の L7 proxy 移行に着手する前に、[`docs/design.md`](../../docs/design.md) §2.23 の判断（sidecar 配置・明示型 CONNECT・TLS 非終端）が実際に成立するかを確かめるための使い捨て検証環境です。ここの `squid.conf` / `docker-compose.poc.yml` をそのまま本実装へ持ち込むことは想定していません。
 
 検証項目 V1〜V10 の定義は [`poc-plan.md`](#出典) にあります（本 PoC 用に scratchpad からこのディレクトリへ内容を引き継いでいます。原本は `packages/egress-guard/docs/verification-record.md` §6.24 として本編へ移すまでの作業用ファイルです）。
 
@@ -28,7 +28,7 @@ L3 の実現層（`init-project-firewall.sh` の ipset ベースの allowlist）
 
 | ファイル | 役割 |
 |---|---|
-| `squid.conf` | 検証対象の Squid 設定。`proxy-selection-research.md` §4 をベースに、`dstdomain -n` を必須で入れてある（`design.md` §2.22 必須要件 2。下記「V6 の判定方法」参照） |
+| `squid.conf` | 検証対象の Squid 設定。`proxy-selection-research.md` §4 をベースに、`dstdomain -n` を必須で入れてある（`design.md` §2.23 必須要件 2。下記「V6 の判定方法」参照） |
 | `allowed-domains.txt` | `deb.debian.org` と `.gallerycdn.vsassets.io` のみを許可する ACL。本実装での `firewall.json` → この形式への変換処理は対象外（poc-plan.md の未決事項） |
 | `Dockerfile.proxy` | Squid の自前ビルド。Docker Official Image が存在しないため。選定理由はファイル内コメント参照 |
 | `docker-compose.poc.yml` | sidecar 構成一式。`egress-proxy`（検証対象）、`client`（`.devcontainer/docker-compose.yml` の `dev` を模した最小クライアント）、`egress-proxy-v6` と `ptr-spoof-harness`（V6 専用、下記参照） |
@@ -68,7 +68,7 @@ docker compose -f docker-compose.poc.yml down -v
 | V7 | proxy が落ちたら閉じる（I2） | `verify.sh` が proxy 停止後の接続失敗を自動判定 | **部分的に自動。** L3 との統合込みの完全な fail-closed は検証できない（下記「V7 の限界」） |
 | V8 | proxy 設定へエージェントが到達できない（I1） | `verify.sh` が client からの ACL ファイル探索を自動判定 | 部分的に自動。ACL 変更に再ビルド相当が要ることの確認は手動 |
 | V9 | 設定が壊れているとき起動しない（fail-closed） | `verify.sh` が壊れた設定での起動失敗を自動判定 | 自動 |
-| V10 | ECH（`design.md` §2.22 必須要件 3） | 検証項目として存在しない | **検証不要になった。** 下記「V10 が検証項目から外れた理由」参照 |
+| V10 | ECH（`design.md` §2.23 必須要件 3） | 検証項目として存在しない | **検証不要になった。** 下記「V10 が検証項目から外れた理由」参照 |
 
 補足として `verify.sh` は poc-plan.md には無い 2 項目も自動判定します。
 
@@ -90,7 +90,7 @@ $ curl -x http://<proxy> --resolve deb.debian.org:443:<偽IP> https://deb.debian
 
 これは自前の TCP リスナで受信バイト列を記録して確認した事実です（下記フェーズ1参照）。つまり明示型 CONNECT では、クライアント側の操作だけで「名前は A だが接続先は B」という状態を作ることが構造的にできません（`proxy-selection-research.md` §1 の「構造的に○」はここでも成立します）。
 
-実際に成立しうる攻撃は `design.md` §2.22 が挙げている **PTR 逆引きの罠**だけです。`CONNECT <IPリテラル>:443` を送り、そのリテラル IP の PTR レコードが `deb.debian.org` を返すよう攻撃者が細工していれば、`dstdomain` の `-n` が無い設定では ACL が通ってしまいます。
+実際に成立しうる攻撃は `design.md` §2.23 が挙げている **PTR 逆引きの罠**だけです。`CONNECT <IPリテラル>:443` を送り、そのリテラル IP の PTR レコードが `deb.debian.org` を返すよう攻撃者が細工していれば、`dstdomain` の `-n` が無い設定では ACL が通ってしまいます。
 
 `verify.sh` の V6 はこれを再現します。
 
@@ -115,7 +115,7 @@ TEST-NET-3 は文書用に予約された実在しない帯で、`squid.conf` �
 
 ### V10 が検証項目から外れた理由
 
-当初の検証項目（poc-plan.md）は V10 を「ECH 付き ClientHello を拒否する」としていました。**`design.md` §2.22 の必須要件 3 が改訂され、この項目は検証対象ではなくなりました。**
+当初の検証項目（poc-plan.md）は V10 を「ECH 付き ClientHello を拒否する」としていました。**`design.md` §2.23 の必須要件 3 が改訂され、この項目は検証対象ではなくなりました。**
 
 * **ECH でも平文の SNI は消えません。** `draft-ietf-tls-esni` は ClientHelloOuter に `ECHConfig.contents.public_name` を `server_name` として入れると定めています。したがって「SNI が読めないから拒否する」という判定は**透過型でもそもそも成立しません**
 * **明示型ではこの論点自体が消えます。** 接続先は proxy が `CONNECT` の authority を自分で解決した結果で確定しており、トンネルの中を流れる TLS が ECH かどうかは接続先を変えられません
@@ -124,7 +124,7 @@ TEST-NET-3 は文書用に予約された実在しない帯で、`squid.conf` �
 
 ### V7 の限界
 
-`verify.sh` は「proxy を止めると proxy 経由の経路が失われる」ことは確認します。しかし `design.md` §2.22 が主張する I2（**proxy が落ちたら外向き通信が全部落ちる**）の本当の強さは、`init-project-firewall.sh` が作る縮小後の iptables（proxy 宛 + DNS 固定のみ許可）との組み合わせで初めて成立します。
+`verify.sh` は「proxy を止めると proxy 経由の経路が失われる」ことは確認します。しかし `design.md` §2.23 が主張する I2（**proxy が落ちたら外向き通信が全部落ちる**）の本当の強さは、`init-project-firewall.sh` が作る縮小後の iptables（proxy 宛 + DNS 固定のみ許可）との組み合わせで初めて成立します。
 
 この PoC の `client` サービスには L3 の iptables 制限を一切課していません。そのため「`http_proxy` を無視して直接接続する」という経路まで塞がれるかどうかは、この PoC の範囲では検証できません。本実装で L3（既存の `init-project-firewall.sh`）と L7（この PoC 相当のもの）を組み合わせたときに、改めて確認する必要があります。
 
@@ -171,12 +171,12 @@ TEST-NET-3 は文書用に予約された実在しない帯で、`squid.conf` �
 * **未確認事項 3（`dstdomain -n` の PTR 偽装再現）。** Squid バイナリが無いため未実行。`verify.sh` の V6 として自動化してあります（上記参照）
 * **§8-13 `nc -X connect` が使えるか（git over ssh 経由の CONNECT）。** `nc` / `netcat` はこの devcontainer に入っていませんでした。ただし git over ssh が `HTTP_PROXY` 系の環境変数を読まないことは `proxy-selection-research.md` §5 が `ssh_config(5)` の一次情報で既に確定させており、これは実測ではなく仕様の話なので優先度は低いままです
 * **git over ssh の `ProxyCommand` 経由での動作。** 上記の理由により未実施
-* **§8-4 `ssl_bump peek`+`splice` の証明書要否。** この PoC は `ssl_bump` を採用しない方針（`design.md` §2.22 の MITM 不採用）なので、そもそも検証の対象にしていません
+* **§8-4 `ssl_bump peek`+`splice` の証明書要否。** この PoC は `ssl_bump` を採用しない方針（`design.md` §2.23 の MITM 不採用）なので、そもそも検証の対象にしていません
 * **§8-6 HAProxy の `do-resolve` 公式サンプル / §8-7 nginx・Envoy のイメージ収録状況 / §8-8 Privoxy 全般。** Squid 採用が確定した後の調査であり、この PoC の対象外のままです
 
 ## 出典
 
 * `proxy-selection-research.md`、`poc-plan.md` — セッションの scratchpad にある調査結果と検証項目定義（このリポジトリには同梱していません。作業時の一次資料です）
-* [`../../docs/design.md`](../../docs/design.md) §2.22 — sidecar 配置・TLS 非終端の設計判断
+* [`../../docs/design.md`](../../docs/design.md) §2.23 — sidecar 配置・TLS 非終端の設計判断
 * [`../../docs/spec.md`](../../docs/spec.md) §9.7、§10.1
 * [`../../docs/known-issues.md`](../../docs/known-issues.md) #7

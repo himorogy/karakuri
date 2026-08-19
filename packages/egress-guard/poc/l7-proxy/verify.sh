@@ -139,7 +139,7 @@ check_v5() {
 }
 
 check_v6() {
-	# design.md §2.22 必須要件2 (名前ベースACLにIPリテラルを持ち込ませない)。
+	# design.md §2.23 必須要件2 (名前ベースACLにIPリテラルを持ち込ませない)。
 	# curl --resolve はCONNECTの宛先には効かない (このPoCを作る過程で実測して
 	# 確認した。README.mdの「V6の判定方法」参照)。実際の攻撃条件は
 	# 「CONNECT <IPリテラル>:443」に対するPTR逆引きなので、egress-proxy-v6
@@ -151,7 +151,7 @@ check_v6() {
 	# -n の有無に関わらず必ず成功する偽陽性になる (docker-compose.poc.yml の
 	# networks: v6-test-net のコメント参照)。
 	local harness_ip="203.0.113.53"
-	echo "== V6: dstdomain -n がPTR偽装を防いでいるか (design.md §2.22 必須要件2) =="
+	echo "== V6: dstdomain -n がPTR偽装を防いでいるか (design.md §2.23 必須要件2) =="
 	dc exec -T client curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
 	sleep 1
 	if dc logs ptr-spoof-harness 2>&1 | grep -q 'SPOOF SUCCEEDED'; then
@@ -249,7 +249,7 @@ main() {
 	skip "V1" "既存 .devcontainer/firewall.json を書き換えて再ビルドする対照実験。このPoCでは既存ファイルを変更しない方針のため手動"
 	skip "V2" "同上。verification-record.md #6.23 の手順に従う"
 	echo "== V10 (ECH) は明示型を採ったため検証項目から外れている =="
-	skip "V10" "design.md §2.22 必須要件3。明示型ではECHは判定材料に関与しない(接続先はCONNECTのauthorityから確定する)ため、検証すべき挙動が存在しない。透過型を採る場合にのみ問題になる"
+	skip "V10" "design.md §2.23 必須要件3。明示型ではECHは判定材料に関与しない(接続先はCONNECTのauthorityから確定する)ため、検証すべき挙動が存在しない。透過型を採る場合にのみ問題になる"
 
 	if [ "$KEEP_UP" != "1" ]; then
 		echo "== 後片付け =="
