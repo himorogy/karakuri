@@ -673,7 +673,7 @@ CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホ�
 
 #### 実装候補: Squid（明示型 `CONNECT`、`ssl_bump` なし）
 
-**まだ実測していません。** 一次情報の調査で必須要件 1〜3 を満たすことまでを確認した段階です。PoC を通るまで確定とはしません。
+**PoC を通りました（2026-08-19、PASS=16 FAIL=0）。** 記録は [`verification-record.md`](./verification-record.md) §6.24、環境は [`../poc/l7-proxy/`](../poc/l7-proxy/)。**ただし実装として確定したわけではありません。** L3 側との統合（縮小後の iptables との組み合わせ）と、L3 での対照実験（同じ日に「L3 だと落ちる」ことを示す）が残っています。
 
 採る理由:
 

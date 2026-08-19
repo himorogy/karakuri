@@ -738,7 +738,7 @@ allowlist は**起動時に解決した A レコードの集合**です（§4.5�
 3. **ECH（Encrypted ClientHello）を判定材料から外す。** ECH の ClientHelloOuter は平文の `server_name` を持ち続けるため、SNI では本当の宛先が分かりません。かつ ECH を検出する手段が既存の SNI 実装に存在しません。**明示型を採ることでこの論点が消えます**（接続先が `CONNECT` の authority から確定するため）
 4. **管理ポート・メトリクスポートを開かない。** sidecar は同一ネットワーク上のコンテナから到達可能です
 
-**実装候補は Squid（明示型 `CONNECT`、`ssl_bump` なし）です。まだ実測していません。** 選定理由とマイナス点は [`design.md`](./design.md) §2.23。
+**実装候補は Squid（明示型 `CONNECT`、`ssl_bump` なし）です。** 選定理由とマイナス点は [`design.md`](./design.md) §2.23。**上の必須要件 1〜4 が満たされること、および §9.1・§9.7 が実際に解消することは PoC で確認済みです**（2026-08-19、[`verification-record.md`](./verification-record.md) §6.24）。**残っているのは L3 側との統合**（縮小後のテーブルと組み合わせた fail-closed）**と、同じ日の対照実験**（L3 だと落ちることの再現）です。
 
 **移行の前提だった「VS Code Server の拡張ダウンロードが `HTTPS_PROXY` に従うか」は、2026-08-19 に実測して確認済みです**（[`known-issues.md`](./known-issues.md) #7、[`design.md`](./design.md) §2.23）。あわせて、**拡張の実体を配るホストが `.gallerycdn.vsassets.io` と `.gallery.vsassets.io` の 2 系統ある**ことが分かっています。名前ベース ACL へ変換する際は両方が要ります。
 

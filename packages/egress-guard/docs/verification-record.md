@@ -790,3 +790,64 @@ README は「`dockerComposeFile` を使うと `runArgs` は無視される」と
 > **`enforce` では 2 つ足りません。** `gallerycdn` の遮断と整合します。
 >
 > **ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、この差がどこから来るのかは未確認です（別経路で取得しているのか、キャッシュから復元されたのか）。**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
+
+---
+
+### 6.24 L7 proxy PoC の実行記録（2026-08-19）
+
+**これは実装の受け入れ検証ではありません。** [`spec.md`](./spec.md) §10.1 の L7 proxy 移行に着手する前に、[`design.md`](./design.md) §2.23 の設計判断（sidecar 配置・明示型 `CONNECT`・TLS 非終端）が実際に成立するかを確かめた記録です。検証環境と手順は [`../poc/l7-proxy/`](../poc/l7-proxy/)。
+
+**実行環境:** macOS（Docker Desktop）、ホスト側で `docker compose`。devcontainer の中からは実行できません（`docker` が無く、かつ egress-guard が enforce で効いている環境では proxy 自身が L3 の allowlist に縛られ、検証したい現象が再現しないため）。
+
+**結果: PASS=16 FAIL=0 SKIP=5。**
+
+#### 何が確かめられたか
+
+| 項目 | 結果 | 意味 |
+|---|---|---|
+| V3-2 | ok | **90 秒待った 2 回目の `apt-get update` が成立した。** §9.7（CDN drift）が実現層の交代で消えることの実証 |
+| V4 | ok（2 系統とも） | `allowed-domains.txt` に書いていない `anthropic.gallerycdn.vsassets.io` / `anthropic.gallery.vsassets.io` が通り、proxy のログにその具体名が残った。**サフィックスマッチが効いた証拠。** §9.1 の再導入が成立する |
+| V5 | ok | 未許可ドメインが拒否され、**ログにドメイン名が残った。** `audit` の収集を ipset から引き継げる |
+| V6 | ok | **`dstdomain -n` が PTR 偽装を防いだ**（[`design.md`](./design.md) §2.23 必須要件 2）。リクエストが proxy へ届いたことを確認した上での判定 |
+| V7-1 | ok | 停止前は到達でき、proxy 停止後は経路が失われる |
+| V8-1 | ok | client（エージェント役）のファイルシステムに ACL が存在しない（I1） |
+| V9 | ok | 壊れた設定で Squid が起動せず非 0 終了（fail-closed） |
+| manager | ok | `http_access deny manager` だけで `/squid-internal-mgr/` が 403 になる |
+| 起動前提 | ok | **`read_only: true` + read-only bind mount + `cap_drop: [ALL]` + 非 root で Squid が起動する** |
+
+#### 確かめられていないこと（SKIP）
+
+* **V1・V2（L3 側の対照実験）— 未実施。** 「L7 で通った」ことは示せましたが、**同じホスト・同じ日に「L3 だと落ちる」ことは示していません。** §9.7 には別日の実測記録がありますが、この回の結果と直接は突き合わせていません
+* **V7-2** — L3（`init-project-firewall.sh` の縮小後のテーブル）と組み合わせた完全な fail-closed。PoC の client には L3 制限を課していないため、`http_proxy` を無視した直接接続まで塞がれることは検証できていません
+* **V8-2** — ACL 変更に再ビルド相当の操作が要ることの目視確認
+* **V10** — 明示型を採ったため検証項目から外れました（[`design.md`](./design.md) §2.23 必須要件 3）
+* **VS Code 拡張の実インストール** — V4 が確かめたのは `curl` での接続成立とログの具体名一致までです。**Squid を実際に挟んだ状態で拡張が入るかは未確認**（[`known-issues.md`](./known-issues.md) #7）
+
+#### 途中で踏んだ 2 つの問題（どちらも PoC 側の作りの問題）
+
+**1. `cap_drop: [ALL]` で Squid が起動しなかった。** Squid は root で起動したあと `cache_effective_user`（Debian の既定は `proxy`）へ降格しようとし、`CAP_SETUID` / `CAP_SETGID` が無いため失敗して SIGSEGV で落ちていました。
+
+```
+ALERT: setgid: (1) Operation not permitted
+ALERT: initgroups: unable to set groups for User proxy and Group 13
+egress-proxy-1 exited with code 139
+```
+
+**特権を戻すのではなく、最初から非 root（uid 13）で起動する形にしました。** [`design.md`](./design.md) §2.23 は「SNI proxy は ipset を書かないので特権を必要としない」ことを sidecar 配置の根拠にしており、降格のためだけに特権を持たせるとその根拠と食い違うためです。
+
+**2. 検証スクリプトが偽陽性を出していた。** これが記録として最も重要です。
+
+client 側にも `cap_drop: [ALL]` を付けていたため apt が `_apt`（uid 42）へ降格できず、`curl` が入りませんでした。その結果 `curl` を使う判定がすべて「接続が失敗した」に見え、**失敗の理由を区別していなかった `verify.sh` が V5-1・V6-1・V7-1 を `ok` にしていました。**
+
+```
+OCI runtime exec failed: exec: "curl": executable file not found in $PATH
+  ok   V5-1: 許可していないドメインへの接続は失敗する
+  ok   V6-1: victim (harness) への接続は発生しなかった
+  ok   V7-1: proxy停止後はproxy経由の経路が失われる
+```
+
+**「接続が失敗すること」を成功条件にする判定は、失敗の理由を区別しなければ意味を持ちません。** §5 の「消えた SKIP はあったことにされたカバレッジになる」と同じ形の問題が、`ok` の側で起きたものです。
+
+修正として `verify.sh` に**判定不能**（道具を実行できなかった）を導入し、接続失敗と区別して SKIP するようにしました。あわせて V6 では「リクエストが proxy まで届いたこと」を、V7 では「停止前に同じ経路が生きていること」を前提条件として確認します。
+
+**この 2 件はどちらも proxy の採否とは無関係です。** PoC の環境の作りと、検証スクリプトの判定の作りの問題でした。

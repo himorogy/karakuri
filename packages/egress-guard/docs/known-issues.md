@@ -133,7 +133,15 @@ allowlist に載せる手段が両方とも塞がっています。
 
 **実測して、読むことを確認しました。** `HTTPS_PROXY` を向けた先で受け取った最初の行を記録するだけのリスナ（[`../poc/l7-proxy/test-helpers/connect-sniffer.py`](../poc/l7-proxy/test-helpers/connect-sniffer.py)）を立て、拡張をインストールしたところ、上記の 2 系統への `CONNECT` が届きました。
 
-**確認できたのは「proxy 設定を読むこと」までです。** このリスナは中継せず 502 を返して切るため、**拡張のインストールが成功することはまだ確かめていません。** それは PoC（[`../poc/l7-proxy/`](../poc/l7-proxy/) の V4）で確かめます。
+**確認できたのは「proxy 設定を読むこと」までです。** このリスナは中継せず 502 を返して切るため、拡張のインストールが成功することはこの時点では確かめていません。
+
+### PoC で 2 系統とも allowlist に載ることを確認しました（2026-08-19）
+
+同じ日に PoC を回し、**`.gallerycdn.vsassets.io` と `.gallery.vsassets.io` のサフィックスマッチ 2 行だけで、`allowed-domains.txt` に書いていない具体名（`anthropic.gallerycdn.vsassets.io` 等）が通ること**を確認しました。proxy のアクセスログにその具体名が残るため、サフィックスマッチが効いたことも裏付けられています。記録は [`verification-record.md`](./verification-record.md) §6.24。
+
+**この項目の核である「ワイルドカードが書けないから allowlist できない」は、名前で判定する層に移せば解消します。**
+
+**残っているのは 1 つだけです。** PoC が確かめたのは `curl` での接続成立までで、**Squid を実際に挟んだ状態で VS Code から拡張をインストールしたわけではありません。** proxy 追従（上記）と ACL の成立（PoC）が別々に確認できている以上、通る見込みは高いものの、**通しでの実測はまだです。**
 
 コンテナ内に DNS 連動の allowlist を挟む案でも解消しますが、**別の理由で却下しました**（[`design.md`](./design.md) §2.20）。
 

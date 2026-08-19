@@ -1,5 +1,8 @@
 # L7 proxy PoC（sidecar 版）
 
+> **2026-08-19 の実行結果: PASS=16 FAIL=0 SKIP=5。** V3〜V9 と補助項目がすべて通りました。記録は [`../../docs/verification-record.md`](../../docs/verification-record.md) §6.24。
+> **未実施は V1・V2（L3 側の対照実験）と、Squid を挟んだ状態での VS Code 拡張の実インストールです。**
+
 **これは未検証の PoC であり、egress-guard の実装ではありません。** `packages/egress-guard/scripts/` 配下の本体には一切触れておらず、ここにあるものは `packages/egress-guard/docs/spec.md` §10.1 の L7 proxy 移行に着手する前に、[`docs/design.md`](../../docs/design.md) §2.23 の判断（sidecar 配置・明示型 CONNECT・TLS 非終端）が実際に成立するかを確かめるための使い捨て検証環境です。ここの `squid.conf` / `docker-compose.poc.yml` をそのまま本実装へ持ち込むことは想定していません。
 
 検証項目 V1〜V10 の定義は [`poc-plan.md`](#出典) にあります（本 PoC 用に scratchpad からこのディレクトリへ内容を引き継いでいます。原本は `packages/egress-guard/docs/verification-record.md` §6.24 として本編へ移すまでの作業用ファイルです）。
