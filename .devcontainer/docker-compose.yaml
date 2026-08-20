@@ -8,8 +8,12 @@
 # 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
 # だけ。判断の根拠は packages/egress-guard/README.md の「ネットワーク構成（推奨）」。
 
-# 変更しないこと。volume の実名がこれを接頭辞に決まるため、変えると履歴・
-# claude / codex 設定の volume が別物になり、ログインからやり直しになる。
+# ネットワーク名がこれを接頭辞に決まる（<name>_default）。**プロジェクトごとに
+# 違う値にすること。** 1 つのネットワークを共有すると、同居するコンテナが相互に
+# 名前解決して到達できる（packages/egress-guard/docs/design.md §4.4）。
+#
+# volume の実名はこれに依存しない。下の volumes で name: を明示しているため、
+# ここを変えても履歴・claude / codex 設定は失われない。
 name: karakuri-dev
 
 services:
