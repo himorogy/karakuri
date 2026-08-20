@@ -1,0 +1,164 @@
+# egress-guard L7 proxy PoC — sidecar 構成の検証環境。
+#
+# .devcontainer/docker-compose.yml (以下「本体」) は読むだけで変更していない。
+# これは別ファイルであり、本体とは別の Compose プロジェクトとして
+# 独立に起動・破棄できる。本体の `dev` service を模した `client` を用意し、
+# 本体と同じ書き方 (cap_add/cap_drop の書式、environment ブロックの形、
+# `command: sleep infinity` で待機させる書き方) に揃えてある。
+#
+# **ホスト側の docker compose からのみ起動できる。** devcontainer の中には
+# docker コマンドも Docker ソケットも無いため、この compose 自体をこの
+# devcontainer の中から動かすことはできない (README.md 参照)。
+#
+# 実行方法:
+#   docker compose -f docker-compose.poc.yml up -d --build
+#   docker compose -f docker-compose.poc.yml down -v
+#
+# V3〜V5, V7〜V9 は egress-proxy + client で確認する。
+# V6 (design.md §2.23 必須要件 2: PTR 逆引きによる名前偽装が通らないこと) だけは
+# 別建てにしてある (egress-proxy-v6 + ptr-spoof-harness)。理由は
+# verify.sh の V6 のコメントと README.md「V6 の判定方法」を参照。
+
+name: egress-guard-l7-poc
+
+services:
+  # ---- 検証対象の sidecar ------------------------------------------------
+  egress-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+    # **最初から proxy (uid 13) で起動する。root で起動して降格させない。**
+    #
+    # 2026-08-19 の実測: これを書かずに root で起動すると、Squid が
+    # cache_effective_user (Debian の既定は proxy) へ降格しようとして
+    #   ALERT: setgid: (1) Operation not permitted
+    #   ALERT: initgroups: unable to set groups for User proxy and Group 13
+    # を延々と吐き、最後に exit 139 (SIGSEGV) で落ちる。降格には CAP_SETUID と
+    # CAP_SETGID が要るが、cap_drop: [ALL] で落としているため。
+    #
+    # cap_add: [SETUID, SETGID] で戻す手もあるが採らない。design.md §2.23 は
+    # 「SNI proxy は ipset を書かないので特権を必要としない」ことを sidecar 配置の
+    # 根拠にしている。降格のためだけに特権を持たせると、その根拠と食い違う。
+    # 非 root で起動すれば Squid は降格処理そのものを行わない。
+    user: "13:13"
+
+    # proxy-selection-research.md §8 未確認事項 3
+    # (read-only bind mount + read_only: true で Squid が起動するか)。
+    # tmpfs は既定で root 所有になるため、uid/gid を明示しないと uid 13 で
+    # 動く Squid が書けない。
+    read_only: true
+    tmpfs:
+      - /var/spool/squid:uid=13,gid=13
+      - /var/log/squid:uid=13,gid=13
+      - /run:uid=13,gid=13
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - ./allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
+    # ports: は書かない。ホストへ公開しない (本体の sidecar 案と同じ)。
+
+  # ---- 本体の `dev` service の代わりに使う最小クライアント ------------------
+  # 本体はこの PoC で変更しない。ここでは検証に要るツール (curl, apt) が
+  # 揃っている素の Debian イメージを proxy 経由で使う。
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    depends_on:
+      - egress-proxy
+
+    # **cap_drop: [ALL] は書かない。** 2026-08-19 の実測で、これを付けると
+    # apt が _apt (uid 42) へ降格できずに落ちることが分かった
+    #   E: setegid 65534 failed / E: seteuid 42 failed
+    # V3 は「apt-get update が proxy 経由で成立するか」を見る項目なので、
+    # apt が capability の都合で落ちてしまうと検証にならない。
+    #
+    # そもそも client は「エージェントが動くコンテナ」を模したものであり、
+    # 本物の .devcontainer/docker-compose.yaml は cap_drop していない
+    # (むしろ cap_add で NET_ADMIN / NET_RAW を足している)。PoC の client
+    # だけを本物より絞ると、検証対象 (proxy の ACL) と無関係な失敗が出る。
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      # curl は http_proxy を小文字でしか読まない。apt も小文字のみ。
+      # 両方を必ず出す (proxy-selection-research.md §5)。
+      http_proxy: "http://egress-proxy:3128"
+      https_proxy: "http://egress-proxy:3128"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      HTTPS_PROXY: "http://egress-proxy:3128"
+      no_proxy: "localhost,127.0.0.1"
+      NO_PROXY: "localhost,127.0.0.1"
+    command: sleep infinity
+
+  # ---- V6 専用: dstdomain -n の PTR 逆引き対策を確かめるための隔離環境 -----
+  #
+  # egress-proxy と同じ squid.conf / allowed-domains.txt を使う (本番相当の
+  # 設定であることが V6 の意味を持たせる条件)。違いは DNS の向き先だけ。
+  # v6-test-net 上の ptr-spoof-harness だけを見るようにして、そこが返す
+  # 偽の PTR 応答で -n が本当に効くかを確認する。
+  egress-proxy-v6:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    # egress-proxy と同じ理由 (上のコメント参照)。本番相当の設定で動かすことが
+    # V6 の前提なので、起動条件もそちらに揃える。
+    user: "13:13"
+    read_only: true
+    tmpfs:
+      - /var/spool/squid:uid=13,gid=13
+      - /var/log/squid:uid=13,gid=13
+      - /run:uid=13,gid=13
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+      - ./allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
+    # Squid 自身の PTR 逆引きをこの偽 DNS に向ける。IP 直書きが必要
+    # (Docker の `dns:` はサービス名ではなく IP しか受け付けない) なので
+    # v6-test-net を固定サブネットにして ptr-spoof-harness の IP を決め打ちにしている。
+    dns:
+      - 203.0.113.53
+    depends_on:
+      - ptr-spoof-harness
+    networks:
+      default: {}
+      v6-test-net: {}
+
+  # 自分自身の IP への PTR 問い合わせに、allowed-domains.txt にある名前
+  # (deb.debian.org) で応答する偽 DNS。同時に 443/tcp で listen し、
+  # 偽装が実際に通った場合 (= egress-proxy-v6 がここへ接続してしまった場合)
+  # に接続を受けたことをログへ残す。
+  #
+  # 汎用の python:3-alpine を使い、test-helpers/ 配下のスクリプトを
+  # read-only でマウントするだけにしてある。単体の Dockerfile を持たせるほどの
+  # ものではない (このコンテナ自体は検証対象ではなく検証用の道具)。
+  ptr-spoof-harness:
+    image: python:3-alpine
+    volumes:
+      - ./test-helpers/ptr-spoof-harness.py:/harness.py:ro
+    command: ["python3", "/harness.py"]
+    networks:
+      v6-test-net:
+        ipv4_address: 203.0.113.53
+    # client からも egress-proxy-v6 からも直接には触らせない。
+    # egress-proxy-v6 が CONNECT 経由で到達できてしまうかどうかだけを見る。
+
+networks:
+  # **RFC 5737 の TEST-NET-3 を使うこと。私設アドレス帯 (10.0.0.0/8 等) を
+  # 使ってはいけない。**
+  #
+  # squid.conf の http_access は `deny to_private` を `deny !allowed` より前に
+  # 置いている (I6 相当の検査を先に効かせるため)。harness を私設帯に置くと、
+  # CONNECT <harness IP>:443 は dstdomain の判定に到達する前に to_private で
+  # 落ちる。**そうなると V6 は dstdomain -n が効いているかどうかに関わらず
+  # 必ず成功し、-n の検証になっていない偽陽性になる。**
+  #
+  # TEST-NET-3 (203.0.113.0/24) はドキュメント用に予約された実在しない帯で、
+  # squid.conf のどの禁止レンジにも該当しない。そのため CONNECT はきちんと
+  # dstdomain の判定まで到達し、PTR 逆引きの結果が ACL に使われるかどうかが
+  # そのまま V6 の結果になる。
+  v6-test-net:
+    ipam:
+      config:
+        - subnet: 203.0.113.0/24

@@ -13,12 +13,12 @@
 # ネットワーク名がこれを接頭辞に決まる (<name>_default)。
 # プロジェクトごとに違う値にすること。1 つのネットワークを共有すると、同居する
 # コンテナが相互に名前解決して到達できる。
-name: dotfiles-dev
+name: <project>-dev
 
 services:
   dev:
     # runArgs の --name の置き換え。
-    container_name: dotfiles-dev-container
+    container_name: <project>-dev-container
 
     build:
       # このファイルからの相対。firewall.json も .devcontainer/ にある前提。
@@ -84,14 +84,17 @@ services:
 
       # mounts の置き換え。**${devcontainerId} は Compose では使えない**ため固定名にする。
       # 名前が固定なので、プロジェクトをまたいで衝突しないよう <your-project> を含める。
-      - dotfiles-history:/commandhistory
-      - dotfiles-claude-config:/home/node/.claude
-      - dotfiles-codex-config:/home/node/.codex
+      - <project>-history:/commandhistory
+      - <project>-claude-config:/home/node/.claude
+      - <project>-codex-config:/home/node/.codex
 
     # base イメージの CMD は node なので、そのままだと即終了する。
     command: sleep infinity
 
 volumes:
-  dotfiles-history:
-  dotfiles-claude-config:
-  dotfiles-codex-config:
+  <project>-history:
+    name: <project>-history
+  <project>-claude-config:
+    name: <project>-claude-config
+  <project>-codex-config:
+    name: <project>-codex-config

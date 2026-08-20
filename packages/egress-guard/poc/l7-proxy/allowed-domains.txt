@@ -1,0 +1,35 @@
+# egress-guard L7 proxy PoC — 許可ドメイン一覧
+#
+# poc-plan.md の V3〜V5 を回すための最小セット。本実装での
+# firewall.json → この形式への変換処理は対象外（poc-plan.md「未決事項」）。
+# ここは手書き。
+#
+# 変換時の注意（proxy-selection-research.md §4）:
+#   1 つの ACL の中に、あるエントリの部分ドメインになる別エントリを入れてはいけない
+#   （Squid の Splay tree ベースの比較関数が全順序にならないため）。
+#   例: github.com と .github.com を同時に書かない。
+#   このファイルには該当する重複が無いことを目視で確認済み。
+#
+# 先頭の "." はサフィックスマッチ（サブドメイン全体）を意味する。付けなければ
+# その名前自体にしかマッチしない。
+
+# V3: apt-get update / install が proxy 経由で成立するか
+deb.debian.org
+
+# V4: ワイルドカード ACL で VS Code 拡張の配信 CDN (Akamai) が入るか。
+# publisher 別の具体名を列挙するのではなく、サフィックスマッチだけを書く。
+# known-issues.md #7 の実測では同じ CDN プロパティが 2026-08-03 の観測で
+# 2 コンテナ・6 IP に散っている。IP が散っても名前は変わらないので、行数は
+# publisher の数ではなくホスト系統の数だけで済む。
+#
+# **2 系統ある。** 2026-08-19 に段階 0（VS Code Server の proxy 追従の実測）で
+# 観測したところ、1 つの拡張のインストールで次の両方へ CONNECT が飛んだ:
+#   CONNECT davidanson.gallerycdn.vsassets.io:443
+#   CONNECT davidanson.gallery.vsassets.io:443     ← "cdn" が付かない別ホスト
+# known-issues.md #7 は当初 .gallerycdn.vsassets.io だけを挙げていたが、
+# それだけでは足りない。両方を書く。
+#
+# 部分ドメインの重複には当たらない（gallery.vsassets.io は
+# gallerycdn.vsassets.io の部分ドメインではなく、別のラベル）。
+.gallerycdn.vsassets.io
+.gallery.vsassets.io

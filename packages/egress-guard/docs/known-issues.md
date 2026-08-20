@@ -95,7 +95,16 @@
 
 **分類:** 保留（[`spec.md`](./spec.md) §10.1 待ち。現行方式では回避策がありません）
 
-拡張のカタログは `marketplace.visualstudio.com`（基底プロファイルの `vscode` バンドル）ですが、**実体を配るのは `*.gallerycdn.vsassets.io`** です。ここが遮断されると**拡張のインストールが失敗します**。`~/.vscode-server/extensions` はボリュームに載っていないため、**再ビルドのたびに再ダウンロードが必要**です。
+拡張のカタログは `marketplace.visualstudio.com`（基底プロファイルの `vscode` バンドル）ですが、**実体を配るのは `*.vsassets.io` の 2 系統**です。ここが遮断されると**拡張のインストールが失敗します**。`~/.vscode-server/extensions` はボリュームに載っていないため、**再ビルドのたびに再ダウンロードが必要**です。
+
+**2 系統ある点は 2026-08-19 に実測して分かりました。** 当初この項目は `*.gallerycdn.vsassets.io` だけを挙げていましたが、**1 つの拡張のインストールで次の両方へ接続します。**
+
+```
+CONNECT davidanson.gallerycdn.vsassets.io:443
+CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホスト
+```
+
+**片方だけ許可しても拡張は入りません。** 名前ベースの ACL へ移す際は、`.gallerycdn.vsassets.io` と `.gallery.vsassets.io` の両方が要ります。
 
 **`marketplace.visualstudio.com` を許可しても届きません。** あれはカタログ API で、実体は別系統です。2026-08-03 の解決結果:
 
@@ -114,7 +123,29 @@ allowlist に載せる手段が両方とも塞がっています。
 * **ワイルドカードは受理されません**（[`spec.md`](./spec.md) §9.1）
 * publisher 別の具体名（`anthropic.gallerycdn.vsassets.io` など）なら書けますが、**いずれも同じ Akamai プロパティへの CNAME で、IP が回ります。** 2026-08-03 の観測では 2 コンテナで **6 つの異なる IP** に散りました（上記）
 
-**起動時スナップショット方式の弱点（[`spec.md`](./spec.md) §9.7 の CDN drift）が実害として出た最初の例です。** 名前で判定する層に移せば構造ごと解消するため、**この項目は [`spec.md`](./spec.md) §10.1（L7 proxy 移行）の優先度を上げる材料として扱ってください。**
+**起動時スナップショット方式の弱点（[`spec.md`](./spec.md) §9.7 の CDN drift）が実害として出た最初の例です。** 名前で判定する層に移せば構造ごと解消します。
+
+**この項目と §9.7 の 2 件をもって、[`spec.md`](./spec.md) §10.1（L7 proxy 移行）に着手する判断をしました。** 配置（sidecar コンテナ）・TLS を終端しないこと・接続方式（明示型）は [`design.md`](./design.md) §2.23 で確定しています。実装は未着手です。
+
+### 移行の前提だった未確認事項は解決しました（2026-08-19）
+
+明示型 proxy は `HTTP_PROXY` / `HTTPS_PROXY` に従うクライアントにしか効きません。**VS Code Server の拡張ギャラリークライアントがこれを読むという明文が公式ドキュメントに無く、読まなければこの項目は明示型では解消しない**、という状態でした。
+
+**実測して、読むことを確認しました。** `HTTPS_PROXY` を向けた先で受け取った最初の行を記録するだけのリスナ（[`../poc/l7-proxy/test-helpers/connect-sniffer.py`](../poc/l7-proxy/test-helpers/connect-sniffer.py)）を立て、拡張をインストールしたところ、上記の 2 系統への `CONNECT` が届きました。
+
+**確認できたのは「proxy 設定を読むこと」までです。** このリスナは中継せず 502 を返して切るため、拡張のインストールが成功することはこの時点では確かめていません。
+
+### PoC で 2 系統とも allowlist に載ることを確認しました（2026-08-19）
+
+同じ日に PoC を回し、**`.gallerycdn.vsassets.io` と `.gallery.vsassets.io` のサフィックスマッチ 2 行だけで、`allowed-domains.txt` に書いていない具体名（`anthropic.gallerycdn.vsassets.io` 等）が通ること**を確認しました。proxy のアクセスログにその具体名が残るため、サフィックスマッチが効いたことも裏付けられています。記録は [`verification-record.md`](./verification-record.md) §6.24。
+
+**この項目の核である「ワイルドカードが書けないから allowlist できない」は、名前で判定する層に移せば解消します。**
+
+**通しでも確認しました（同日）。** VS Code でアタッチした devcontainer から Squid 越しに拡張をインストールし、proxy のアクセスログに 2 系統とも `TCP_TUNNEL/200` が残ることを確かめています（[`verification-record.md`](./verification-record.md) §6.24）。**この項目は L7 proxy 移行で解消することが実証されました。**
+
+**項目としては、実装が入るまでここに残します。** 現時点で存在するのは PoC であって、`init-project-firewall.sh` の縮小も `firewall.json` からの ACL 変換もまだありません。
+
+> **あわせて分かったこと:** `gallery.vsassets.io` は `marketplace.visualstudio.com` と同じアドレスを返します。上の 2026-08-03 の表で「重なりがありません」としたのは `gallerycdn` 側についてであり、**`gallery` 側は重なっていました。** `enforce` でも一部の拡張が入る理由がここから説明できます（[`verification-record.md`](./verification-record.md) §6.24 の副産物）。
 
 コンテナ内に DNS 連動の allowlist を挟む案でも解消しますが、**別の理由で却下しました**（[`design.md`](./design.md) §2.20）。
 

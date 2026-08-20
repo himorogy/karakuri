@@ -789,4 +789,145 @@ README は「`dockerComposeFile` を使うと `runArgs` は無視される」と
 >
 > **`enforce` では 2 つ足りません。** `gallerycdn` の遮断と整合します。
 >
-> **ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、この差がどこから来るのかは未確認です（別経路で取得しているのか、キャッシュから復元されたのか）。**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
+> **ただし「全滅する」わけではない点に注意してください。** `enforce` でも 2 つは入っており、**「拡張が入らない」ではなく「一部が入らない」が正確な記述です。**
+>
+> **この差の出どころには 2026-08-19 に説明がつきました**（§6.24 の「副産物」）。`gallery.vsassets.io` が `marketplace.visualstudio.com` と同じアドレスを返すため、IP でしか判定しない L3 ではそちらだけが通ります。仮説の域は出ていません。
+
+---
+
+### 6.24 L7 proxy PoC の実行記録（2026-08-19）
+
+**これは実装の受け入れ検証ではありません。** [`spec.md`](./spec.md) §10.1 の L7 proxy 移行に着手する前に、[`design.md`](./design.md) §2.23 の設計判断（sidecar 配置・明示型 `CONNECT`・TLS 非終端）が実際に成立するかを確かめた記録です。検証環境と手順は [`../poc/l7-proxy/`](../poc/l7-proxy/)。
+
+**実行環境:** macOS（Docker Desktop）、ホスト側で `docker compose`。devcontainer の中からは実行できません（`docker` が無く、かつ egress-guard が enforce で効いている環境では proxy 自身が L3 の allowlist に縛られ、検証したい現象が再現しないため）。
+
+**結果: PASS=16 FAIL=0 SKIP=5。**
+
+#### 何が確かめられたか
+
+| 項目 | 結果 | 意味 |
+|---|---|---|
+| V3-2 | ok | **90 秒待った 2 回目の `apt-get update` が成立した。** §9.7（CDN drift）が実現層の交代で消えることの実証 |
+| V4 | ok（2 系統とも） | `allowed-domains.txt` に書いていない `anthropic.gallerycdn.vsassets.io` / `anthropic.gallery.vsassets.io` が通り、proxy のログにその具体名が残った。**サフィックスマッチが効いた証拠。** §9.1 の再導入が成立する |
+| V5 | ok | 未許可ドメインが拒否され、**ログにドメイン名が残った。** `audit` の収集を ipset から引き継げる |
+| V6 | ok | **`dstdomain -n` が PTR 偽装を防いだ**（[`design.md`](./design.md) §2.23 必須要件 2）。リクエストが proxy へ届いたことを確認した上での判定 |
+| V7-1 | ok | 停止前は到達でき、proxy 停止後は経路が失われる |
+| V8-1 | ok | client（エージェント役）のファイルシステムに ACL が存在しない（I1） |
+| V9 | ok | 壊れた設定で Squid が起動せず非 0 終了（fail-closed） |
+| manager | ok | `http_access deny manager` だけで `/squid-internal-mgr/` が 403 になる |
+| 起動前提 | ok | **`read_only: true` + read-only bind mount + `cap_drop: [ALL]` + 非 root で Squid が起動する** |
+
+#### V1（対照実験）— 同じ日に L3 側で再現しました
+
+**「L7 で通った」だけでは答えになりません。** 同じホスト・同じ日に「L3 だと落ちる」ことを示さなければ、通った理由が proxy なのか環境差なのか区別できません。V1 はそのための対照実験です。
+
+**実施環境:** 同じホスト（macOS / Docker Desktop）、同じ日。ただし**別のコンテナ**です — PoC のスタックではなく、`egress-guard` を `enforce` で適用している通常の devcontainer（`allowDomains` に `deb.debian.org` を含む構成）で行いました。比較したいのは実現層であって、コンテナの同一性ではありません。
+
+**非特権ユーザーでは検証になりません。** `apt-get update` は「①既存 lists を読む → ②lock を取る → ③取得」の順に進み、非 root では②で落ちます。
+
+```
+Reading package lists... Done
+E: Could not open lock file /var/lib/apt/lists/lock - open (13: Permission denied)
+```
+
+**この形は「通った」でも「落ちた」でもなく、HTTP リクエストが一度も発生していません。** ホストから `docker exec -u root` で叩く必要があります。
+
+**結果:**
+
+```
+# 1 回目（firewall 適用後）
+Hit:1 http://deb.debian.org/debian bookworm InRelease
+
+# 約 4 分後
+Err:1 http://deb.debian.org/debian bookworm InRelease
+  Could not connect to debian.map.fastlydns.net:80 (199.232.162.132).
+  - connect (113: No route to host)
+W: Some index files failed to download. They have been ignored, or old ones used instead.
+```
+
+**`No route to host`。[`spec.md`](./spec.md) §9.7 に記録されている失敗と同じ形が再現しました。**
+
+**この出力は §9.7 の当初の記録より情報量があります。** CNAME 先の名前（`debian.map.fastlydns.net`）と、**起動時スナップショットに入っていなかった実際の接続先 IP（`199.232.162.132`）**が両方見えています。allowlist が「起動時に解決した A レコードの集合」であることの帰結が、そのままエラーメッセージに出た形です。
+
+**V3-2（proxy 経由なら 90 秒後も成立）と並べて、対照が取れました。** L7 で通った理由が proxy であって環境差ではないことが確定します。
+
+#### 通しの検証 — Squid 越しに VS Code 拡張が入りました
+
+**V4 が確かめたのは `curl` での接続成立までで、「実際に拡張が入るか」は別の問いでした。** [`known-issues.md`](./known-issues.md) #7 の解消可否はそこに懸かっていたため、通しで確かめました。
+
+**手順:** PoC の Squid を残したまま、VS Code でアタッチしている devcontainer を PoC のネットワークへ繋ぎ、`HTTPS_PROXY` をその Squid へ向けて拡張をインストールしました。
+
+> **`mode` は `audit` にしています。** `enforce` のままだと devcontainer から Squid へ到達できません。Squid の IP は Compose ブリッジ上の RFC1918 で、I6（私設アドレスは allowlist に載らない）が効くためです。**これは L7 移行後に「proxy 宛のみ許可」の縮小テーブルが解決する部分**で、その実装がまだ無いための代用です。
+>
+> **`audit` にすると proxy を無視した直接接続でも拡張は入ってしまいます。** したがって「拡張が入ったこと」は判定になりません。**判定は proxy のアクセスログです。**
+
+**結果:**
+
+```
+172.28.0.5 TCP_TUNNEL/200  95204 CONNECT davidanson.gallerycdn.vsassets.io:443 - HIER_DIRECT/23.52.106.41
+172.28.0.5 TCP_TUNNEL/200   8436 CONNECT davidanson.gallery.vsassets.io:443    - HIER_DIRECT/150.171.74.16
+172.28.0.5 TCP_TUNNEL/200 358055 CONNECT davidanson.gallerycdn.vsassets.io:443 - HIER_DIRECT/23.52.106.41
+172.28.0.5 TCP_TUNNEL/200  15377 CONNECT davidanson.gallerycdn.vsassets.io:443 - HIER_DIRECT/23.52.106.41
+```
+
+* **クライアントは `172.28.0.5`** — V4 のときの PoC client（`172.28.0.3`）とは別で、時刻も約 68 分後。devcontainer からのアクセスです
+* **358 KB の転送** — カタログ API の応答ではなく VSIX の実体です
+* **2 系統とも `TCP_TUNNEL/200`** — どちらも拒否されずに中継されています
+* **`HIER_DIRECT/<IP>`** — Squid が上流 proxy を使わず、**自分で名前を解決した先へ直接接続**しています（[`design.md`](./design.md) §2.23 必須要件 1 が動いている証跡）
+
+**[`known-issues.md`](./known-issues.md) #7 は、L7 proxy 移行で解消することが実証されました。** 項目そのものは実装が入るまで残ります。
+
+#### 副産物 — §6.23 の未解明点に説明がつきました
+
+§6.23 は「`enforce` でも 2 つは入っており、この差がどこから来るのかは未確認」と書いていました。**上のログの接続先アドレスが手がかりになります。**
+
+```
+davidanson.gallerycdn.vsassets.io → 23.52.106.41     (Akamai)
+davidanson.gallery.vsassets.io    → 150.171.74.16
+marketplace.visualstudio.com      → 150.171.73.16 / 150.171.74.16   （#7 の 2026-08-03 の記録）
+```
+
+**`gallery.vsassets.io` は `marketplace.visualstudio.com` と同じアドレスを返しています。**
+
+`marketplace.visualstudio.com` は基底プロファイルの `vscode` バンドルに入っているため、そのアドレスは ipset に載ります。**IP でしか判定しない L3 では、`gallery.vsassets.io` 宛の通信が「たまたま同じアドレスだから」通ります。** `gallerycdn`（Akamai、別系統）だけが落ちる、という非対称がここから説明できます。
+
+**これは仮説です。** 観測しているのは「両者が同じアドレスを返した」ことだけで、`enforce` 下でどちらの経路が成否を分けたかを直接確かめたわけではありません。ただし §6.23 の「一部だけ入る」という挙動と整合します。
+
+**この形は [`design.md`](./design.md) §2.10 が挙げた「正しく解決できたようにしか見えない」の親戚です。** allowlist に書いていない名前が、書いてある別の名前と同じアドレスを共有しているために通る。**名前で判定する層に移せば、この偶然への依存も消えます。**
+
+#### 確かめられていないこと（SKIP）
+
+* **V2（`enforce` と `audit` で入る拡張を比べる対照実験）— 未実施**
+* **V7-2** — L3（`init-project-firewall.sh` の縮小後のテーブル）と組み合わせた完全な fail-closed。PoC の client には L3 制限を課していないため、`http_proxy` を無視した直接接続まで塞がれることは検証できていません
+* **V8-2** — ACL 変更に再ビルド相当の操作が要ることの目視確認
+* **V10** — 明示型を採ったため検証項目から外れました（[`design.md`](./design.md) §2.23 必須要件 3）
+* **VS Code 拡張の実インストール** — V4 が確かめたのは `curl` での接続成立とログの具体名一致までです。**Squid を実際に挟んだ状態で拡張が入るかは未確認**（[`known-issues.md`](./known-issues.md) #7）
+
+#### 途中で踏んだ 2 つの問題（どちらも PoC 側の作りの問題）
+
+**1. `cap_drop: [ALL]` で Squid が起動しなかった。** Squid は root で起動したあと `cache_effective_user`（Debian の既定は `proxy`）へ降格しようとし、`CAP_SETUID` / `CAP_SETGID` が無いため失敗して SIGSEGV で落ちていました。
+
+```
+ALERT: setgid: (1) Operation not permitted
+ALERT: initgroups: unable to set groups for User proxy and Group 13
+egress-proxy-1 exited with code 139
+```
+
+**特権を戻すのではなく、最初から非 root（uid 13）で起動する形にしました。** [`design.md`](./design.md) §2.23 は「SNI proxy は ipset を書かないので特権を必要としない」ことを sidecar 配置の根拠にしており、降格のためだけに特権を持たせるとその根拠と食い違うためです。
+
+**2. 検証スクリプトが偽陽性を出していた。** これが記録として最も重要です。
+
+client 側にも `cap_drop: [ALL]` を付けていたため apt が `_apt`（uid 42）へ降格できず、`curl` が入りませんでした。その結果 `curl` を使う判定がすべて「接続が失敗した」に見え、**失敗の理由を区別していなかった `verify.sh` が V5-1・V6-1・V7-1 を `ok` にしていました。**
+
+```
+OCI runtime exec failed: exec: "curl": executable file not found in $PATH
+  ok   V5-1: 許可していないドメインへの接続は失敗する
+  ok   V6-1: victim (harness) への接続は発生しなかった
+  ok   V7-1: proxy停止後はproxy経由の経路が失われる
+```
+
+**「接続が失敗すること」を成功条件にする判定は、失敗の理由を区別しなければ意味を持ちません。** §5 の「消えた SKIP はあったことにされたカバレッジになる」と同じ形の問題が、`ok` の側で起きたものです。
+
+修正として `verify.sh` に**判定不能**（道具を実行できなかった）を導入し、接続失敗と区別して SKIP するようにしました。あわせて V6 では「リクエストが proxy まで届いたこと」を、V7 では「停止前に同じ経路が生きていること」を前提条件として確認します。
+
+**この 2 件はどちらも proxy の採否とは無関係です。** PoC の環境の作りと、検証スクリプトの判定の作りの問題でした。

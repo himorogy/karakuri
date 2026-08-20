@@ -35,7 +35,7 @@
 	// 個人設定フック (/personal はホスト側 ~/.config/devc-personal の ro mount) も
 	// ここで実行する。取得を伴うため firewall 適用前のこの段に置く。フック本体は
 	// コンテナ内の主体には書けない。根拠は examples/devcontainer.json のコメント。
-	"postCreateCommand": "bash ./.devcontainer/post-create.sh && if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
+	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
 	// ファイアウォールを毎起動時に適用する。waitFor と組み合わせているため、適用に
 	// 失敗した状態でエディタが使えるようになる前に失敗が表面化する。
 	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",

@@ -1,0 +1,77 @@
+# egress-guard L7 proxy PoC — Squid サイドカーの Dockerfile
+#
+# なぜ自前ビルドか (proxy-selection-research.md §7):
+#   Squid には Docker Official Image が無い
+#   (docker-library/official-images/master/library/squid は 404。nginx/haproxy は 200)。
+#   sidecar として動かすにはイメージを自分で組む必要がある。
+#
+# ベースイメージの選定理由:
+#   debian:bookworm-slim を使う。理由は 2 つ。
+#     1. Docker Official Image である。サードパーティが事前ビルドした squid
+#        イメージ (例: ubuntu/squid) は、この調査時点でメンテナンス状況・
+#        サイズを確認できなかった (proxy-selection-research.md §8 未確認事項 2:
+#        hub.docker.com に到達できない環境だったため)。素性の分かる公式ベース +
+#        Debian 本体のリポジトリから squid を入れる方が監査しやすい。
+#     2. この devcontainer 自体が Debian 12 (bookworm) 上で動いている
+#        (.devcontainer/Dockerfile の FROM node:24 は Debian bookworm ベース)。
+#        同じ distro 系列に揃えることで、CVE 対応の追跡先を 1 つに保てる。
+#
+# 未確定なので digest ピン留めをしていない:
+#   proxy-selection-research.md の結論は「イメージは digest ピン留めが要る」
+#   だが、この Dockerfile を書いた環境には Docker も外向きの registry 到達性も
+#   無く、digest を実際に取得・記録できていない。@sha256:... へ差し替えるのは
+#   ホスト側でこのイメージを一度ビルドしてから行うこと。タグ決め打ちのままでは
+#   本実装に持ち込まない。
+FROM debian:bookworm-slim
+
+# squid-cache/squid の GitHub Security Advisories は 41 件 (critical 12 /
+# high 19 / medium 10、2020〜2026 年、proxy-selection-research.md §7)。
+# 大半は FTP gateway / ICP / cache_digest など、この構成 (明示型 CONNECT、
+# ssl_bump 無し) では使わない機能だが、バイナリには入ったままになる。
+# --no-install-recommends で周辺ツール (cachemgr の cgi 等) を削り、攻撃面を
+# パッケージレベルで絞る。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends squid \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# squid.conf / allowed-domains.txt はイメージに焼き込まない。
+# docker-compose.poc.yml から read-only bind mount する
+# (design.md §2.23 の I1: ACL がエージェントのコンテナから見えないことと、
+# ACL の反映にイメージ再ビルド相当の操作が要ることを、sidecar のコンテナ境界
+# そのもので満たす)。
+
+# Debian の squid パッケージは /var/spool/squid・/var/log/squid・
+# /run 配下に書き込む。read_only: true のコンテナで動かす前提
+# (proxy-selection-research.md §8 未確認事項 3) なので、これらは
+# docker-compose.poc.yml 側で tmpfs としてマウントする。ここでは
+# ディレクトリの存在だけ保証しておく。
+RUN mkdir -p /var/spool/squid /var/log/squid /run
+
+EXPOSE 3128
+
+# **非 root (Debian の proxy = uid 13) で起動する。**
+#
+# 2026-08-19 の実測: root で起動すると Squid は cache_effective_user
+# (Debian の既定は proxy) へ降格しようとし、CAP_SETUID / CAP_SETGID が無い
+# 環境では
+#   ALERT: setgid: (1) Operation not permitted
+#   ALERT: initgroups: unable to set groups for User proxy and Group 13
+# を吐き続けて exit 139 (SIGSEGV) で落ちる。sidecar は cap_drop: [ALL] で
+# 動かすため、降格のための特権も持たせない (design.md §2.23 は「SNI proxy は
+# 特権を必要としない」ことを sidecar 配置の根拠にしている)。
+#
+# 非 root で起動すれば Squid は降格処理そのものを行わない。http_port は 3128
+# なので特権ポートのバインドも要らない。
+#
+# docker-compose.poc.yml 側にも user: "13:13" を書いてあるが、こちらにも
+# 書いておくことで、compose を経由せず docker run しても同じ条件になる。
+USER proxy
+
+# -N: デーモン化しない (フォアグラウンドで動かし、コンテナのライフサイクルと
+#     プロセスのライフサイクルを一致させる)。
+# -f: squid.conf の場所を明示する。既定のまま docker-compose.poc.yml が
+#     bind mount するパスと合わせてある。
+# 設定が壊れていれば Squid は fatalf で即座に終了する (design.md 全体の
+# fail-closed 方針、§2.8 と同じ形)。「起動して全通す」経路は無い。
+ENTRYPOINT ["squid", "-N", "-f", "/etc/squid/squid.conf"]
