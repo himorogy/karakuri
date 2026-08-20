@@ -7,9 +7,6 @@
 # Compose はプロジェクトごとにユーザー定義ネットワーク（<name>_default）を
 # 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
 # だけ。判断の根拠は packages/egress-guard/README.md の「ネットワーク構成（推奨）」。
-
-# 変更しないこと。volume の実名がこれを接頭辞に決まるため、変えると履歴・
-# claude / codex 設定の volume が別物になり、ログインからやり直しになる。
 name: egress-guard-karakuri
 
 services:
