@@ -7,7 +7,10 @@
 # Compose はプロジェクトごとにユーザー定義ネットワーク（<name>_default）を
 # 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
 # だけ。判断の根拠は packages/egress-guard/README.md の「ネットワーク構成（推奨）」。
-name: egress-guard-karakuri
+
+# 変更しないこと。volume の実名がこれを接頭辞に決まるため、変えると履歴・
+# claude / codex 設定の volume が別物になり、ログインからやり直しになる。
+name: karakuri-dev
 
 services:
   dev:
@@ -28,6 +31,19 @@ services:
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
       CLAUDE_CONFIG_DIR: /home/node/.claude
+
+    # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
+    # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと
+    # root 所有で作られ、node ユーザーが /run/secrets を作れず書けない。
+    # tmpfs はコンテナを停止 → 再起動するだけでも消えるので、起動のたびに
+    # ホスト側の dev-inject スクリプトを実行し直すこと。
+    tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]
+
+    # dev 鍵（dotenvx の local / dev 復号キーや dev 用のトークン）は env_file では
+    # 注入しない。env_file はホスト上に恒久的な平文ファイルを要求し、コンテナの
+    # environ にも常駐して docker inspect や全子プロセスから見えてしまう。
+    # かわりに、コンテナ起動後にホスト側の dev-inject スクリプトで上の tmpfs
+    # （/run/secrets）へ注入する。
 
     volumes:
       # workspaceMount の置き換え。リポジトリの親を /workspaces に載せる
@@ -52,5 +68,8 @@ services:
 
 volumes:
   karakuri-bashhistory:
+    name: karakuri-bashhistory
   karakuri-claude-config:
+    name: karakuri-claude-config
   karakuri-codex-config:
+    name: karakuri-codex-config
