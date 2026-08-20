@@ -1076,7 +1076,7 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 
 	reset_env
 	export FAKE_UNAME_S=Darwin
-	export FAKE_SSH_G_STDOUT="localforward 127.0.1.1:4519 localhost:4519"
+	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	export FAKE_IFCONFIG_STDOUT="$LO0_WITH_ALIAS"
 	run_case karakuri-pf app
 
@@ -1093,7 +1093,7 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	reset_env
 	: >"$FAKE_HOME/.ssh/cm-devc-app"
 	export FAKE_UNAME_S=Darwin
-	export FAKE_SSH_G_STDOUT="localforward 127.0.1.1:4519 localhost:4519"
+	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
 	run_case karakuri-pf app
 
@@ -1114,7 +1114,7 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	# 代わりにはならない。
 	reset_env
 	export FAKE_UNAME_S=Darwin
-	export FAKE_SSH_G_STDOUT="localforward 127.0.1.1:4519 localhost:4519"
+	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	export FAKE_IFCONFIG_STDOUT="$LO0_NEAR_MISS"
 	run_case karakuri-pf app
 

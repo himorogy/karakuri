@@ -334,19 +334,21 @@ _karakuri_check_loopback() {
 	[ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
 
 	# `ssh -G` は Host ブロックや Match を解決した後の実効設定を、小文字の
-	# キーワードで出す。1 行は `localforward 127.0.1.1:4519 localhost:4519`
+	# キーワードで出す。1 行は `localforward [127.0.1.1]:4519 [localhost]:4519`
 	# の形になる。config を自分で読むと Host の照合・Include・多重定義まで
 	# 自前で持つことになるので、解決は ssh 自身にやらせる。
 	local cfg
 	cfg="$(ssh -G "$1" 2>/dev/null)" || return 0
 
-	# 2 番目のフィールド（bind 側）の `:` より前だけを見て、127. で始まる
-	# ものを集める。IPv6（`[::1]:4519`）や unix socket のパスはここで自然に
+	# 2 番目のフィールド（bind 側）は角括弧で囲まれているので、`:` で切る前に
+	# 取り除く。残りの先頭要素が 127. で始まるものを集める。IPv6
+	# （`[::1]:4519`）は角括弧を外すと先頭要素が空になり、unix socket の
+	# パスは角括弧も `127.` の接頭辞も持たないので、どちらもここで自然に
 	# 外れる。同じアドレスへ何本転送していても言うことは 1 回でよいので
 	# sort -u で潰す。
 	local addrs
 	addrs="$(printf '%s\n' "$cfg" |
-		awk '$1 == "localforward" { split($2, f, ":"); if (f[1] ~ /^127\./) print f[1] }' |
+		awk '$1 == "localforward" { addr = $2; gsub(/[][]/, "", addr); split(addr, f, ":"); if (f[1] ~ /^127\./) print f[1] }' |
 		sort -u)"
 	[ -n "$addrs" ] || return 0
 
