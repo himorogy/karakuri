@@ -53,11 +53,13 @@
 #
 # --- 提供する関数 ---------------------------------------------------------------
 #
-#   karakuri-pf <name>                              port forwarding を張り直す
-#   karakuri-clean-pf [name...]                     port forwarding の後始末
+#   karakuri-port-forward <name>                    port forwarding を張り直す
+#   karakuri-clean-port-forward [name...]           port forwarding の後始末
 #   karakuri-loopback <install|add|remove|list> [args...]   /etc/hosts と loopback alias の設定（sudo が要る）
 #   karakuri-dev-inject <project>                   dev container へ鍵を注入
-#   karakuri-dock <project>                         dev container の中で対話シェルを開く
+#   karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]
+#                                                    dev container を使える状態にしてから入る
+#                                                    （起動 → 未注入なら注入 → port forwarding → 対話シェル）
 #   karakuri-prod-run <org/repo> <sha> <task> [args...]
 #   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
 #   karakuri-prod-base <org/repo> <sha>             対話作業の土台を起動
@@ -367,7 +369,7 @@ _karakuri_check_loopback() {
 		case "$lo" in
 		*"inet $addr "*) continue ;;
 		esac
-		echo "karakuri-pf: loopback alias ${addr} is not on lo0, so the forward cannot bind. Run: karakuri-loopback add ${addr}" >&2
+		echo "karakuri-port-forward: loopback alias ${addr} is not on lo0, so the forward cannot bind. Run: karakuri-loopback add ${addr}" >&2
 		missing=1
 	done <<EOF
 ${addrs}
@@ -377,14 +379,14 @@ EOF
 	return 0
 }
 
-# karakuri-pf <name> — port forwarding を張り直す。
+# karakuri-port-forward <name> — port forwarding を張り直す。
 #
 # 「張る」ではなく「張り直す」なのは、コンテナを作り直した後の再接続が
 # 主な用途だから。古い master が残ったままだと、新しいコンテナへ繋いだ
 # つもりで死んだセッションを使い続けることになる。先に必ず落とす。
-karakuri-pf() {
+karakuri-port-forward() {
 	if [ "$#" -ne 1 ]; then
-		echo "Usage: karakuri-pf <name>   (ssh host devc-<name>, or the full host alias)" >&2
+		echo "Usage: karakuri-port-forward <name>   (ssh host devc-<name>, or the full host alias)" >&2
 		return 1
 	fi
 
@@ -408,17 +410,17 @@ karakuri-pf() {
 	# ssh -fN は背面へ回った後も端末の stderr を掴み続ける。転送先の dev
 	# サーバが落ちている状態でブラウザが再接続を繰り返すと、
 	# `connect_to localhost port 4301: failed.` が端末に延々と出続け、
-	# karakuri-clean-pf で殺すまで止まらない。転送そのものは壊れておらず、
+	# karakuri-clean-port-forward で殺すまで止まらない。転送そのものは壊れておらず、
 	# dev サーバを起動し直せばそのまま復活するので、転送を畳むのは過剰な
 	# 対処である。畳まずに黙らせるには、出力先を端末から外すしかない。
 	#
 	# 以後の転送エラーはこの 1 本のログに溜まる。読みたいときは
-	# `tail -f "${XDG_STATE_HOME:-$HOME/.local/state}/karakuri/pf-<host>.log"`。
+	# `tail -f "${XDG_STATE_HOME:-$HOME/.local/state}/karakuri/port-forward-<host>.log"`。
 	# host ごとにファイルを分けてあるので、どのコンテナの転送が転んでいるかは
 	# ファイル名で分かる。
 	local log_dir log
 	log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/karakuri"
-	log="${log_dir}/pf-${host}.log"
+	log="${log_dir}/port-forward-${host}.log"
 
 	# ログが置けないなら、ログ分離だけをあきらめて従来どおり端末へ出す。
 	# ここで止めると「ログが取れない」という副次的な事情で port forwarding
@@ -442,16 +444,16 @@ karakuri-pf() {
 		tail -n 20 "$log" >&2 2>/dev/null
 	fi
 
-	echo "karakuri-pf: 'ssh -fN ${host}' failed. Check that the container is up and that ~/.ssh/config has a Host entry for '${host}'" >&2
+	echo "karakuri-port-forward: 'ssh -fN ${host}' failed. Check that the container is up and that ~/.ssh/config has a Host entry for '${host}'" >&2
 	return 1
 }
 
-# karakuri-clean-pf [name...] — port forwarding の後始末。
+# karakuri-clean-port-forward [name...] — port forwarding の後始末。
 #
 # 名前を指定しなければ、ControlPath の規約（~/.ssh/cm-<host>）に沿って
 # devc- で始まるものを全部畳む。cm-* まで広げると、この規約と無関係な
 # 利用者自身の ssh 多重化まで巻き添えにするので広げない。
-karakuri-clean-pf() {
+karakuri-clean-port-forward() {
 	local host sock
 
 	if [ "$#" -gt 0 ]; then
@@ -486,10 +488,10 @@ karakuri-clean-pf() {
 # するため、内部で sudo を使う。
 #
 # 例外を 1 つ作ってでもこの形にしたのは、日常操作の側に sudo を持ち込まない
-# ため。alias の付与を karakuri-pf の中でやれば「転送を張るたびにパスワードを
+# ため。alias の付与を karakuri-port-forward の中でやれば「転送を張るたびにパスワードを
 # 聞かれる」ことになり、聞かれ慣れた利用者は中身を読まずに通すようになる。
 # 特権が要るのは設定作業（一度やれば再起動を跨いで残る）だけなので、そこを
-# この 1 つの関数に閉じ込め、毎日打つ karakuri-pf は特権なしのまま残した。
+# この 1 つの関数に閉じ込め、毎日打つ karakuri-port-forward は特権なしのまま残した。
 #
 # サブコマンド名の検査はここではしない。同じ規則を 2 箇所に持つと片方だけが
 # 古くなる（karakuri-prod-run が sha を検査しないのと同じ判断）。引数 0 個の
@@ -535,44 +537,148 @@ karakuri-dev-inject() {
 		"$dev_inject"
 }
 
-# karakuri-dock <project> — dev container の中で対話 zsh を開く。dock.sh を
-# 呼ぶだけの薄いラッパー。
+# _karakuri_dock_inject <compose-project> [service] — karakuri-dock が
+# `--secrets-ok` の失敗時にだけ呼ぶ注入経路。
 #
-# 関数にできるのは 2 つあるモードのうち片方だけである、というのがこの関数を
-# 読むときに知っておくべきこと。dock.sh には、対話 zsh を開く既定モードと、
-# `--stdio` で SSH のトランスポート（~/.ssh/config の ProxyCommand から
-# 呼ばれ、コンテナ内の sshd へ stdin/stdout を繋ぐ）になるモードがある。
-# 関数として提供できるのは前者だけで、後者は今までどおり ProxyCommand へ
-# dock.sh の絶対パスを書く必要がある:
+# karakuri-dev-inject とは別にしてあるのは、DEV_COMPOSE_PROJECT に渡す値が
+# 違うため。karakuri-dev-inject は `<project>-dev` を組み立てるが、
+# karakuri-dock の `-p` は compose project 名そのものなので、ここでは
+# 変換をかけずそのまま使う（dock.sh が compose project 名の組み立てを
+# やめたのと同じ理由で、呼び出し側が渡した値をそのまま使う）。
 #
-#   Host devc-*
-#     ProxyCommand /path/to/dock.sh %h --stdio
+# DEV_BROKER が空かどうかはここでは検査しない。dev-inject.sh 自身が
+# 必須環境変数の欠落を検査して名指しするので、同じ検査をここにも置くと
+# 片方だけ直したときに食い違う。
+_karakuri_dock_inject() {
+	local project="$1" service="$2"
+	local dev_inject broker
+	dev_inject="$(_karakuri_tool dev-inject.sh)" || return 1
+	broker="$(karakuri-broker-command dev "$project")" || return 1
+
+	local -a _karakuri_env
+	_karakuri_env=()
+	_karakuri_broker_env_into dev "$project" || return 1
+
+	local -a _karakuri_dev_env
+	_karakuri_dev_env=("DEV_BROKER=${broker}" "DEV_COMPOSE_PROJECT=${project}")
+	[ -z "$service" ] || _karakuri_dev_env+=("DEV_SERVICE=${service}")
+
+	env "${_karakuri_env[@]}" "${_karakuri_dev_env[@]}" "$dev_inject"
+}
+
+# karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up] —
+# dev container を使える状態にしてから入る: 起動 → 未注入なら注入 →
+# port forwarding → 対話シェル。`up` を付けると、入る手前（対話シェルを
+# 開く前）で止まる。
 #
-# 理由は ssh 側にある。ssh は ProxyCommand を `/bin/sh -c` で起動するので、
-# 利用者の対話シェル（zsh / bash）に定義された関数はそこからは見えない。
-# source して定義した関数は、そのシェルのプロセスの中にしか存在しないため
-# である。したがって karakuri-dock を足しても ProxyCommand の行は短くならず、
-# 絶対パスを書く必要も消えない。この非対称を明記しておくのは、「関数を
-# 足したのだから ProxyCommand も `karakuri-dock %h --stdio` と書けるはずだ」
-# と読まれると、config を書き換えた時点で ssh が繋がらなくなり、しかも出る
-# メッセージ（ProxyCommand が sh から `command not found` で落ちる）から
-# 「関数は sh からは見えない」までは辿りにくいため。
+# `-p` に渡す値は compose project 名そのもの（dock.sh 側の規約と同じ）。
+# ssh の Host（`devc-<compose-project>`）にも、注入先の DEV_COMPOSE_PROJECT
+# にも変換をかけずこの値をそのまま使う。`<project>-dev` のような規約の
+# 組み立ては呼び出し側（利用者の `dock` 関数、~/.ssh/config の HostName）に
+# 委ねてあり、ここではもう行わない。
 #
-# `--stdio` を渡すこと自体は素通しで通る（下記のとおり引数を検査しない）。
-# 禁じてはいないが、ssh から呼ばれない限り、SSH プロトコルのバイト列を
-# 端末へ吐くだけで使い道は無い。
+# `dock.sh` を対話シェルなしで 2 回呼ぶのは、コンテナの起動状態を変えずに
+# secret の有無だけを見る `--secrets-ok` と、起動だけを行う
+# `--ensure-running` の役目が分かれているため（`dock.sh` 冒頭のコメント
+# 参照）。
 #
-# 引数の検査はここではしない。プロジェクト名の要否もオプションの綴りも
-# dock.sh 側が見ており、同じ規則を 2 箇所に持つと片方だけが古くなる
-# （karakuri-loopback / karakuri-prod-run と同じ判断）。引数 0 個のときも
-# そのまま渡し、usage はスクリプト側に出させる。
+# port forwarding を張るかどうかは `ssh -G <host>` の実効設定に
+# `localforward` があるかで決める。config を自分で読み直さないので、
+# `Host *` や `Include` まで込みで ssh 自身の解決結果に従う。転送を
+# 持たないホストへは張りに行かず、飛ばしたこととその理由を stderr に
+# 1 行出す（黙って飛ばすと `.ssh/config` への `LocalForward` の書き忘れに
+# 気づけない）。
+#
+# pf の失敗の扱いは `up` の有無で変える。`up` は対話シェルを開かないので
+# 転送の成否をそのまま返す。`up` 無しは警告に留めて入る（転送が張れない
+# ことと、コンテナで作業を始められることは別である）。
 karakuri-dock() {
+	local usage="Usage: karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]"
+	local project="" service="" workspace="" up=0
+
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		-p)
+			if [ "$#" -lt 2 ]; then
+				echo "karakuri-dock: -p requires a value" >&2
+				echo "$usage" >&2
+				return 1
+			fi
+			project="$2"
+			shift 2
+			;;
+		-s)
+			if [ "$#" -lt 2 ]; then
+				echo "karakuri-dock: -s requires a value" >&2
+				echo "$usage" >&2
+				return 1
+			fi
+			service="$2"
+			shift 2
+			;;
+		-w)
+			if [ "$#" -lt 2 ]; then
+				echo "karakuri-dock: -w requires a value" >&2
+				echo "$usage" >&2
+				return 1
+			fi
+			workspace="$2"
+			shift 2
+			;;
+		up)
+			up=1
+			shift
+			;;
+		-h | --help)
+			echo "$usage" >&2
+			return 0
+			;;
+		*)
+			echo "karakuri-dock: unexpected argument: $1" >&2
+			echo "$usage" >&2
+			return 1
+			;;
+		esac
+	done
+
+	if [ -z "$project" ]; then
+		echo "$usage" >&2
+		return 1
+	fi
+
 	local dock
 	dock="$(_karakuri_tool dock.sh)" || return 1
 
-	# 環境変数は渡さない。karakuri-dev-inject と違って broker は関与せず、
-	# dock.sh が読むのは自分の引数と docker の状態だけである。
-	"$dock" "$@"
+	local -a dock_argv
+	dock_argv=(-p "$project")
+	[ -z "$service" ] || dock_argv+=(-s "$service")
+	[ -z "$workspace" ] || dock_argv+=(-w "$workspace")
+
+	"$dock" "${dock_argv[@]}" --ensure-running || return 1
+
+	if ! "$dock" "${dock_argv[@]}" --secrets-ok; then
+		_karakuri_dock_inject "$project" "$service" || return 1
+	fi
+
+	local host
+	host="$(_karakuri_ssh_host "$project")"
+
+	if ssh -G "$host" 2>/dev/null | grep -q '^localforward '; then
+		if ! karakuri-port-forward "$project"; then
+			if [ "$up" -eq 1 ]; then
+				return 1
+			fi
+			echo "karakuri-dock: port forwarding to '${host}' failed — continuing without it" >&2
+		fi
+	else
+		echo "karakuri-dock: '${host}' has no LocalForward in ~/.ssh/config — skipping port forwarding" >&2
+	fi
+
+	if [ "$up" -eq 1 ]; then
+		return 0
+	fi
+
+	"$dock" "${dock_argv[@]}"
 }
 
 # --- compose ファイルの解決 --------------------------------------------------------
@@ -649,7 +755,7 @@ _karakuri_compose_for() {
 # その 1 枚。digest の照合のように「repo を 1 つに決めずに全部を見る」側が使う。
 #
 # glob をそのまま展開せず find を使うのは、一致 0 件のときの挙動が bash と
-# zsh で違うため（karakuri-clean-pf と同じ理由）。深さを 1 に切ってあるのは、
+# zsh で違うため（karakuri-clean-port-forward と同じ理由）。深さを 1 に切ってあるのは、
 # あのディレクトリは git repo なので .git/ の中まで拾ってしまうから。
 _karakuri_compose_list() {
 	local mode
@@ -1140,16 +1246,17 @@ karakuri-help() {
 	cat <<'FUNCS'
 karakuri.sh が提供する関数:
 
-  karakuri-pf <name>
+  karakuri-port-forward <name>
       port forwarding を張り直す
-  karakuri-clean-pf [name...]
+  karakuri-clean-port-forward [name...]
       port forwarding の後始末（省略時は devc-* を全部畳む）
   karakuri-loopback <install|add|remove|list> [args...]
       /etc/hosts と loopback alias を設定する（alias は macOS のみ。この関数だけ sudo が要る）
   karakuri-dev-inject <project>
       起動済みの dev container へ鍵を注入する
-  karakuri-dock <project>
-      dev container の中で対話シェルを開く（ssh の ProxyCommand には dock.sh の絶対パスが要る）
+  karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]
+      dev container を使える状態にしてから入る（起動 → 未注入なら注入 → port forwarding → 対話シェル。up で入る手前で止まる）
+      ssh の ProxyCommand には dock.sh の絶対パスが要る（同じファイルの --stdio モード）
   karakuri-prod-run <org/repo> <sha> <task> [task-args...]
       install を挟んでタスクランナー経由で prod のタスクを実行する
   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
@@ -1217,14 +1324,21 @@ FUNCS
 # 短い名前は利用者の側で付ける。下をそのまま .zshrc / .bashrc へ写せば、
 # これまでの短い名前のまま使える（alias は関数にも効き、引数もそのまま渡る）。
 #
-#   alias pf='karakuri-pf'
-#   alias clean-pf='karakuri-clean-pf'
+#   alias pf='karakuri-port-forward'
+#   alias clean-pf='karakuri-clean-port-forward'
 #   alias dev-inject='karakuri-dev-inject'
-#   alias dock='karakuri-dock'
 #   alias prod-run='karakuri-prod-run'
 #   alias prod-exec='karakuri-prod-exec'
 #   alias prod-base='karakuri-prod-base'
 #   alias prod-shell='karakuri-prod-shell'
+#
+# karakuri-dock は compose project 名・service 名・workspace を引数で
+# 受け取るだけで、`<project>-dev` のような規約を組み立てない（この点だけは
+# alias ではなく短い関数にする。alias は引数をそのまま渡す口しか持たず、
+# `-p "$1-dev"` のような組み立てができない）。配らないのは、汎用的な
+# `dock` という名前を利用者のシェルへ勝手に持ち込まないため:
+#
+#   dock() { karakuri-dock -p "$1-dev" -w "/workspaces/$1" "${@:2}" }
 #
 # 環境変数の設定例:
 #

@@ -33,14 +33,14 @@ publish してもパケットはコンテナに届いた時点で落ちます。
 ### 1. `~/.ssh/config`
 
 ```
-Host devc-<your-project>
-  HostName <your-project>
+Host devc-<your-project>-dev
+  HostName <your-project>-dev
   # プロジェクトのポート一覧に合わせて列挙する
   LocalForward 127.0.1.1:4588 localhost:4588
   LocalForward 127.0.1.1:<port> localhost:<port>
 
 Host devc-*
-  ProxyCommand ~/.config/karakuri/images/runtime-base/templates/host/dock.sh %h --stdio
+  ProxyCommand ~/.config/karakuri/images/runtime-base/templates/host/dock.sh -p %h --stdio
   User node
   IdentityFile ~/.ssh/keys/<your-key>
   IdentitiesOnly yes
@@ -54,15 +54,17 @@ Host devc-*
   UserKnownHostsFile /dev/null
 ```
 
-接続は `ssh devc-<your-project>` です。転送を張り直すときは `karakuri-pf <your-project>` を使います（古い master を落としてから繋ぎ直します）。
+`Host` の別名は `HostName`（= dock.sh へ渡る compose project 名そのもの）と同じ値にしてください。`karakuri-dock` は `-p` に渡した値から `devc-<その値>` という ssh Host を組み立てて port forwarding を張るため（`_karakuri_ssh_host` 参照）、別名を `HostName` と違う値にすると `karakuri-dock` が張り直す転送と `LocalForward` を書いた Host ブロックが一致せず、書いてあるのに「転送を持たないホスト」と誤診断されます。雛形の compose project 名の付け方（`<your-project>-dev`）に従うなら、別名も `devc-<your-project>-dev` です。
+
+接続は `ssh devc-<your-project>-dev` です。転送を張り直すときは `karakuri-port-forward <your-project>-dev` を使います（古い master を落としてから繋ぎ直します）。
 
 `ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../templates/host/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
 
-**ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock <your-project>` で呼べますが、`ProxyCommand` は関数を経由できません。
+**ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock -p <compose-project>` で呼べますが（利用者側に置く短い `dock` 関数の作り方は [example/README.md](../../example/README.md) の「dev の起動」を参照）、`ProxyCommand` は関数を経由できません。
 
-`dock.sh` は実行ファイルなので、`templates/host` を `PATH` に入れていれば `ProxyCommand dock.sh %h --stdio` とも書けます。ただし `ssh` を起動する側の環境の `PATH` に依存します（対話シェルから打つ分には効きますが、GUI アプリや別ツールが `ssh` を起動する経路では違う `PATH` になります）。**絶対パスを勧めます。**
+`dock.sh` は実行ファイルなので、`templates/host` を `PATH` に入れていれば `ProxyCommand dock.sh -p %h --stdio` とも書けます。ただし `ssh` を起動する側の環境の `PATH` に依存します（対話シェルから打つ分には効きますが、GUI アプリや別ツールが `ssh` を起動する経路では違う `PATH` になります）。**絶対パスを勧めます。**
 
-`HostName` は DNS では引かれません。`ProxyCommand` の `%h` に展開されて `dock.sh` へ渡すプロジェクト名になるだけです。`dock.sh` はこの名前から compose project 名 `<your-project>-dev` を組み立て、`com.docker.compose.project` と `com.docker.compose.service` のラベルでコンテナを引きます。**`docker-compose.yaml` の `name:` が `<your-project>-dev` である必要があります**（雛形のとおりであれば合っています）。`container_name` の書き方には依存しません。
+`HostName` は DNS では引かれません。`ProxyCommand` の `%h` に展開されて `dock.sh -p` へ渡る値になるだけです。`dock.sh` はこの値をそのまま compose project 名として使い、`com.docker.compose.project` と `com.docker.compose.service` のラベルでコンテナを引きます（`<your-project>-dev` のような組み立ては `dock.sh` 側ではもう行わないので、`HostName` に compose project 名そのものを書きます）。**`docker-compose.yaml` の `name:` が `HostName` と同じ値である必要があります**（雛形のとおりであれば `<your-project>-dev` で合っています）。`container_name` の書き方には依存しません。
 
 `LocalForward` の転送先 `localhost` はコンテナ内で解決されます。
 
@@ -98,7 +100,7 @@ karakuri-loopback add 127.0.1.1 <your-project-hostname>
 
 現状は `karakuri-loopback list` で確認できます。設定ファイル・`lo0` の実際の状態・`/etc/hosts` の 3 つを並べて出すので、「`/etc/hosts` には書いたが alias を張り忘れている」といったズレがその場で分かります。
 
-`karakuri-loopback` は `sudo` を要求します（LaunchDaemon の配置と `/etc/hosts` の編集のため）。`karakuri.sh` が提供する関数のうち、特権が要るのはこれだけです。日常的に打つ `karakuri-pf` は `sudo` を必要としません。
+`karakuri-loopback` は `sudo` を要求します（LaunchDaemon の配置と `/etc/hosts` の編集のため）。`karakuri.sh` が提供する関数のうち、特権が要るのはこれだけです。日常的に打つ `karakuri-port-forward` は `sudo` を必要としません。
 
 Linux ホストでは `127.0.0.0/8` 全体が最初から bind できるため、alias の段（`ifconfig` と LaunchDaemon）は飛ばされます。`/etc/hosts` の管理と設定ファイルへの記録は同じように行われるので、`karakuri-loopback add 127.0.1.1 <your-project-hostname>` はそのまま使えます。何を飛ばしたかは実行時に表示されます。
 
@@ -246,13 +248,13 @@ Vite / Astro の dev サーバは、未知の Host ヘッダを持つリクエ�
 
 **転送は正常です。** 転送先のサービス（dev サーバ）が落ちているだけで、ブラウザが再接続を繰り返すたびに `ssh` がこれを吐きます。dev サーバを起動し直せば復活するので、転送を畳む必要はありません。
 
-`karakuri-pf` は `ssh -fN` の stderr を `${XDG_STATE_HOME:-~/.local/state}/karakuri/pf-<host>.log` へ逃がすので、端末は汚れません。中身を見たいときは `tail -f` してください。
+`karakuri-port-forward` は `ssh -fN` の stderr を `${XDG_STATE_HOME:-~/.local/state}/karakuri/port-forward-<host>.log` へ逃がすので、端末は汚れません。中身を見たいときは `tail -f` してください。
 
-`karakuri-clean-pf` で畳めば止まりますが、これは転送ごと捨てる操作です。`ssh` を黙らせる目的で使わないでください。
+`karakuri-clean-port-forward` で畳めば止まりますが、これは転送ごと捨てる操作です。`ssh` を黙らせる目的で使わないでください。
 
 ### `bind: Can't assign requested address`
 
-macOS で loopback エイリアスが張られていません。`karakuri-loopback add <addr>` で恒久化してください。`karakuri-pf` は接続前に `~/.ssh/config` の `LocalForward` を読んで検査するので、通常はこのメッセージではなく、どのアドレスが足りないかを名指しするメッセージが出ます。
+macOS で loopback エイリアスが張られていません。`karakuri-loopback add <addr>` で恒久化してください。`karakuri-port-forward` は接続前に `~/.ssh/config` の `LocalForward` を読んで検査するので、通常はこのメッセージではなく、どのアドレスが足りないかを名指しするメッセージが出ます。
 
 ### `Missing privilege separation directory: /run/sshd`
 
