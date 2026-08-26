@@ -3,23 +3,46 @@ set -euo pipefail
 
 # dock.sh — dev container へ入るためのホスト側スクリプト。
 #
-# 既定（引数省略）は dev container の中で対話 zsh を開く。
-# --stdio は ~/.ssh/config の ProxyCommand から呼ばれ、コンテナ内の sshd を
-# inetd モードで起動して stdin/stdout を SSH のトランスポートにする
-# （詳細は下の CONTRACT を参照）。
+# compose project 名・service 名・workspace はすべて引数で受け取り、
+# コンテナ名や workspace のパスを組み立てない。規約の吸収（compose project
+# 名の付け方・workspace のパス）は呼び出し側の仕事にする。karakuri の
+# 配布物には規約を仮定する薄いラッパーは含めない。
+#
+#   dock.sh -p <compose-project> [-s <service>] [-w <workspace>] [<mode>]
+#
+# <service> の既定は "dev"。<workspace> を省略すると docker exec に -w を
+# 渡さず、コンテナの WORKDIR に従う。
+#
+# モード（省略時は対話 zsh）:
+#
+#   --stdio           ~/.ssh/config の ProxyCommand から呼ばれ、コンテナ内の
+#                      sshd を inetd モードで起動して stdin/stdout を SSH の
+#                      トランスポートにする（下の CONTRACT を参照）。secret
+#                      が未注入なら fail closed で exit 1 にする。
+#   --ensure-running   対象コンテナを起動して終了する。stdout に何も出さない。
+#   --secrets-ok       secret が注入済みかを判定して exit 0 / 1 を返す。
+#                      stdout・stderr は空。コンテナの起動状態は変えない
+#                      （判定を打っただけで起動するのは呼び出し側から見て
+#                      予想外である）。
+#
+# 判定は /run/secrets/SSH_AUTHORIZED_KEYS の有無で行い、root で実行する。
+# /run/secrets の所有と mode を決めるのは注入側であり、既定ユーザーで読める
+# 保証を判定側が前提にすると、注入側が権限を締めた瞬間に「注入済みなのに
+# 未注入と誤判定する」形で壊れる。/run が tmpfs である以上、SSH 鍵の有無は
+# 「この起動に対して注入を実行したか」と同義であり、同じ 1 回の注入で入る
+# 他の secret の有無とも一致する。
 #
 # ~/.ssh/config での使い方（PORT-FORWARDING.md も参照）:
 #
+#   Host devc-<your-project>
+#     HostName <your-project>-dev
+#
 #   Host devc-*
-#     ProxyCommand /path/to/dock.sh %h --stdio
+#     ProxyCommand /path/to/dock.sh -p %h --stdio
 #
-# %h は Host ブロックの HostName に展開される。したがって
-#
-#   Host devc-<project>
-#     HostName <project>
-#
-# のように書いておけば、`ssh devc-<project>` を打ったときに ProxyCommand へ
-# プロジェクト名がそのまま渡る。
+# %h は Host ブロックの HostName に展開される。HostName に compose project
+# 名そのものを書いておけば、`ssh devc-<your-project>` を打ったときに
+# ProxyCommand へ -p の値がそのまま渡る。
 
 # ---------------------------------------------------------------------------
 # CONTRACT (--stdio mode)
@@ -60,113 +83,167 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  dock <project>
-  dock <project> --stdio
+  dock.sh -p <compose-project> [-s <service>] [-w <workspace>]
+  dock.sh -p <compose-project> [-s <service>] --stdio
+  dock.sh -p <compose-project> [-s <service>] --ensure-running
+  dock.sh -p <compose-project> [-s <service>] --secrets-ok
+
+Options:
+  -p <compose-project>  compose project label to match (required)
+  -s <service>          compose service label to match (default: dev)
+  -w <workspace>        docker exec -w value (default: container's WORKDIR;
+                        used by the default mode only)
 
 Modes:
-  default   Open an interactive zsh session in the dev container.
-  --stdio   Run sshd over stdin/stdout for SSH ProxyCommand.
+  (default)         Open an interactive zsh session in the dev container.
+  --stdio           Run sshd over stdin/stdout for SSH ProxyCommand. Fails
+                    closed (exit 1, no stdout) when secrets are not injected.
+  --ensure-running  Start the container if it is not running, then exit.
+  --secrets-ok      Exit 0 if secrets are injected, 1 otherwise. Never
+                    starts the container and never prints anything.
 EOF
 }
 
 project=""
+service=""
+workspace=""
 mode="shell"
+mode_flag=""
 
-for arg in "$@"; do
-    case "$arg" in
+set_mode() {
+    if [[ -n "$mode_flag" && "$mode_flag" != "$1" ]]; then
+        echo "dock: cannot combine ${mode_flag} and $1 — pick one mode" >&2
+        exit 1
+    fi
+    mode_flag="$1"
+    mode="$2"
+}
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -p)
+            [[ "$#" -ge 2 ]] || { echo "dock: -p requires a value" >&2; usage; exit 1; }
+            project="$2"
+            shift 2
+            ;;
+        -s)
+            [[ "$#" -ge 2 ]] || { echo "dock: -s requires a value" >&2; usage; exit 1; }
+            service="$2"
+            shift 2
+            ;;
+        -w)
+            [[ "$#" -ge 2 ]] || { echo "dock: -w requires a value" >&2; usage; exit 1; }
+            workspace="$2"
+            shift 2
+            ;;
         --stdio)
-            mode="stdio"
+            set_mode --stdio stdio
+            shift
+            ;;
+        --ensure-running)
+            set_mode --ensure-running ensure-running
+            shift
+            ;;
+        --secrets-ok)
+            set_mode --secrets-ok secrets-ok
+            shift
             ;;
         -h|--help)
             usage
             exit 0
             ;;
         -*)
-            echo "Unknown option: $arg" >&2
+            echo "Unknown option: $1" >&2
             usage
             exit 1
             ;;
         *)
-            if [[ -n "$project" ]]; then
-                echo "Unexpected argument: $arg" >&2
-                usage
-                exit 1
-            fi
-            project="$arg"
+            echo "Unexpected argument: $1" >&2
+            usage
+            exit 1
             ;;
     esac
 done
 
 if [[ -z "$project" ]]; then
+    echo "dock: -p <compose-project> is required" >&2
     usage
     exit 1
 fi
 
+service="${service:-dev}"
+
 # コンテナはコンテナ名の決め打ちではなく、compose 自身が付けるラベルで引く。
 # `com.docker.compose.project` と `com.docker.compose.service` は
 # docker/compose が生成するコンテナへ必ず付ける識別子で、project 名・
-# service 名のどちらも compose ファイルの中身を読まずに厳密一致で引ける。
-# ラベルは compose 自身がコンテナへ焼き込む識別子であり、こちらが名前を
-# 組み立てて一致を期待するものではない（karakuri.sh の karakuri-prod-shell
-# と同じ規律。examples/docker-compose.yaml の container_name は
-# `<project>-devcontainer` で、以前この関数が組み立てていた
-# `<project>-dev-container` とは一致しない。名前の組み立てに頼ると、
-# こういう食い違いがそのまま「見つからない」や「別プロジェクトへ入る」に
-# なる）。
+# service 名のどちらも compose ファイルの中身を読まずに厳密一致で引ける
+# （karakuri.sh の karakuri-prod-shell と同じ規律）。
 #
-# compose project 名は `<project>-dev`（karakuri-dev-inject / dev-inject.sh
-# が使っている規約と同じ）。service 名は `dev`（examples/docker-compose.yaml
-# の services: を参照）。
-compose_project="${project}-dev"
-service="dev"
-
 # -a を付けるのは、停止中のコンテナも引いて起動できるようにするため
 # （devcontainer は使わないときコンテナを止めるのが普通の運用）。
 cids="$(docker ps -a -q \
-    --filter "label=com.docker.compose.project=${compose_project}" \
+    --filter "label=com.docker.compose.project=${project}" \
     --filter "label=com.docker.compose.service=${service}")" || {
     echo "dock: 'docker ps' failed" >&2
     exit 1
 }
 
 if [[ -z "$cids" ]]; then
-    echo "dock: no container for service '${service}' in compose project '${compose_project}'. The dev container for '${project}' has not been created yet — its compose project name should be '${compose_project}' (open the project in the IDE / devcontainer extension first)" >&2
+    echo "dock: no container for service '${service}' in compose project '${project}'. Start it first (e.g. open the project in your devcontainer tool), then try again" >&2
     exit 1
 fi
 
 # 複数件でも止める。「とりあえず 1 つ選ぶ」は、選んだことが利用者に見えない
 # まま別のコンテナへ入ることになる（karakuri-prod-shell と同じ規律）。
 if [[ "$(printf '%s\n' "$cids" | wc -l)" -gt 1 ]]; then
-    echo "dock: multiple containers match service '${service}' in compose project '${compose_project}' — cannot decide which one to enter" >&2
+    echo "dock: multiple containers match service '${service}' in compose project '${project}' — cannot decide which one to enter" >&2
     exit 1
 fi
 
 container="$cids"
 
-# workspace は shell モードでのみ使う。devcontainer.json の workspaceFolder
-# の規約（/workspaces/<project>）に合わせたもので、--stdio 側では使わない。
-workspace="/workspaces/${project}"
-
-running="$(docker inspect -f '{{.State.Running}}' "$container")"
-
-if [[ "$running" != "true" ]]; then
-    echo "Starting $container..." >&2
-    docker start "$container" >/dev/null
-fi
+running="$(docker inspect -f '{{.State.Running}}' "$container")" || {
+    echo "dock: 'docker inspect' failed for '${container}'" >&2
+    exit 1
+}
 
 case "$mode" in
-    shell)
-        exec env \
-            MSYS_NO_PATHCONV=1 \
-            docker exec \
-            -it \
-            -w "$workspace" \
-            "$container" \
-            zsh
+    # コンテナの起動状態を変えない。停止中なら、この起動に対する注入は
+    # 起きていないと確定するので、docker exec で問い合わせるまでもなく
+    # 未注入として扱う（/run は tmpfs で、停止のたびに空になる）。
+    secrets-ok)
+        if [[ "$running" != "true" ]]; then
+            exit 1
+        fi
+        if docker exec -u root "$container" test -f /run/secrets/SSH_AUTHORIZED_KEYS >/dev/null 2>&1; then
+            exit 0
+        fi
+        exit 1
         ;;
+
+    ensure-running)
+        if [[ "$running" != "true" ]]; then
+            docker start "$container" >/dev/null
+        fi
+        exit 0
+        ;;
+
     # fd 1 IS the SSH transport -- see CONTRACT at the top of this file.
     # Anything printed to stdout here breaks the connection.
     stdio)
+        if [[ "$running" != "true" ]]; then
+            docker start "$container" >/dev/null
+        fi
+
+        # Fail closed: 素通しすると sshd がパスワード認証へフォールバック
+        # し、原因（secret が無い）から遠い症状になる。認可を求め直す代行も
+        # しない（非対話の ssh 接続の裏で黙って認可を求めると応答できない
+        # まま固まる）。
+        if ! docker exec -u root "$container" test -f /run/secrets/SSH_AUTHORIZED_KEYS >/dev/null 2>&1; then
+            echo "dock: secrets are not injected into '${container}'. Run 'karakuri-dock up -p ${project}' on the host, then reconnect" >&2
+            exit 1
+        fi
+
         # /usr/local/sbin/sshd-inetd を絶対パスで直接 exec する。
         #
         # 以前はこれに `command -v sshd-inetd >/dev/null && exec sshd-inetd
@@ -193,5 +270,29 @@ case "$mode" in
             -u root \
             "$container" \
             /usr/local/sbin/sshd-inetd
+        ;;
+
+    shell)
+        if [[ "$running" != "true" ]]; then
+            echo "Starting $container..." >&2
+            docker start "$container" >/dev/null
+        fi
+
+        if [[ -n "$workspace" ]]; then
+            exec env \
+                MSYS_NO_PATHCONV=1 \
+                docker exec \
+                -it \
+                -w "$workspace" \
+                "$container" \
+                zsh
+        fi
+
+        exec env \
+            MSYS_NO_PATHCONV=1 \
+            docker exec \
+            -it \
+            "$container" \
+            zsh
         ;;
 esac

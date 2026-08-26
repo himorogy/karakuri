@@ -228,11 +228,11 @@ H1 と組み合わせると、利用側の `PATH` 追加は `~/.config/karakuri/
 提供する名前は次のとおりです。
 
 ```
-karakuri-pf            karakuri-clean-pf      karakuri-loopback
-karakuri-dev-inject    karakuri-dock
-karakuri-prod-run      karakuri-prod-exec
-karakuri-prod-base     karakuri-prod-shell
-karakuri-image-digest  karakuri-check-image
+karakuri-port-forward         karakuri-clean-port-forward   karakuri-loopback
+karakuri-dev-inject           karakuri-dock
+karakuri-prod-run             karakuri-prod-exec
+karakuri-prod-base            karakuri-prod-shell
+karakuri-image-digest         karakuri-check-image
 ```
 
 根拠は三つです。
@@ -260,11 +260,11 @@ karakuri-image-digest  karakuri-check-image
 
 ### 4.6 範囲に含めないもの
 
-**`~/.ssh/config` の生成や配布はしません。** `images/devcontainer-base/PORT-FORWARDING.md` が設定例を示しており、`karakuri-pf` / `karakuri-clean-pf` が依存しているのはそのうち `ControlPath ~/.ssh/cm-%n` の規約だけです。`LocalForward` に並べるポートも `HostName` に書くプロジェクト名もプロジェクト固有であり、生成しても利用者が全面的に書き換えることになります。書き方の参考を示すに留めます。
+**`~/.ssh/config` の生成や配布はしません。** `images/devcontainer-base/PORT-FORWARDING.md` が設定例を示しており、`karakuri-port-forward` / `karakuri-clean-port-forward` が依存しているのはそのうち `ControlPath ~/.ssh/cm-%n` の規約だけです。`LocalForward` に並べるポートも `HostName` に書くプロジェクト名もプロジェクト固有であり、生成しても利用者が全面的に書き換えることになります。書き方の参考を示すに留めます。
 
-**`ProxyCommand` が呼ぶスクリプト（`dock.sh`）は配ります。** 上の判断と矛盾しません。`~/.ssh/config` に書く 1 行は利用者のものですが、その 1 行が起動する処理の中身は karakuri の規約そのものです。コンテナの引き方（compose が焼き込む `com.docker.compose.project=<project>-dev` と `com.docker.compose.service=dev` のラベル）も、`/usr/local/sbin/sshd-inetd` を絶対パスで exec することも、規約を決めた側が持つべきものです。`~/.ssh/config` に長い `docker exec` を直接書かせると、規約が変わるたびに全利用者が自分の config を書き換えることになります。
+**`ProxyCommand` が呼ぶスクリプト（`dock.sh`）は配ります。** 上の判断と矛盾しません。`~/.ssh/config` に書く 1 行は利用者のものですが、その 1 行が起動する処理の中身は karakuri の規約そのものです。コンテナの引き方（`com.docker.compose.project` と `com.docker.compose.service` のラベルの厳密一致で引き、コンテナ名を組み立てない）も、`/usr/local/sbin/sshd-inetd` を絶対パスで exec することも、規約を決めた側が持つべきものです。project 名・service 名・workspace は `dock.sh -p <compose-project> [-s <service>] [-w <workspace>]` の引数として渡し、`dock.sh` 側では `<project>-dev` のような組み立てを一切行いません（規約の組み立ては利用側の関数に委ねる。§4.4 参照）。`~/.ssh/config` に長い `docker exec` を直接書かせると、規約が変わるたびに全利用者が自分の config を書き換えることになります。
 
-`dock.sh` には対話シェルを開くモードもあり、そちらは `karakuri-dock <project>` として関数からも呼べます。**ただし `--stdio` のモードは関数にできません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、利用者の対話シェルに定義された関数はそこから見えません。`dock.sh` は実行ファイルなので `PATH` 上にあればコマンド名でも解決されますが、`ssh` を起動する側の環境の `PATH` に依存するため、`ProxyCommand` には絶対パスを勧めます。この非対称は、知らないと「関数があるのだから `ProxyCommand` にも書けるはずだ」と読んでしまうため、`karakuri.sh` 側のコメントにも明記します。
+`dock.sh` には対話シェルを開く既定モードもあり、そちらは `karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]` として関数からも呼べます（起動 → 未注入なら注入 → port forwarding → 対話シェルまでを 1 コマンドにまとめたもの。`up` を付けると対話シェルを開く手前で止まります）。`<project>-dev` のような規約の組み立てはこの関数も行わないため、利用側は薄い関数（例: `dock() { karakuri-dock -p "$1-dev" -w "/workspaces/$1" "${@:2}" }`）を自分の `.zshrc` に置きます。**ただし `--stdio` のモードは関数にできません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、利用者の対話シェルに定義された関数はそこから見えません。`dock.sh` は実行ファイルなので `PATH` 上にあればコマンド名でも解決されますが、`ssh` を起動する側の環境の `PATH` に依存するため、`ProxyCommand` には絶対パスを勧めます。この非対称は、知らないと「関数があるのだから `ProxyCommand` にも書けるはずだ」と読んでしまうため、`karakuri.sh` 側のコメントにも明記します。
 
 `dock.sh` がフォールバックを持たないのも規約です。実機で踏んだ事例として、`sshd-inetd` が見つからないときに `/usr/sbin/sshd -i -e` を直接起動するフォールバックが、ラッパーの `mkdir -p /run/sshd` を飛ばして `Missing privilege separation directory: /run/sshd` を出していました。`/run` は tmpfs なのでコンテナ起動のたびに空になります。移行の保険のつもりのフォールバックが、失敗を隠して原因から遠いエラーに変換していたことになります。**見つからないなら `docker exec` が `executable file not found` で失敗するのが正しい壊れ方です。**
 
@@ -272,7 +272,7 @@ karakuri-image-digest  karakuri-check-image
 
 ただし**アドレスの割り当ては決めません**。`127.0.1.x` を使うか `127.0.2.x` を使うかは利用者の流儀であり、別マシンへの SSH に別レンジを充てるといった拡張もあります。LaunchDaemon が張るアドレスは `/etc/karakuri/loopback-aliases`（root 所有）から読み、ツール側は `127.0.0.0/8` であることだけを検査します。設定ファイルを `/usr/local/etc` ではなく `/etc` に置くのは、macOS の `/usr/local` が admin グループ書き込み可で、root で走る daemon が admin 権限で書き換えられるファイルを読む形を避けるためです。
 
-`karakuri-loopback` は `karakuri.sh` が提供する関数のうち**唯一 `sudo` を要求します**。特権が要る設定作業をこの 1 つに閉じ込めることで、日常的に打つ `karakuri-pf` に `sudo` を持ち込まずに済みます。`karakuri-pf` から `sudo ifconfig` を呼ぶ案は、`-fN` のバックグラウンド化とパスワードプロンプトが噛み合わず、回避のために sudoers を緩めると `ifconfig` が lo0 以外の interface も触れる権限を常時渡すことになるため、採りません。
+`karakuri-loopback` は `karakuri.sh` が提供する関数のうち**唯一 `sudo` を要求します**。特権が要る設定作業をこの 1 つに閉じ込めることで、日常的に打つ `karakuri-port-forward` に `sudo` を持ち込まずに済みます。`karakuri-port-forward` から `sudo ifconfig` を呼ぶ案は、`-fN` のバックグラウンド化とパスワードプロンプトが噛み合わず、回避のために sudoers を緩めると `ifconfig` が lo0 以外の interface も触れる権限を常時渡すことになるため、採りません。
 
 ---
 
