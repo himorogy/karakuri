@@ -30,6 +30,17 @@
 
 set -euo pipefail
 
+# MSYS_NO_PATHCONV=1 は Git Bash(MSYS2) のパス変換を止める。先頭が `/` の
+# 引数（`"$@"` に渡すタスクの引数がコンテナ内の絶対パスであるとき）を
+# Windows パスへ変換されると、コンテナ内で解決できないパスに化ける
+# （dock.sh で確認済みの不具合と同型）。dock.sh と同じくスクリプト冒頭で
+# export する形に寄せている。prod-run.sh は独立したプロセスとして起動
+# されるので、この export は呼び出し元のシェルへは漏れない。broker が受け
+# 取る項目名は環境変数（PROD_BROKER 等）で渡るため、この変換の対象外。
+# `-f "$PROD_COMPOSE_FILE"`（ホスト側のパス）の変換もこの export で止まる
+# が、その当否は実測待ちの別論点として扱い、ここでは形を変えない。
+export MSYS_NO_PATHCONV=1
+
 # --- pipefail が無いと何が起きるか -------------------------------------------
 # broker が認可失敗（Touch ID 拒否・非対話環境で確認ダイアログを出せない、
 # 等）で非ゼロ終了しても、パイプの最終要素は docker であり、docker が
@@ -147,13 +158,7 @@ fi
 # ラインを `if` の条件として実行する。`if` の条件式は `set -e` の対象外
 # なので、ここでパイプが失敗してもスクリプトはまだ終了せず、両者の終了
 # コードを個別に検査してから然るべきメッセージで終了できる。
-# MSYS_NO_PATHCONV=1 は docker のプロセスにだけ渡す（呼び出し側のシェルへは
-# export しない）。Git Bash(MSYS2) は先頭が `/` の引数を Windows パスへ
-# 変換するため、`"$@"` に渡すタスクの引数が `/` で始まるとこれが無いと
-# コンテナ内で解決できないパスに化ける（dock.sh と同じ対策）。env が
-# docker を exec するので PIPESTATUS[1] は docker compose run 自身の
-# 終了コードのままである。
-if "$PROD_BROKER" | env MSYS_NO_PATHCONV=1 docker compose -f "$PROD_COMPOSE_FILE" run -T --rm prod "$@"; then
+if "$PROD_BROKER" | docker compose -f "$PROD_COMPOSE_FILE" run -T --rm prod "$@"; then
 	broker_rc=0
 	docker_rc=0
 else

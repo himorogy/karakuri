@@ -98,16 +98,22 @@ BASE_CID="cafe0123deadbeef"
 
 # 正常系の環境をまとめて張る。個々のテストで一部だけ上書き/unset する。
 reset_env() {
+	# $$ は実行全体で不変、$RANDOM は 32768 通りしかないため、reset_env が
+	# 数十回呼ばれる間に過去の一時ファイル名と衝突することがある
+	# （実測: 素の worktree で 40 回中 2 回、衝突した回だけ assert_not_invoked が
+	# 偽陽性で落ちた）。単調増加のカウンタにして、$$ で実行間、カウンタで
+	# 実行内の分離を構造的に保証する。
+	_case_seq=$((${_case_seq:-0} + 1))
 	export DEV_BROKER="$BROKER_OK"
 	export DEV_COMPOSE_PROJECT="acme"
 	unset DEV_SERVICE 2>/dev/null || true
 	export FAKE_COMPOSE_PS_STDOUT="$BASE_CID"
 	export FAKE_COMPOSE_EXIT_CODE=0
 	export FAKE_EXEC_EXIT_CODE=0
-	export FAKE_COMPOSE_ARGV_FILE="$WORKDIR/compose-argv.$$.$RANDOM"
-	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
-	export FAKE_EXEC_STDIN_FILE="$WORKDIR/exec-stdin.$$.$RANDOM"
-	export FAKE_EXEC_ENV_FILE="$WORKDIR/exec-env.$$.$RANDOM"
+	export FAKE_COMPOSE_ARGV_FILE="$WORKDIR/compose-argv.$$.$_case_seq"
+	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$_case_seq"
+	export FAKE_EXEC_STDIN_FILE="$WORKDIR/exec-stdin.$$.$_case_seq"
+	export FAKE_EXEC_ENV_FILE="$WORKDIR/exec-env.$$.$_case_seq"
 }
 
 # run_case <argv...> — 現在 export 済みの環境と、PATH 先頭のフェイク docker

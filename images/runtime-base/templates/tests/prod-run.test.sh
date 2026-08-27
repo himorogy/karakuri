@@ -82,14 +82,20 @@ BASE_GIT_REF="1234567890abcdef1234567890abcdef12345678" # 40 桁 hex
 
 # 正常系の環境をまとめて張る。個々のテストで一部だけ上書き/unset する。
 reset_env() {
+	# $$ は実行全体で不変、$RANDOM は 32768 通りしかないため、reset_env が
+	# 数十回呼ばれる間に過去の一時ファイル名と衝突することがある
+	# （実測: 素の worktree で 40 回中 2 回、衝突した回だけ assert_not_invoked が
+	# 偽陽性で落ちた）。単調増加のカウンタにして、$$ で実行間、カウンタで
+	# 実行内の分離を構造的に保証する。
+	_case_seq=$((${_case_seq:-0} + 1))
 	export PROD_COMPOSE_FILE="$BASE_COMPOSE_FILE"
 	export PROD_BROKER="$BROKER_OK"
 	export GIT_REPO="$BASE_GIT_REPO"
 	export GIT_REF="$BASE_GIT_REF"
 	export FAKE_DOCKER_EXIT_CODE=0
-	export FAKE_DOCKER_ARGV_FILE="$WORKDIR/argv.$$.$RANDOM"
-	export FAKE_DOCKER_STDIN_FILE="$WORKDIR/stdin.$$.$RANDOM"
-	export FAKE_DOCKER_ENV_FILE="$WORKDIR/env.$$.$RANDOM"
+	export FAKE_DOCKER_ARGV_FILE="$WORKDIR/argv.$$.$_case_seq"
+	export FAKE_DOCKER_STDIN_FILE="$WORKDIR/stdin.$$.$_case_seq"
+	export FAKE_DOCKER_ENV_FILE="$WORKDIR/env.$$.$_case_seq"
 }
 
 # run_case <argv...> — 現在 export 済みの環境と、PATH 先頭のフェイク docker

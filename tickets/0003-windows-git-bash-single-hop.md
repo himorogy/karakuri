@@ -13,6 +13,8 @@ targets:
   - images/runtime-base/templates/tests/dev-inject.test.sh
   - images/runtime-base/templates/tests/prod-run.test.sh
   - images/runtime-base/templates/tests/karakuri.test.sh
+  - images/runtime-base/templates/host/dock.sh
+  - images/runtime-base/templates/tests/dock.test.sh
 verify:
   - bash images/runtime-base/templates/tests/dock.test.sh
   - bash images/runtime-base/templates/tests/loopback-setup.test.sh
@@ -147,13 +149,39 @@ stat C:/Program Files/Git/usr/local/bin/secrets-ingest.sh: no such file or direc
 - `karakuri.sh` の `karakuri-prod-shell` が呼ぶ `docker exec -it -w /src "$cid" bash`
 - `prod-run.sh` の `docker compose run -T --rm prod "$@"`（タスク引数が `/` で始まる場合）
 
-いずれも `dock.sh` と同じ `env MSYS_NO_PATHCONV=1` の前置きで塞ぐ。変数は `docker` の
-プロセスにだけ渡し、呼び出し側のシェルへ export しない（`dock.sh` と同じ形）。
+`dock.sh` にも漏れが 2 箇所ある。当初これを「対策済み」と判断したが、`MSYS_NO_PATHCONV=1`
+が付いているのは対話シェルと sshd を exec する 3 箇所だけで、**secret の有無を判定する
+2 箇所には付いていない**。
 
-各テストに、`docker` のフェイクが受け取った環境から `MSYS_NO_PATHCONV=1` が渡っていることを
-検査するケースを足す。フェイクの作法は既存のものに倣う。パス変換そのものは MSYS 上でしか
-起きないため、Linux の CI で検査できるのは「変数を渡していること」までであり、変換が実際に
-止まることの確認は検収に委ねる。
+- `--secrets-ok` の `docker exec -u root "$container" test -f /run/secrets/SSH_AUTHORIZED_KEYS`
+- `--stdio` の未注入判定（同じ形の `test -f`）
+
+判定対象のパスが変換されるため `test -f` が常に false になり、Windows 上では
+`--secrets-ok` が注入済みでも 1 を返し、`--stdio` は注入済みでも fail closed で落ちる。
+検収の実機で `karakuri-dev-inject` が 5 件の secret を注入したあとに `--secrets-ok` が
+1 を返すことを確認した。
+
+**指定は呼び出しごとに書かず、スクリプト単位に寄せる。** 呼び出しごとに書く形が今回の
+漏れの原因であり、`docker` の呼び出しを足すたびに同じ漏れが起きる。
+
+- 独立した実行スクリプト（`dock.sh` / `dev-inject.sh` / `prod-run.sh`）は冒頭で
+  `export MSYS_NO_PATHCONV=1` する。スクリプトは独立したプロセスなので、呼び出し側の
+  シェルには漏れない。既に入れた `env` の前置きは削り、この形へ寄せる
+- `karakuri.sh` は利用者の対話シェルに source されるため export しない。
+  `karakuri-prod-shell` の 1 箇所だけ `env` の前置きを維持し、**例外がこの 1 箇所である
+  ことと、その理由（source されるファイルである）をコメントに書く**
+
+export はそのスクリプトが起こす全ての子プロセスに効く。`dev-inject.sh` / `prod-run.sh` は
+broker も起動するが、broker が受け取る項目名は環境変数（`BROKER_BW_ITEM`）で渡るため、
+コマンドライン引数の変換の対象外である。`prod-run.sh` の `-f "$PROD_COMPOSE_FILE"`
+（ホスト側のパス）の変換も止まる点は前置きの形と変わらない——この論点は実測待ちとして
+別に扱い、このチケットでは形を変えない。
+
+各テストに、`docker` のフェイクが受け取った環境から `MSYS_NO_PATHCONV=1` が渡っている
+ことを検査するケースを足す。`dock.test.sh` には `--secrets-ok` と `--stdio` の判定系
+2 モードについて足す（今回漏れていた箇所であり、否定対照が要る）。フェイクの作法は既存の
+ものに倣う。パス変換そのものは MSYS 上でしか起きないため、Linux の CI で検査できるのは
+「変数を渡していること」までであり、変換が実際に止まることの確認は検収に委ねる。
 
 ### 文書
 
