@@ -307,6 +307,7 @@ run_case -p proj --stdio
 assert_rc_eq 1 "--stdio exits 1 when secrets are not injected"
 assert_stdout_empty "--stdio prints nothing on stdout when it fails closed"
 assert_stderr_has "karakuri-dock up" "--stdio tells the caller to run karakuri-dock up on the host"
+assert_stderr_has "-b <broker-key>" "--stdio's hint names the broker key as a separate argument"
 assert_not_invoked "$FAKE_EXEC_ARGV_FILE" "--stdio does not exec sshd-inetd when secrets are missing"
 
 reset_env

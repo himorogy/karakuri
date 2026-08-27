@@ -152,11 +152,13 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 
    コンテナ内のサービスへホストのブラウザから到達するには、続けて `karakuri-port-forward <project>-dev` で port forwarding を張る（VS Code の自動転送を使う場合は不要）。引数は `~/.ssh/config` の `Host devc-<project>-dev` と同じ値にする（`karakuri-port-forward` はこれに `devc-` を補って ssh host にするだけで、compose project 名からの組み立てはしない）。初回だけ `~/.ssh/config` の設定が要り、macOS では loopback エイリアスの用意（`karakuri-loopback install` を 1 回、プロジェクトごとに `karakuri-loopback add <addr> <hostname>`）も要る。
 
-   ターミナルからコンテナへ入るのは `karakuri-dock`。compose project 名・service 名・workspace を引数で受け取るだけで `<project>-dev` のような規約は組み立てないため、その組み立ては利用者側の短い関数に任せる（karakuri の配布物には `dock` という名前の関数は含めない）:
+   ターミナルからコンテナへ入るのは `karakuri-dock`。compose project 名・broker アイテムキー・service 名・workspace を引数で受け取るだけで `<project>-dev` のような規約は組み立てないため、その組み立ては利用者側の短い関数に任せる（karakuri の配布物には `dock` という名前の関数は含めない）:
 
    ```sh
-   dock() { karakuri-dock -p "$1-dev" -w "/workspaces/$1" "${@:2}" }
+   dock() { karakuri-dock -p "$1-dev" -b "$1" -w "/workspaces/$1" "${@:2}" }
    ```
+
+   `-p` と `-b` は別物。`-p` は compose project 名（`<project>-dev`）、`-b` は broker アイテムキー（素のプロジェクト名。`karakuri-dev-inject` が引くのと同じ `env/<project>/...`）で、`karakuri-dock` はどちらも一方から他方を組み立てない。
 
    `dock app` で「起動 → 未注入なら注入 → port forwarding → 対話シェル」まで 1 コマンドで済む。`dock app up` を付けると、対話シェルを開く手前（起動・注入・port forwarding まで）で止まる。いずれも手順は [PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)
 
