@@ -102,7 +102,9 @@ karakuri-loopback add 127.0.1.1 <your-project-hostname>
 
 `karakuri-loopback` は `sudo` を要求します（LaunchDaemon の配置と `/etc/hosts` の編集のため）。`karakuri.sh` が提供する関数のうち、特権が要るのはこれだけです。日常的に打つ `karakuri-port-forward` は `sudo` を必要としません。
 
-Linux ホストでは `127.0.0.0/8` 全体が最初から bind できるため、alias の段（`ifconfig` と LaunchDaemon）は飛ばされます。`/etc/hosts` の管理と設定ファイルへの記録は同じように行われるので、`karakuri-loopback add 127.0.1.1 <your-project-hostname>` はそのまま使えます。何を飛ばしたかは実行時に表示されます。
+このツールは macOS 専用です。対応 OS は macOS と Windows(Git Bash) の 2 つで、Windows では `karakuri-loopback` は何も変更せずに終了します（その旨を示す 1 行を出すだけです）。Windows は `127.0.0.0/8` を最初から bind でき、Git Bash の `/etc/hosts` は Windows の名前解決に使われないため、そもそも設定する対象がありません。
+
+Windows で名前を引きたい場合は、Git Bash の `/etc/hosts` ではなく `C:\Windows\System32\drivers\etc\hosts` を管理者権限で編集してください。`127.0.0.0/8` 全体を最初から bind できるので、macOS のような alias の段は不要で、`127.0.0.1 <name>` の 1 行を足すだけで足ります。反映されないときは `ipconfig /flushdns` を試してください。
 
 `/etc/hosts` は Docker Desktop など他のツールも触るファイルです。`karakuri-loopback` はマーカーで囲んだ管理ブロックの中だけを書き換え、その外には触れません。編集前に `/etc/hosts.karakuri.bak` へ退避します。
 
@@ -137,6 +139,67 @@ AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys
 公開鍵は秘密情報ではありません。broker に載せるのは秘匿のためではなく、搬送と再注入のタイミング規律を secret と 1 本にまとめるためです。tmpfs なのでコンテナ停止で消えますが、消える条件も再注入の作法も secret と同じで、覚えることが増えません。dev-inject を忘れると git 認証も同時に失敗するため、SSH だけが静かに壊れることもありません。
 
 2 つ目の `~/.ssh/authorized_keys` は、broker を使わない導入形態（devcontainer-base を別の注入手段と組み合わせる場合）向けに残してあります。こちらはコンテナを作り直すと消えるため、都度の再投入が必要です。
+
+## mac から Windows 上のコンテナへ入る（1 ホップ）
+
+devcontainer が Windows の docker で動いている場合も、上の `ProxyCommand` を入れ子にするだけで mac から直接コンテナへ ssh が張れます。Windows 側に loopback エイリアスも `karakuri-port-forward` も要りません。
+
+```
+Host devc-win-<your-project>
+    ProxyCommand ssh <windows-host> <dock.sh の絶対パス> -p <your-project>-dev --stdio
+    LocalForward 3000 localhost:3000
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%n
+    ControlPersist no
+    ExitOnForwardFailure yes
+```
+
+このブロックは既存の `Host devc-*`（上の「1. `~/.ssh/config`」参照）より前に置いてください。ssh は各キーで最初に見つかった指定が勝つため、後ろに置くと `devc-*` の `ProxyCommand` が勝って 1 ホップになりません。逆にこのブロックは `User` / `IdentityFile` / `StrictHostKeyChecking` / `UserKnownHostsFile` を持たないので、`devc-*` からの継承を前提にしています。
+
+`LocalForward` は mac 側の 1 段だけで済みます。`ProxyCommand ssh <windows-host> <dock.sh の絶対パス> -p <your-project>-dev --stdio` は既定シェルのまま SSH トランスポートが成立することを実機で確認済みです（`bash -lc` で包む必要はありません）。`dock.sh` は実行ファイルで絶対パス指定なので、`ssh <host> <command>` の非対話・非ログイン経路でも PATH に依存せず素通しできます。パスはホスト側ツール一式を clone した Windows 側の場所に合わせてください（上の「1. `~/.ssh/config`」と同じ理由で絶対パスを勧めます）。
+
+接続を張るのは常に mac（外側）で、コンテナ側から穴を開けません。コンテナ起点の `ssh -R` は egress-guard の allowlist に載っていない宛先へは通らないため成立せず、通すには宛先を明示的に許可することになります。
+
+### 転送は `karakuri-port-forward` で別に張る
+
+上の設定例をそのまま `ssh devc-win-<your-project>` で対話接続すると、`LocalForward` を持つのも入るのも同じ ssh セッションになります。転送先の dev サーバが落ちたときに出る `connect_to localhost port <port>: failed.`（後述「よく出るエラー」の同名の節参照）が、通常経路のようにログファイルへ逃げず、作業中の端末そのものへ出続けます。転送自体は壊れておらず実害はありませんが、作業を邪魔します。
+
+通常経路（mac 上のコンテナ）でこれが起きないのは、`karakuri-dock` が転送を `karakuri-port-forward` 経由で張り（`ssh -fN` の stderr がログファイルへ逃げる）、作業する端末は `docker exec -it zsh` で別プロセスになっているからです。1 ホップ経路には `docker exec` に相当する分離が無いので、接続前に転送だけを別セッションで張っておく必要があります。
+
+```sh
+karakuri-port-forward devc-win-<your-project>   # master を張る（ログは port-forward-devc-win-<your-project>.log）
+ssh devc-win-<your-project>                     # 既存の master に相乗りして入る
+```
+
+`karakuri-port-forward` は `devc-` で始まる名前をそのまま受け取ります（`_karakuri_ssh_host` が `devc-*` を素通しします）ので、`devc-win-<your-project>` をそのまま渡せます。新しい仕組みは要りません。
+
+secret の注入は Windows 側で行います。`dev-inject` は broker をコンテナから到達不能な場所に置くためにホスト側で実行する設計であり、コンテナが Windows 上の docker で動く以上、注入できるのは Windows ホストだけです。mac から接続する前に、Windows 側で次を実行して注入を済ませてください。
+
+```
+karakuri-dock -p <your-project>-dev up
+```
+
+`--stdio` は未注入なら fail closed で終了するため、これを忘れると mac 側には「secret が無い」という明示的なエラーが返ります。
+
+`ProxyCommand` の中で注入は代行できません。`ssh <windows-host> 'karakuri-dock -p <your-project>-dev up && dock.sh ... --stdio'` の形は、`up` の出力が `ProxyCommand` の stdout に混ざって SSH トランスポートを壊すことと、注入が求める認可（パスワード / 生体認証）に非対話の `ProxyCommand` が応答できないことの 2 つで成立しません。
+
+2 段を 1 コマンドにまとめたい場合は、mac 側に注入 → 転送 → 接続を並べる薄い関数を置いてください。
+
+```sh
+win-dock() {
+  ssh <windows-host> bash -lc "karakuri-dock -p $1-dev up" || return 1
+  if karakuri-port-forward "devc-win-$1"; then
+    ssh "devc-win-$1"
+  else
+    echo "win-dock: port forwarding failed — entering without it" >&2
+    ssh -o ClearAllForwardings=yes "devc-win-$1"
+  fi
+}
+```
+
+`dock.sh` と `karakuri-dock` では、リモートでの呼び出し方が非対称です。`dock.sh` は実行ファイルの絶対パス指定なので `ssh <windows-host> <dock.sh の絶対パス> ...` とそのまま書けますが、`karakuri-dock` は `karakuri.sh` が `source` で定義する関数なので、`ssh <host> <command>` の非対話・非ログイン経路には存在しません。`bash -lc "..."` を挟んで login shell にすることで `~/.bash_profile`（[images/runtime-base/README.md](../runtime-base/README.md) 参照）を読ませ、関数を見えるようにする必要があります（実機で確認済み）。
+
+転送が張れないときに「警告に留めて入る」が単純には成立しない点に注意してください。上の設定は `ExitOnForwardFailure yes` を持つため、転送先のポートが bind できない状態では `ssh devc-win-<your-project>` そのものが `Could not request local forwarding.` で失敗し、**入れません**。`karakuri-dock` 本体（`docker exec` で入る通常経路）が転送の失敗を警告に留められるのは、入る経路と転送が別プロセスだからです。1 ホップ経路は同じ ssh セッションなのでこの前提が無く、入る側だけを通すには `-o ClearAllForwardings=yes` で転送を外して繋ぎ直す必要があります。`win-dock` はこれを行っています。`ExitOnForwardFailure` を `no` に緩めて済ませないでください——それを外すと `karakuri-port-forward` が転送の失敗を検出できなくなります（転送が無いまま master だけ残り、成功したように見えます）。この関数は規約の吸収と同じ扱いで利用者側に置くもので、karakuri の配布物には入りません。
 
 ## VS Code 利用者の設定
 
@@ -251,6 +314,8 @@ Vite / Astro の dev サーバは、未知の Host ヘッダを持つリクエ�
 `karakuri-port-forward` は `ssh -fN` の stderr を `${XDG_STATE_HOME:-~/.local/state}/karakuri/port-forward-<host>.log` へ逃がすので、端末は汚れません。中身を見たいときは `tail -f` してください。
 
 `karakuri-clean-port-forward` で畳めば止まりますが、これは転送ごと捨てる操作です。`ssh` を黙らせる目的で使わないでください。
+
+mac から Windows 上のコンテナへ入る 1 ホップ経路で、`karakuri-port-forward` を挟まず対話セッションに `LocalForward` を直書きした場合は、ログへ逃げずこのメッセージが作業中の端末そのものへ出ます（「mac から Windows 上のコンテナへ入る（1 ホップ）」の「転送は `karakuri-port-forward` で別に張る」参照）。
 
 ### `bind: Can't assign requested address`
 

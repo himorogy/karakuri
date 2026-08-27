@@ -52,6 +52,7 @@ compose)
 	;;
 exec)
 	printf '%s\n' "$@" >"${FAKE_EXEC_ARGV_FILE:?}"
+	printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_EXEC_ENV_FILE:?}"
 	cat >"${FAKE_EXEC_STDIN_FILE:?}"
 	exit "${FAKE_EXEC_EXIT_CODE:-0}"
 	;;
@@ -97,15 +98,22 @@ BASE_CID="cafe0123deadbeef"
 
 # 正常系の環境をまとめて張る。個々のテストで一部だけ上書き/unset する。
 reset_env() {
+	# $$ は実行全体で不変、$RANDOM は 32768 通りしかないため、reset_env が
+	# 数十回呼ばれる間に過去の一時ファイル名と衝突することがある
+	# （実測: 素の worktree で 40 回中 2 回、衝突した回だけ assert_not_invoked が
+	# 偽陽性で落ちた）。単調増加のカウンタにして、$$ で実行間、カウンタで
+	# 実行内の分離を構造的に保証する。
+	_case_seq=$((${_case_seq:-0} + 1))
 	export DEV_BROKER="$BROKER_OK"
 	export DEV_COMPOSE_PROJECT="acme"
 	unset DEV_SERVICE 2>/dev/null || true
 	export FAKE_COMPOSE_PS_STDOUT="$BASE_CID"
 	export FAKE_COMPOSE_EXIT_CODE=0
 	export FAKE_EXEC_EXIT_CODE=0
-	export FAKE_COMPOSE_ARGV_FILE="$WORKDIR/compose-argv.$$.$RANDOM"
-	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
-	export FAKE_EXEC_STDIN_FILE="$WORKDIR/exec-stdin.$$.$RANDOM"
+	export FAKE_COMPOSE_ARGV_FILE="$WORKDIR/compose-argv.$$.$_case_seq"
+	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$_case_seq"
+	export FAKE_EXEC_STDIN_FILE="$WORKDIR/exec-stdin.$$.$_case_seq"
+	export FAKE_EXEC_ENV_FILE="$WORKDIR/exec-env.$$.$_case_seq"
 }
 
 # run_case <argv...> — 現在 export 済みの環境と、PATH 先頭のフェイク docker
@@ -273,6 +281,14 @@ if [ -f "$FAKE_EXEC_STDIN_FILE" ]; then
 	fi
 else
 	ng "fake docker exec was never invoked (no stdin file)"
+fi
+
+# MSYS_NO_PATHCONV=1 が無いと、Git Bash(MSYS2) が /usr/local/bin/... を
+# Windows パスへ変換してしまう（実機で踏んだ不具合）。
+if [ -f "$FAKE_EXEC_ENV_FILE" ] && [ "$(cat "$FAKE_EXEC_ENV_FILE")" = "MSYS_NO_PATHCONV=1" ]; then
+	ok "docker exec receives MSYS_NO_PATHCONV=1"
+else
+	ng "docker exec did not receive MSYS_NO_PATHCONV=1 (got: $(cat "$FAKE_EXEC_ENV_FILE" 2>/dev/null))"
 fi
 
 # --- DEV_SERVICE で service 名を差し替えられる（既定は dev） --------------------

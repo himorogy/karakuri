@@ -73,24 +73,21 @@ HOSTS_BAK="/etc/hosts.karakuri.bak"
 # CONF_DIR を変えたときに置き去りにならないようにするため。
 CONF_BAK="${CONF}.bak"
 
-# 実行中の OS を 1 度だけ見て、以後はこの 2 つの変数で分岐する。uname の
-# 呼び出し回数を惜しんでいるのではなく、「macOS かどうか」の判定を 1 箇所に
-# 閉じるため。判定が散ると、片方だけ直した状態（add は Linux を通すのに
-# remove は止める、など）が生まれる。
+# 対応 OS は macOS と Windows(Git Bash) の 2 つで、Linux は対象にしない
+# （images/runtime-base/README.md）。非対応の Linux を含めないので、
+# 「Darwin かどうか」の二値だけで足り、非 Darwin は Windows だけになる。
 #
-# ROOT_GROUP は root 所有ファイルに付ける group。macOS は wheel だが Linux に
-# wheel は無い（Debian 系には存在しない）。下の _atomic_replace は install(1) に
-# 所有者・group・モードを必ず明示する組み立てになっており、そこに渡す正解を
-# ここで 1 つ決めておく。名前を間違えれば install が失敗して書き換えは起きない
-# ので、黙って別の group で置かれることはない。
-IS_MACOS=0
-if [ "$(uname -s)" = "Darwin" ]; then
-	IS_MACOS=1
+# lo0 の alias と、それに依存する /etc/hosts の管理ブロックは macOS 固有の
+# 迂回策である。Windows は 127.0.0.0/8 全体を最初から bind でき、Git Bash の
+# /etc/hosts は Windows 側の名前解決に使われないので書き換えても効かない。
+# したがって非 macOS では何もせず、その旨を示して終了する。ここより先は
+# すべて macOS 側の処理として書ける。
+if [ "$(uname -s)" != "Darwin" ]; then
+	printf 'karakuri-loopback: macOS only, doing nothing. lo0 aliasing and the managed /etc/hosts block work around macOS requiring an explicit alias for any loopback address other than 127.0.0.1; Windows binds 127.0.0.0/8 already, and its Git Bash /etc/hosts is not consulted by Windows name resolution. No changes were made.\n' >&2
+	exit 0
 fi
-ROOT_GROUP="root"
-if [ "$IS_MACOS" -eq 1 ]; then
-	ROOT_GROUP="wheel"
-fi
+
+ROOT_GROUP="wheel"
 
 # /etc/hosts の中で、このツールが書き換えてよい範囲を囲むマーカー。
 # 文字列そのものが契約なので、変えると既存のブロックが「見えないブロック」
@@ -245,10 +242,9 @@ Usage: karakuri-loopback <command> [args...]
                               a hostname only drops that name from /etc/hosts
   list                        Show the config file, the aliases currently on lo0 and the managed /etc/hosts block
 
-The lo0 aliases and the LaunchDaemon are a macOS-only chore: Linux binds every
-address in 127.0.0.0/8 out of the box. On Linux those steps are skipped, but
-the config file and the managed /etc/hosts block are still maintained, and
-every command prints one line saying what it skipped.
+This tool is macOS only. On any other OS it exits immediately without
+touching anything (you would not see this text — that happens before the
+command is even parsed).
 
 install / add / remove change root-owned files (/etc/karakuri, /etc/hosts,
 /Library/LaunchDaemons), so they run sudo and will ask for your password.
@@ -261,27 +257,6 @@ When run directly, the file is loopback-setup.sh; karakuri.sh exposes it as
 the shell function karakuri-loopback.
 EOF
 	exit "${1:-1}"
-}
-
-# --- 実行環境の判定 -----------------------------------------------------------
-# macOS 以外で飛ばすのは「lo0 に alias を張る段」と「LaunchDaemon を置く段」
-# だけである。Linux は 127.0.0.0/8 の全アドレスを最初から bind できる
-# （lo に 127.0.0.1/8 が付いており、カーネルが 127.0.0.0/8 宛をすべて
-# loopback として扱う）ので、張るべき alias が無く、起動のたびに張り直す
-# daemon も要らない。
-#
-# 元はここで add / remove / install をサブコマンドごと止めていたが、それは
-# 行き過ぎだった。/etc/hosts に名前を書くのは macOS 固有の作業ではなく、
-# Linux のホストでも同じように要る（ポート転送先を 127.0.1.5 に分けたら、
-# その名前は Linux でも引きたい）。止めていると Linux のホストでは管理
-# ブロックが永久に空のままで、しかも list はそれを読んで表示するので、
-# 「list が何も出さないのは設定していないからだ」と読める。実際には
-# 書く手段が無い、という状態だった。
-#
-# 飛ばした段は黙って落とさず 1 行出す。何をして何をしなかったかが分からない
-# 成功は、失敗より始末が悪い。
-_no_alias_note() {
-	printf 'lo0: skipped %s — this is not macOS, and Linux binds every address in 127.0.0.0/8 out of the box, so there is no alias to raise. %s\n' "$1" "$2"
 }
 
 # --- 検証 ---------------------------------------------------------------------
@@ -916,17 +891,11 @@ cmd_install() {
 
 	# 特権に入る前に、置くものが揃っているかを一般ユーザー権限で確かめる。
 	# sudo のパスワードを打たせてから「配布物が無い」と言うのは順序が悪い。
-	#
-	# macOS 以外では daemon も plist も置かないので、その存在も突合も見ない。
-	# 見ると「Linux では使わないファイルが無い」ことを理由に、使える作業
-	# （設定ファイルの雛形）まで止めることになる。
 	local src_daemon="${SRC_DIR}/karakuri-loopback-aliases"
 	local src_plist="${SRC_DIR}/com.karakuri.loopback-aliases.plist"
-	if [ "$IS_MACOS" -eq 1 ]; then
-		[ -f "$src_daemon" ] || _die "cannot find '${src_daemon}'. The 'loopback' directory is expected next to this script — copy the whole host/ directory, not just this file"
-		[ -f "$src_plist" ] || _die "cannot find '${src_plist}'. The 'loopback' directory is expected next to this script — copy the whole host/ directory, not just this file"
-		_check_payload_paths "$src_daemon" "$src_plist"
-	fi
+	[ -f "$src_daemon" ] || _die "cannot find '${src_daemon}'. The 'loopback' directory is expected next to this script — copy the whole host/ directory, not just this file"
+	[ -f "$src_plist" ] || _die "cannot find '${src_plist}'. The 'loopback' directory is expected next to this script — copy the whole host/ directory, not just this file"
+	_check_payload_paths "$src_daemon" "$src_plist"
 
 	# sudo はスクリプト全体にかけない（`sudo loopback-setup.sh` を運用に
 	# しない）。特権が要るのは下の install / launchctl / ifconfig だけで、
@@ -964,15 +933,6 @@ EOF
 		sudo install -o root -g "$ROOT_GROUP" -m 0644 "$_tmp" "$CONF"
 		_rmtemp
 		printf 'config: created %s\n' "$CONF"
-	fi
-
-	# ここから下は macOS でしか意味を持たない段。設定ファイルまでは作った、
-	# という状態で返す。Linux でも設定ファイルを作るのは、add がそこへ
-	# 書くからであり（add は Linux でも /etc/hosts を管理する）、同じ
-	# ファイルを macOS のホストへ持って行けばそのまま使えるからでもある。
-	if [ "$IS_MACOS" -eq 0 ]; then
-		_no_alias_note "the LaunchDaemon and the lo0 aliases" "The config file above is in place, and 'add' / 'remove' will still manage ${HOSTS} here."
-		return 0
 	fi
 
 	# /usr/local/libexec は素の macOS には無い。install -d は途中の
@@ -1101,14 +1061,10 @@ cmd_add() {
 
 	# 再起動を待たずに使えるようにする。既に張られている場合も ifconfig は
 	# 成功するので、冪等性のために場合分けを足す必要はない。
-	if [ "$IS_MACOS" -eq 1 ]; then
-		if sudo ifconfig lo0 alias "$addr" up; then
-			printf 'lo0: alias %s is up\n' "$addr"
-		else
-			_die "'ifconfig lo0 alias ${addr} up' failed"
-		fi
+	if sudo ifconfig lo0 alias "$addr" up; then
+		printf 'lo0: alias %s is up\n' "$addr"
 	else
-		_no_alias_note "raising ${addr} on lo0" "The address is recorded in ${CONF}, and the names below still go into ${HOSTS}."
+		_die "'ifconfig lo0 alias ${addr} up' failed"
 	fi
 
 	[ "$#" -gt 0 ] || return 0
@@ -1198,14 +1154,10 @@ _remove_addr() {
 
 	# 張られていないアドレスに -alias を打つと ifconfig は失敗する。
 	# 「既に無い」は remove としては望んだ結果なので、握って報告に留める。
-	if [ "$IS_MACOS" -eq 1 ]; then
-		if sudo ifconfig lo0 -alias "$addr" 2>/dev/null; then
-			printf 'lo0: removed the alias %s\n' "$addr"
-		else
-			printf 'lo0: %s was not aliased\n' "$addr"
-		fi
+	if sudo ifconfig lo0 -alias "$addr" 2>/dev/null; then
+		printf 'lo0: removed the alias %s\n' "$addr"
 	else
-		_no_alias_note "taking ${addr} off lo0" "The entry was still dropped from ${HOSTS} and from ${CONF}."
+		printf 'lo0: %s was not aliased\n' "$addr"
 	fi
 	return 0
 }
@@ -1250,17 +1202,15 @@ cmd_list() {
 	# 黙って飲み込むと、利用者は「効いた」と思って別のところを疑い始める。
 	[ "$#" -eq 0 ] || usage 1
 
-	local conf_addrs="" lo_addrs="" is_mac="$IS_MACOS"
+	local conf_addrs="" lo_addrs=""
 
 	conf_addrs="$(_conf_addrs)"
 
-	if [ "$is_mac" -eq 1 ]; then
-		# `inet` 行の 2 番目のフィールドがアドレス。127.0.0.1 は lo0 に
-		# 必ず載っていて、このツールが管理する対象ではないので外す
-		# （出すと毎回「設定ファイルに無い」印が付き、印そのものが
-		# 意味を持たなくなる）。
-		lo_addrs="$(ifconfig lo0 2>/dev/null | awk '$1 == "inet" && $2 ~ /^127\./ && $2 != "127.0.0.1" { print $2 }')"
-	fi
+	# `inet` 行の 2 番目のフィールドがアドレス。127.0.0.1 は lo0 に
+	# 必ず載っていて、このツールが管理する対象ではないので外す
+	# （出すと毎回「設定ファイルに無い」印が付き、印そのものが
+	# 意味を持たなくなる）。
+	lo_addrs="$(ifconfig lo0 2>/dev/null | awk '$1 == "inet" && $2 ~ /^127\./ && $2 != "127.0.0.1" { print $2 }')"
 
 	printf 'config (%s):\n' "$CONF"
 	if [ ! -f "$CONF" ]; then
@@ -1288,9 +1238,7 @@ cmd_list() {
 				continue
 			fi
 
-			if [ "$is_mac" -eq 0 ]; then
-				printf '  %s\n' "$a"
-			elif _list_contains "$lo_addrs" "$a"; then
+			if _list_contains "$lo_addrs" "$a"; then
 				printf '  %s\n' "$a"
 			else
 				printf '! %s   (listed but not up on lo0 — run "karakuri-loopback add %s")\n' "$a" "$a"
@@ -1299,9 +1247,7 @@ cmd_list() {
 	fi
 
 	printf '\nlo0 aliases (127.*, excluding the built-in 127.0.0.1):\n'
-	if [ "$is_mac" -eq 0 ]; then
-		printf '  (not macOS)\n'
-	elif [ -z "$lo_addrs" ]; then
+	if [ -z "$lo_addrs" ]; then
 		printf '  (none)\n'
 	else
 		local l

@@ -66,6 +66,7 @@ exec)
 	case " $* " in
 	*" test -f /run/secrets/SSH_AUTHORIZED_KEYS "*)
 		printf '%s\n' "$*" >"${FAKE_SECRETS_CHECK_ARGV_FILE:?}"
+		printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_SECRETS_CHECK_ENV_FILE:?}"
 		if [ -n "${FAKE_SECRETS_CHECK_STDOUT:-}" ]; then
 			printf '%s\n' "$FAKE_SECRETS_CHECK_STDOUT"
 		fi
@@ -96,11 +97,18 @@ BASE_CID="cafe0123deadbeef"
 # --- 走らせる --------------------------------------------------------------------
 
 reset_env() {
-	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$RANDOM"
-	export FAKE_INSPECT_ARGV_FILE="$WORKDIR/inspect-argv.$$.$RANDOM"
-	export FAKE_START_ARGV_FILE="$WORKDIR/start-argv.$$.$RANDOM"
-	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
-	export FAKE_SECRETS_CHECK_ARGV_FILE="$WORKDIR/secrets-check-argv.$$.$RANDOM"
+	# $$ は実行全体で不変、$RANDOM は 32768 通りしかないため、reset_env が
+	# 数十回呼ばれる間に過去の一時ファイル名と衝突することがある
+	# （実測: 素の worktree で 40 回中 2 回、衝突した回だけ assert_not_invoked が
+	# 偽陽性で落ちた）。単調増加のカウンタにして、$$ で実行間、カウンタで
+	# 実行内の分離を構造的に保証する。
+	_case_seq=$((${_case_seq:-0} + 1))
+	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$_case_seq"
+	export FAKE_INSPECT_ARGV_FILE="$WORKDIR/inspect-argv.$$.$_case_seq"
+	export FAKE_START_ARGV_FILE="$WORKDIR/start-argv.$$.$_case_seq"
+	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$_case_seq"
+	export FAKE_SECRETS_CHECK_ARGV_FILE="$WORKDIR/secrets-check-argv.$$.$_case_seq"
+	export FAKE_SECRETS_CHECK_ENV_FILE="$WORKDIR/secrets-check-env.$$.$_case_seq"
 
 	export FAKE_PS_STDOUT="$BASE_CID"
 	export FAKE_PS_EXIT_CODE=0
@@ -196,6 +204,20 @@ assert_not_invoked() {
 	fi
 }
 
+# assert_secrets_check_env <label> — 直前の secrets 判定
+# (test -f /run/secrets/SSH_AUTHORIZED_KEYS) が MSYS_NO_PATHCONV=1 を
+# 受け取っていたことを見る。--secrets-ok / --stdio のどちらも同じ判定
+# コマンドを通るので共通化してある。付いていないと Git Bash(MSYS2) が
+# このパスを Windows パスへ変換し、判定が常に false になる（実機で
+# 確認済みの不具合）。
+assert_secrets_check_env() {
+	if [ -f "$FAKE_SECRETS_CHECK_ENV_FILE" ] && [ "$(cat "$FAKE_SECRETS_CHECK_ENV_FILE")" = "MSYS_NO_PATHCONV=1" ]; then
+		ok "$1"
+	else
+		ng "$1 (got: $(cat "$FAKE_SECRETS_CHECK_ENV_FILE" 2>/dev/null))"
+	fi
+}
+
 # --- --secrets-ok ------------------------------------------------------------
 echo "--secrets-ok reports whether secrets are injected without side effects"
 
@@ -207,6 +229,7 @@ assert_rc_zero "--secrets-ok exits 0 when secrets are injected"
 assert_stdout_empty "--secrets-ok prints nothing on stdout when secrets are injected"
 assert_stderr_empty "--secrets-ok prints nothing on stderr when secrets are injected"
 assert_not_invoked "$FAKE_START_ARGV_FILE" "--secrets-ok never starts the container"
+assert_secrets_check_env "--secrets-ok's underlying check receives MSYS_NO_PATHCONV=1"
 
 reset_env
 export FAKE_SECRETS_EXIT_CODE=1
@@ -292,6 +315,7 @@ run_case -p proj --stdio
 
 assert_rc_zero "--stdio exits 0 (via the fake sshd-inetd) when secrets are injected"
 assert_stdout_empty "--stdio prints nothing on stdout when it succeeds"
+assert_secrets_check_env "--stdio's fail-closed check receives MSYS_NO_PATHCONV=1"
 if has_line "$FAKE_EXEC_ARGV_FILE" "-i -u root ${BASE_CID} /usr/local/sbin/sshd-inetd"; then
 	ok "--stdio execs the sshd-inetd wrapper by absolute path"
 else

@@ -101,6 +101,7 @@ ps)
 	;;
 exec)
 	printf '%s\n' "$@" >"${FAKE_EXEC_ARGV_FILE:?}"
+	printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_EXEC_ENV_FILE:?}"
 	exit "${FAKE_EXEC_EXIT_CODE:-0}"
 	;;
 buildx)
@@ -320,6 +321,12 @@ SHELL_UNDER_TEST=bash
 
 # 正常系の環境をまとめて張る。個々のテストで一部だけ上書き/unset する。
 reset_env() {
+	# $$ は実行全体で不変、$RANDOM は 32768 通りしかないため、reset_env が
+	# 数十回呼ばれる間に過去の一時ファイル名と衝突することがある
+	# （実測: 素の worktree で 40 回中 2 回、衝突した回だけ assert_not_invoked が
+	# 偽陽性で落ちた）。単調増加のカウンタにして、$$ で実行間、カウンタで
+	# 実行内の分離を構造的に保証する。
+	_case_seq=$((${_case_seq:-0} + 1))
 	export KARAKURI_SH="$FAKE_BIN_DIR/karakuri.sh"
 	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED"
 	unset KARAKURI_ORG KARAKURI_PROD_INSTALL KARAKURI_PROD_RUN KARAKURI_BW_BIN KARAKURI_TOOL_DIR
@@ -327,18 +334,19 @@ reset_env() {
 	# ディレクトリ運用を見るテストが個別に張る。
 	unset KARAKURI_PROD_COMPOSE_DIR
 
-	export FAKE_ARGV_FILE="$WORKDIR/argv.$$.$RANDOM"
-	export FAKE_ENV_FILE="$WORKDIR/env.$$.$RANDOM"
-	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$RANDOM"
-	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
-	export FAKE_BUILDX_ARGV_FILE="$WORKDIR/buildx-argv.$$.$RANDOM"
-	export FAKE_SSH_LOG="$WORKDIR/ssh-log.$$.$RANDOM"
-	export FAKE_SSH_G_LOG="$WORKDIR/ssh-g-log.$$.$RANDOM"
+	export FAKE_ARGV_FILE="$WORKDIR/argv.$$.$_case_seq"
+	export FAKE_ENV_FILE="$WORKDIR/env.$$.$_case_seq"
+	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$_case_seq"
+	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$_case_seq"
+	export FAKE_EXEC_ENV_FILE="$WORKDIR/exec-env.$$.$_case_seq"
+	export FAKE_BUILDX_ARGV_FILE="$WORKDIR/buildx-argv.$$.$_case_seq"
+	export FAKE_SSH_LOG="$WORKDIR/ssh-log.$$.$_case_seq"
+	export FAKE_SSH_G_LOG="$WORKDIR/ssh-g-log.$$.$_case_seq"
 	# karakuri-dock のオーケストレーション（ensure-running → secrets-ok →
 	# dev-inject → port forwarding → 対話シェル）の呼び出し順を見るための
 	# 共有ログ。dock.sh / dev-inject.sh / ssh のフェイクがそれぞれ 1 行ずつ
 	# 追記する。
-	export FAKE_SEQUENCE_LOG="$WORKDIR/sequence.$$.$RANDOM"
+	export FAKE_SEQUENCE_LOG="$WORKDIR/sequence.$$.$_case_seq"
 
 	export FAKE_PS_STDOUT="$BASE_CID"
 	export FAKE_PS_EXIT_CODE=0
@@ -887,6 +895,13 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 			ng "[$s] docker exec argv is missing '$expected'"
 		fi
 	done
+	# MSYS_NO_PATHCONV=1 が無いと、Git Bash(MSYS2) が -w /src を Windows
+	# パスへ変換してしまう（実機で踏んだ不具合と同型。dock.sh の対策に揃える）。
+	if [ -f "$FAKE_EXEC_ENV_FILE" ] && [ "$(cat "$FAKE_EXEC_ENV_FILE")" = "MSYS_NO_PATHCONV=1" ]; then
+		ok "[$s] docker exec receives MSYS_NO_PATHCONV=1"
+	else
+		ng "[$s] docker exec did not receive MSYS_NO_PATHCONV=1 (got: $(cat "$FAKE_EXEC_ENV_FILE" 2>/dev/null))"
+	fi
 
 	reset_env
 	export FAKE_PS_STDOUT=""

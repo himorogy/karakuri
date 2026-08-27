@@ -975,7 +975,15 @@ karakuri-prod-shell() {
 		return 1
 	fi
 
-	docker exec -it -w /src "$cid" bash
+	# ここだけ `env MSYS_NO_PATHCONV=1` を前置きで残す（dock.sh /
+	# dev-inject.sh / prod-run.sh は独立プロセスなのでスクリプト冒頭で
+	# export に寄せたが、karakuri.sh は .zshrc / .bashrc から `source`
+	# される側であり、export すると karakuri-prod-shell を抜けたあとも
+	# 利用者の対話シェルに MSYS_NO_PATHCONV=1 が残ってしまう）。
+	# Git Bash(MSYS2) は先頭が `/` の引数を Windows パスへ変換するため、
+	# これが無いと `-w /src` がコンテナ内に存在しないパスへ化ける（実機で
+	# 確認済みの不具合と同型）。
+	env MSYS_NO_PATHCONV=1 docker exec -it -w /src "$cid" bash
 }
 
 # --- image の digest -------------------------------------------------------------

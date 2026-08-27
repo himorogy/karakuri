@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# MSYS_NO_PATHCONV=1 は Git Bash(MSYS2) のパス変換を止める。先頭が `/` の
+# 引数（コンテナ内の絶対パス）を Windows パスへ変換されると、docker exec に
+# 渡したパスがコンテナ内に存在しないものへ化ける。`--secrets-ok` /
+# `--stdio` の secret 判定（`test -f /run/secrets/...`）はまさにこれで
+# 常に false になっていた（実機で確認済みの不具合）。ここは呼び出しごとに
+# `env MSYS_NO_PATHCONV=1` を前置きするのではなく、スクリプト冒頭で export
+# する形に寄せている。dock.sh は独立したプロセスとして起動されるので、この
+# export は呼び出し元のシェルへは漏れない。以後このファイルが呼ぶ docker の
+# 全呼び出し（コンテナ特定・起動・secret 判定・exec）に一律で効く。
+export MSYS_NO_PATHCONV=1
+
 # dock.sh — dev container へ入るためのホスト側スクリプト。
 #
 # compose project 名・service 名・workspace はすべて引数で受け取り、
@@ -263,9 +274,7 @@ case "$mode" in
         #
         # 絶対パスで書くのは PATH 解決に依存させないため（sh -c を挟む
         # 必要も無くなる）。
-        exec env \
-            MSYS_NO_PATHCONV=1 \
-            docker exec \
+        exec docker exec \
             -i \
             -u root \
             "$container" \
@@ -279,18 +288,14 @@ case "$mode" in
         fi
 
         if [[ -n "$workspace" ]]; then
-            exec env \
-                MSYS_NO_PATHCONV=1 \
-                docker exec \
+            exec docker exec \
                 -it \
                 -w "$workspace" \
                 "$container" \
                 zsh
         fi
 
-        exec env \
-            MSYS_NO_PATHCONV=1 \
-            docker exec \
+        exec docker exec \
             -it \
             "$container" \
             zsh

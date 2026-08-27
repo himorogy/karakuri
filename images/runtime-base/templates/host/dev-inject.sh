@@ -36,6 +36,15 @@
 
 set -euo pipefail
 
+# MSYS_NO_PATHCONV=1 は Git Bash(MSYS2) のパス変換を止める。先頭が `/` の
+# 引数（/usr/local/bin/secrets-ingest.sh というコンテナ内の絶対パス）を
+# Windows パスへ変換されると、docker exec がそのパスをコンテナ内に見つけ
+# られず落ちる（実機で確認済みの不具合）。dock.sh と同じくスクリプト冒頭で
+# export する形に寄せている。dev-inject.sh は独立したプロセスとして起動
+# されるので、この export は呼び出し元のシェルへは漏れない。broker が受け
+# 取る項目名は環境変数（BROKER_BW_ITEM 等）で渡るため、この変換の対象外。
+export MSYS_NO_PATHCONV=1
+
 # --- pipefail が無いと何が起きるか -------------------------------------------
 # broker が認可失敗（Touch ID 拒否・非対話環境で確認ダイアログを出せない、
 # 等）で非ゼロ終了しても、パイプの最終要素は docker であり、docker が 0 を
