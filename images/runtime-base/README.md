@@ -650,6 +650,10 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 
 ### ホスト側ツールを入手する
 
+ホスト側ツール（`karakuri.sh` の関数群と `dock.sh`）が動作する OS は macOS と
+Windows(Git Bash / MSYS2) の 2 つ。Linux はホストとしては対象にしない（コンテナの中は
+Linux だが、ホストツールをそこで動かすことはない）。
+
 テンプレート一式は [`templates/`](./templates/) にある。置き場所で二つに分けてあり、
 `templates/host/` はホストの固定パスへ置くもの、`templates/project/` はプロジェクトの
 リポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）。
@@ -666,7 +670,10 @@ git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karak
 ホスト側ツールの修正がイメージの再リリースを引き起こさない。
 
 `~/.config/karakuri/images/runtime-base/templates/host` を `PATH` に足すか、そこから
-`~/.local/bin/` へ symlink を張る。どちらでもよい。
+`~/.local/bin/` へ symlink を張る。どちらでもよい。Windows(Git Bash) では `~` は
+`git clone` を打った Git Bash 上のホームディレクトリで、パスは Unix 形式
+（`/c/Users/<name>/...`）になる。`C:\Users\...` 形式ではないので、Windows のエクスプローラ
+等で確認したパスをそのまま貼らないこと。
 
 コピーではなく clone にするのは、コピーが増えるほど「手元のものが正本と同じか」を
 確かめる手段が無くなるためである。clone なら手元にあるのは正本と同じ git オブジェクトで、
@@ -693,6 +700,12 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 `KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
 関数の一覧と推奨 alias はファイル末尾のコメントにある。
 
+Windows(Git Bash) は既定で login shell として起動するため、`~/.bash_profile` に書けば
+確実に読まれる。無ければ作り、その中で `~/.bashrc` を source するか、直接
+`source ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh` を書く。
+`~/.bashrc` は Git Bash の `/etc/profile` 経由で読まれる構成もあるが、そこには依存しない
+（実機で確認すること）。
+
 `KARAKURI_ORG` もあるが、こちらは**任意**である。リポジトリは `<org>/<repo>` の 1 引数で
 渡せるので、扱う org が複数あって一つに定まらないなら設定しない。設定するのは「ほとんどの
 場合これ」という org がある場合だけで、その場合もスラッシュ付きで渡せば上書きできる。
@@ -705,7 +718,10 @@ SSH port forwarding を使う場合は、これに加えて `~/.ssh/config` の�
 [`images/devcontainer-base/PORT-FORWARDING.md`](../devcontainer-base/PORT-FORWARDING.md) にある。
 後者は `/etc/hosts` の管理ブロックを用意し、macOS では loopback エイリアスを再起動を跨いで
 張り直す LaunchDaemon を入れる。**`karakuri.sh` が提供する関数のうち、`sudo` を要求するのは
-`karakuri-loopback` だけである。**
+`karakuri-loopback` だけである。** Windows(Git Bash) では `karakuri-loopback` は何も変更せず
+終了する（macOS 専用であることを示す 1 行を出すだけ）。mac から Windows 上のコンテナへ入る
+1 ホップの経路（下記 PORT-FORWARDING.md 参照）では、`LocalForward` は mac 側の 1 段だけで
+済むため、この段自体が要らない。
 
 ### broker 本体（bw）を用意する
 

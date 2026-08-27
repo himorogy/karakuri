@@ -1116,171 +1116,84 @@ esac
 # macOS 以外
 # ==============================================================================
 
-# --- Linux では alias の段だけを飛ばし、hosts と設定ファイルは管理する ----------
-# 元はここで install / add / remove をサブコマンドごと止めていた。止めると
-# Linux のホストでは管理ブロックが永久に空のままで、しかも list はそれを
-# 読んで表示するので、「まだ設定していない」と「設定する手段が無い」の
-# 区別が付かなかった。/etc/hosts に名前を書くのは macOS 固有の作業ではない。
-echo "install on Linux places the config file but no LaunchDaemon"
-new_sandbox
-seed_hosts "$HOSTS_PREAMBLE"
-export FAKE_UNAME_S="Linux"
+# --- 非 macOS ではサブコマンドを問わず、何も変更せず 0 で終わる ------------------
+# 対応 OS は macOS と Windows(Git Bash) の 2 つで、非 Darwin は Windows だけに
+# なる。lo0 alias も /etc/hosts の管理ブロックも macOS 固有の迂回策で、
+# Windows では張る意味も書き換える意味も無い（Git Bash の /etc/hosts は
+# Windows の名前解決に使われない）ため、判定を通った時点で即終了する。
+# サブコマンドの解釈より前で止まることを、未知のサブコマンドと引数無しの
+# 2 通りでも確かめる。
+#
+# 実装の判定は「Darwin かどうか」の二値なので Linux でも通るが、対応 OS と
+# 宣言した Windows(Git Bash) の uname 出力（MINGW64_NT-* 系）でも同じ主張を
+# 通しておく。
+echo "non-macOS makes no changes for any subcommand, known or not"
 
-run_case install
+# 引数を配列に集めてからまとめて渡す形（read -ra / "${argv[@]}"）は使わない。
+# bash 4.4 未満（macOS の stock /bin/bash 3.2 が該当）では、set -u 下で
+# 空配列を "${argv[@]}" 展開すると unbound variable になるとされている
+# （この環境に 3.2 が無く、実機では未確認）。関数の "$@" を使えば配列を
+# 経由しないので、この問題を避けられる。
+_assert_non_macos_noop() {
+	local uname_s="$1"
+	shift
+	local label="non-macOS(${uname_s}) '${*:-<no args>}'"
+	local hosts_before
 
-if [ "$CASE_RC" -eq 0 ]; then
-	ok "linux: install exits zero"
-else
-	ng "linux: install exited $CASE_RC (stderr: $CASE_STDERR)"
-fi
+	new_sandbox
+	seed_hosts "$HOSTS_PREAMBLE"
+	export FAKE_UNAME_S="$uname_s"
+	hosts_before="$(cat "$HOSTS")"
 
-if [ -f "$CONF" ]; then
-	ok "linux: install still creates the config file"
-else
-	ng "linux: install did not create the config file"
-fi
+	run_case "$@"
 
-if [ ! -e "$DAEMON_PATH" ] && [ ! -e "$PLIST_PATH" ]; then
-	ok "linux: install places neither the daemon nor the plist"
-else
-	ng "linux: install placed a macOS-only file"
-fi
+	if [ "$CASE_RC" -eq 0 ]; then
+		ok "$label exits zero"
+	else
+		ng "$label exited $CASE_RC (stderr: $CASE_STDERR)"
+	fi
 
-if grep -q "launchctl" "$SUDO_LOG"; then
-	ng "linux: install ran launchctl"
-else
-	ok "linux: install does not run launchctl"
-fi
+	assert_no_privileged_ops "$label"
 
-if [ ! -s "$IFCONFIG_LOG" ]; then
-	ok "linux: install does not run ifconfig"
-else
-	ng "linux: install ran ifconfig"
-fi
+	if [ ! -s "$IFCONFIG_LOG" ]; then
+		ok "$label does not run ifconfig"
+	else
+		ng "$label ran ifconfig"
+	fi
 
-case "$CASE_STDOUT" in
-*"skipped the LaunchDaemon and the lo0 aliases"*)
-	ok "linux: install says in one line what it skipped and what it still did"
-	;;
-*) ng "linux: install did not report the skipped steps (stdout: $CASE_STDOUT)" ;;
-esac
+	if [ "$(cat "$HOSTS")" = "$hosts_before" ]; then
+		ok "$label leaves /etc/hosts untouched"
+	else
+		ng "$label changed /etc/hosts"
+	fi
 
-# 配布物が無くても、Linux では設定ファイルまでは作れる（daemon も plist も
-# 置かないのだから、それが無いことを理由に止めるのは筋が通らない）。
-new_sandbox no-dist
-seed_hosts "$HOSTS_PREAMBLE"
-export FAKE_UNAME_S="Linux"
+	if [ ! -e "$CONF" ]; then
+		ok "$label does not create the config file"
+	else
+		ng "$label created the config file"
+	fi
 
-run_case install
+	if [ -z "$CASE_STDOUT" ]; then
+		ok "$label prints nothing on stdout"
+	else
+		ng "$label wrote to stdout ($CASE_STDOUT)"
+	fi
 
-if [ "$CASE_RC" -eq 0 ] && [ -f "$CONF" ]; then
-	ok "linux: install does not need the loopback/ payload"
-else
-	ng "linux: install failed without the payload (rc=$CASE_RC, stderr: $CASE_STDERR)"
-fi
+	case "$CASE_STDERR" in
+	*"macOS only"*) ok "$label names itself macOS only" ;;
+	*) ng "$label did not say macOS only (stderr: $CASE_STDERR)" ;;
+	esac
+}
 
-echo "add and remove manage /etc/hosts on Linux, minus the alias"
-new_sandbox
-seed_conf
-seed_hosts "$HOSTS_PREAMBLE"
-export FAKE_UNAME_S="Linux"
-outside_before="$(hosts_outside "$HOSTS")"
-
-run_case add 127.0.1.5 app.test
-
-if [ "$CASE_RC" -eq 0 ]; then
-	ok "linux: add exits zero"
-else
-	ng "linux: add exited $CASE_RC (stderr: $CASE_STDERR)"
-fi
-
-if [ "$(hosts_block "$HOSTS")" = "127.0.1.5 app.test" ]; then
-	ok "linux: add writes the managed block"
-else
-	ng "linux: add did not write the block: $(hosts_block "$HOSTS")"
-fi
-
-if grep -qxF -- "127.0.1.5" "$CONF"; then
-	ok "linux: add records the address in the config file"
-else
-	ng "linux: add did not record the address ($(cat "$CONF"))"
-fi
-
-if [ "$(hosts_outside "$HOSTS")" = "$outside_before" ]; then
-	ok "linux: add leaves everything outside the markers untouched"
-else
-	ng "linux: add changed lines outside the markers"
-fi
-
-if [ ! -s "$IFCONFIG_LOG" ]; then
-	ok "linux: add does not run ifconfig"
-else
-	ng "linux: add ran ifconfig ($(tr '\n' ';' <"$IFCONFIG_LOG"))"
-fi
-
-case "$CASE_STDOUT" in
-*"skipped raising 127.0.1.5 on lo0"*)
-	ok "linux: add says which step it skipped and what it did instead"
-	;;
-*) ng "linux: add did not report the skipped alias (stdout: $CASE_STDOUT)" ;;
-esac
-
-run_case remove 127.0.1.5
-
-if [ "$CASE_RC" -eq 0 ]; then
-	ok "linux: remove exits zero"
-else
-	ng "linux: remove exited $CASE_RC (stderr: $CASE_STDERR)"
-fi
-
-if [ -z "$(hosts_block "$HOSTS")" ] && ! grep -qxF -- "127.0.1.5" "$CONF"; then
-	ok "linux: remove drops the hosts entry and the config line"
-else
-	ng "linux: remove left something behind (block: $(hosts_block "$HOSTS"))"
-fi
-
-if [ ! -s "$IFCONFIG_LOG" ]; then
-	ok "linux: remove does not run ifconfig"
-else
-	ng "linux: remove ran ifconfig ($(tr '\n' ';' <"$IFCONFIG_LOG"))"
-fi
-
-echo "list still works on a non-macOS host"
-new_sandbox
-seed_conf "127.0.1.5"
-seed_hosts_with_block "127.0.1.5 app.test"
-export FAKE_UNAME_S="Linux"
-
-run_case list
-
-if [ "$CASE_RC" -eq 0 ]; then
-	ok "list exits zero on Linux"
-else
-	ng "list exited $CASE_RC on Linux (stderr: $CASE_STDERR)"
-fi
-
-assert_no_privileged_ops "list on Linux"
-
-case "$CASE_STDOUT" in
-*"127.0.1.5"*) ok "list shows the configured address on Linux" ;;
-*) ng "list did not show the configured address (stdout: $CASE_STDOUT)" ;;
-esac
-
-case "$CASE_STDOUT" in
-*"127.0.1.5 app.test"*) ok "list shows the managed /etc/hosts block on Linux" ;;
-*) ng "list did not show the managed block (stdout: $CASE_STDOUT)" ;;
-esac
-
-case "$CASE_STDOUT" in
-*"(not macOS)"*) ok "list says the lo0 section does not apply on Linux" ;;
-*) ng "list did not mark the lo0 section as inapplicable (stdout: $CASE_STDOUT)" ;;
-esac
-
-if [ ! -s "$IFCONFIG_LOG" ]; then
-	ok "list does not shell out to ifconfig on Linux"
-else
-	ng "list called ifconfig on Linux"
-fi
+for uname_s in Linux MINGW64_NT-10.0-22631; do
+	_assert_non_macos_noop "$uname_s" install
+	_assert_non_macos_noop "$uname_s" add 127.0.1.5 app.test
+	_assert_non_macos_noop "$uname_s" remove 127.0.1.5
+	_assert_non_macos_noop "$uname_s" list
+	_assert_non_macos_noop "$uname_s"
+	_assert_non_macos_noop "$uname_s" no-such-command
+	_assert_non_macos_noop "$uname_s" -h
+done
 
 # ==============================================================================
 # daemon 本体（karakuri-loopback-aliases）

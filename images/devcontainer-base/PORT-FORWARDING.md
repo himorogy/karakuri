@@ -102,7 +102,7 @@ karakuri-loopback add 127.0.1.1 <your-project-hostname>
 
 `karakuri-loopback` は `sudo` を要求します（LaunchDaemon の配置と `/etc/hosts` の編集のため）。`karakuri.sh` が提供する関数のうち、特権が要るのはこれだけです。日常的に打つ `karakuri-port-forward` は `sudo` を必要としません。
 
-Linux ホストでは `127.0.0.0/8` 全体が最初から bind できるため、alias の段（`ifconfig` と LaunchDaemon）は飛ばされます。`/etc/hosts` の管理と設定ファイルへの記録は同じように行われるので、`karakuri-loopback add 127.0.1.1 <your-project-hostname>` はそのまま使えます。何を飛ばしたかは実行時に表示されます。
+このツールは macOS 専用です。対応 OS は macOS と Windows(Git Bash) の 2 つで、Windows では `karakuri-loopback` は何も変更せずに終了します（その旨を示す 1 行を出すだけです）。Windows は `127.0.0.0/8` を最初から bind でき、Git Bash の `/etc/hosts` は Windows の名前解決に使われないため、そもそも設定する対象がありません。
 
 `/etc/hosts` は Docker Desktop など他のツールも触るファイルです。`karakuri-loopback` はマーカーで囲んだ管理ブロックの中だけを書き換え、その外には触れません。編集前に `/etc/hosts.karakuri.bak` へ退避します。
 
@@ -137,6 +137,30 @@ AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys
 公開鍵は秘密情報ではありません。broker に載せるのは秘匿のためではなく、搬送と再注入のタイミング規律を secret と 1 本にまとめるためです。tmpfs なのでコンテナ停止で消えますが、消える条件も再注入の作法も secret と同じで、覚えることが増えません。dev-inject を忘れると git 認証も同時に失敗するため、SSH だけが静かに壊れることもありません。
 
 2 つ目の `~/.ssh/authorized_keys` は、broker を使わない導入形態（devcontainer-base を別の注入手段と組み合わせる場合）向けに残してあります。こちらはコンテナを作り直すと消えるため、都度の再投入が必要です。
+
+## mac から Windows 上のコンテナへ入る（1 ホップ）
+
+devcontainer が Windows の docker で動いている場合も、上の `ProxyCommand` を入れ子にするだけで mac から直接コンテナへ ssh が張れます。Windows 側に loopback エイリアスも `karakuri-port-forward` も要りません。
+
+```
+Host devc-win-<your-project>
+    ProxyCommand ssh <windows-host> dock.sh -p <your-project>-dev --stdio
+    LocalForward 3000 localhost:3000
+```
+
+`LocalForward` は mac 側の 1 段だけで済みます。`dock.sh -p <your-project>-dev --stdio` は Windows 側の sshd がその既定シェルで実行するコマンドです。既定シェルが `cmd.exe` の場合に改行コードの変換でトランスポートが壊れることがあるため、実機で確認し、壊れる場合は既定シェルを変えるか `ssh <windows-host> bash -lc "dock.sh -p <your-project>-dev --stdio"` の形に変えてください（`dock.sh` 冒頭の CONTRACT が扱っている壊れ方です）。
+
+接続を張るのは常に mac（外側）で、コンテナ側から穴を開けません。コンテナ起点の `ssh -R` は egress-guard の allowlist に載っていない宛先へは通らないため成立せず、通すには宛先を明示的に許可することになります。
+
+secret の注入は Windows 側で行います。`dev-inject` は broker をコンテナから到達不能な場所に置くためにホスト側で実行する設計であり、コンテナが Windows 上の docker で動く以上、注入できるのは Windows ホストだけです。mac から接続する前に、Windows 側で次を実行して注入を済ませてください。
+
+```
+karakuri-dock -p <your-project>-dev up
+```
+
+`--stdio` は未注入なら fail closed で終了するため、これを忘れると mac 側には「secret が無い」という明示的なエラーが返ります。
+
+`ProxyCommand` の中で注入は代行できません。`ssh <windows-host> 'karakuri-dock -p <your-project>-dev up && dock.sh ... --stdio'` の形は、`up` の出力が `ProxyCommand` の stdout に混ざって SSH トランスポートを壊すことと、注入が求める認可（パスワード / 生体認証）に非対話の `ProxyCommand` が応答できないことの 2 つで成立しません。2 段を 1 コマンドにまとめたい場合は、mac 側に「先に `ssh <windows-host> bash -lc "karakuri-dock -p <your-project>-dev up"`、次に `ssh devc-win-<your-project>`」を並べる薄い関数を置いてください。`karakuri-dock` は `karakuri.sh` を `source` した対話シェルの中でだけ使える関数なので、`ssh host cmd` の非対話・非ログインの起動経路で読まれるようにする必要があり、そこは上の `dock.sh --stdio` と同じく既定シェルの扱いを実機で確認して決めてください。この関数は規約の吸収と同じ扱いで利用者側に置くもので、karakuri の配布物には入りません。
 
 ## VS Code 利用者の設定
 
