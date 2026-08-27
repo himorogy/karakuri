@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: feat
 base: main
 targets:
@@ -182,6 +182,58 @@ broker も起動するが、broker が受け取る項目名は環境変数（`BR
 2 モードについて足す（今回漏れていた箇所であり、否定対照が要る）。フェイクの作法は既存の
 ものに倣う。パス変換そのものは MSYS 上でしか起きないため、Linux の CI で検査できるのは
 「変数を渡していること」までであり、変換が実際に止まることの確認は検収に委ねる。
+
+### 4. 検収で確定した事項を文書へ反映する
+
+Windows 実機と mac で検収を行い、チケットが実機に委ねていた 3 点が確定した。文書側の
+「実機で確認すること」という留保を外し、確定した内容を書く。
+
+**(a) Git Bash の起動ファイルからの導線** — `~/.bash_profile` と `~/.bashrc` のどちらに
+書いても対話シェルでは読まれた。ただし依存すべきは `~/.bash_profile` の側である。Git Bash が
+login shell として起動するため `~/.bash_profile` は bash 自身の仕様で読まれるのに対し、
+`~/.bashrc` が読まれるかは `/etc/profile` / `/etc/bash.bashrc` の構成次第で変わる。加えて
+`ssh <host> bash -lc "..."` の経路（下記 (c) の薄い関数が使う）は login shell なので
+`~/.bash_profile` を読み、`~/.bashrc` は非対話 bash では原則読まれない。`README.md` の
+当該段落を、`~/.bash_profile` を推し、`~/.bashrc` に依存しない形へ確定させる。
+
+**(b) Windows sshd の既定シェルとバイト透過** — mac 側 ssh config の `ProxyCommand` に
+`dock.sh` の絶対パスを直接書いた形（`ssh <windows-host> <絶対パス>/dock.sh -p
+<compose-project> --stdio`）で、既定シェルのまま SSH トランスポートが成立した。`bash -lc`
+で包む必要は無かった。`PORT-FORWARDING.md` の「実機で確認し、壊れる場合は既定シェルを
+変えるか `bash -lc` を挟む」という留保を外し、この形が動くことを書く。
+
+ただし**リモートで `karakuri-dock` を呼ぶ側には `bash -lc` が要る**。あちらは
+`karakuri.sh` が source で定義する関数であり、`ssh <host> <command>` の非対話・非ログイン
+経路では見えないためである。`dock.sh` が実行ファイルで絶対パス指定であることとの非対称は
+残るので、両者の違いが読み取れる形で書く。
+
+**(c) 対話セッションに `LocalForward` を直書きする形の穴** — 1 ホップ節が示した設定例は
+対話セッションに転送を持たせる形だった。この形では、転送先のサービス（dev サーバ）が
+落ちたときに `connect_to localhost port <port>: failed.` が作業中の端末へ出続ける。転送
+そのものは壊れておらず、サービスを起動し直せば復活するが、既存経路が持っていたログ分離が
+この経路には効いていない。
+
+通常経路（mac 上のコンテナ）でこれが起きないのは、`karakuri-dock` が転送を
+`karakuri-port-forward` 経由で張り（`ssh -fN` の stderr がログファイルへ逃げる）、作業する
+端末は `docker exec -it zsh` で別プロセスになっているからである。1 ホップ経路では入るのも
+転送も同じ ssh セッションなので同居する。
+
+`karakuri-port-forward` は `devc-` で始まる名前をそのまま受け取る（`_karakuri_ssh_host`）
+ので、1 ホップ経路の host alias をそのまま渡せる。新しい仕組みは要らない。文書を次のように
+直す。
+
+- 1 ホップ節の設定例に `ControlMaster auto` / `ControlPath ~/.ssh/cm-%n` を含める
+- 転送は `karakuri-port-forward <host alias>` で別に張り、対話セッションは master を
+  再利用する形を示す。直書きした場合に何が起きるかも書く
+- 既存の「2 段をまとめる薄い関数」の例を、注入 → 転送 → 接続の 3 段に差し替える。転送の
+  失敗は警告に留めて入る（`karakuri-dock` 本体と同じ扱い）。この関数は規約の吸収と同じく
+  利用者側に置くもので、配布物には入れない
+- 通常経路でこの問題が起きない理由を 1 文添える
+
+**`karakuri-prod-run` の Windows 実機での確認は行っていない。** `-f "$PROD_COMPOSE_FILE"`
+（ホスト側のパス）が `MSYS_NO_PATHCONV=1` によって未変換のまま `docker compose` へ渡る点の
+当否は未確定のままとする。prod 系を Windows で使う運用が無いため実測しておらず、確定して
+いないことを文書へ書かない（推測を書かない）。
 
 ### 文書
 

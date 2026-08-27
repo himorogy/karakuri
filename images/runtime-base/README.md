@@ -700,11 +700,19 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 `KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
 関数の一覧と推奨 alias はファイル末尾のコメントにある。
 
-Windows(Git Bash) は既定で login shell として起動するため、`~/.bash_profile` に書けば
-確実に読まれる。無ければ作り、その中で `~/.bashrc` を source するか、直接
-`source ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh` を書く。
-`~/.bashrc` は Git Bash の `/etc/profile` 経由で読まれる構成もあるが、そこには依存しない
-（実機で確認すること）。
+Windows(Git Bash) では `~/.bash_profile` に書く。無ければ作り、直接
+`source ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh` を書くか、
+`~/.bashrc` にまとめる習慣があるなら `~/.bash_profile` から `~/.bashrc` を source する
+定番の形にしてそちらへ書く。
+
+`~/.bashrc` に直接書いて済ませないのは 2 つ理由がある。ひとつは、Git Bash は login shell
+として起動するため `~/.bash_profile` は bash 自身の仕様で必ず読まれるのに対し、
+`~/.bashrc` が読まれるかは `/etc/profile` / `/etc/bash.bashrc` の構成次第で、版や配布形態
+によって変わりうること。もうひとつは、`ssh <host> bash -lc "..."` の経路
+（[`PORT-FORWARDING.md`](../devcontainer-base/PORT-FORWARDING.md) の「mac から Windows 上の
+コンテナへ入る」が使う）は login shell なので `~/.bash_profile` を読むが、`~/.bashrc` は
+非対話 bash では原則読まれないこと。`~/.bashrc` にしか書いていないと、ローカルの対話シェル
+では動くのにリモート実行だけ関数が見つからないという食い違いが起きる。
 
 `KARAKURI_ORG` もあるが、こちらは**任意**である。リポジトリは `<org>/<repo>` の 1 引数で
 渡せるので、扱う org が複数あって一つに定まらないなら設定しない。設定するのは「ほとんどの
