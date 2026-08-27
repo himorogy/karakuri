@@ -7,9 +7,18 @@ targets:
   - images/runtime-base/README.md
   - images/runtime-base/templates/host/loopback-setup.sh
   - images/runtime-base/templates/tests/loopback-setup.test.sh
+  - images/runtime-base/templates/host/dev-inject.sh
+  - images/runtime-base/templates/host/prod-run.sh
+  - images/runtime-base/templates/host/karakuri.sh
+  - images/runtime-base/templates/tests/dev-inject.test.sh
+  - images/runtime-base/templates/tests/prod-run.test.sh
+  - images/runtime-base/templates/tests/karakuri.test.sh
 verify:
   - bash images/runtime-base/templates/tests/dock.test.sh
   - bash images/runtime-base/templates/tests/loopback-setup.test.sh
+  - bash images/runtime-base/templates/tests/dev-inject.test.sh
+  - bash images/runtime-base/templates/tests/prod-run.test.sh
+  - bash images/runtime-base/templates/tests/karakuri.test.sh
   - bash images/runtime-base/tests/shipped-symbols.test.sh
   - pnpm lint:sh:images
 ---
@@ -118,6 +127,33 @@ up`、次に `ssh devc-win-<project>`」を並べる薄い関数を置く。`up`
 これらは Windows 実機と mac の両方が必要であり、機械的な verify に落とせない。
 検収（人間の動作確認）に委ねる。`dock.test.sh` には、既定シェルの扱いを決めた結果
 `dock.sh` の呼び出し形が変わった場合にその形を固定するテストだけを追加する。
+
+### 3. Git Bash の MSYS パス変換を全ホストツールで塞ぐ
+
+Git Bash（MSYS2）は、コマンドライン引数が `/` で始まるときそれを Windows のパスへ変換する。
+`docker exec` に渡すコンテナ内の絶対パスがこれに当たり、変換されるとコンテナ内に存在しない
+パスになって `executable file not found`（exit 127）で落ちる。検収の実機で
+`karakuri-dock -p <project> up` が次の形で落ちることを確認した。
+
+```
+OCI runtime exec failed: exec: "C:/Program Files/Git/usr/local/bin/secrets-ingest.sh":
+stat C:/Program Files/Git/usr/local/bin/secrets-ingest.sh: no such file or directory
+```
+
+`dock.sh` は `docker` の呼び出しに `env MSYS_NO_PATHCONV=1` を前置きしてこれを避けているが、
+他のホストツールには付いていない。同型の箇所は 3 つある。
+
+- `dev-inject.sh` の `docker exec -i "$cid" /usr/local/bin/secrets-ingest.sh`
+- `karakuri.sh` の `karakuri-prod-shell` が呼ぶ `docker exec -it -w /src "$cid" bash`
+- `prod-run.sh` の `docker compose run -T --rm prod "$@"`（タスク引数が `/` で始まる場合）
+
+いずれも `dock.sh` と同じ `env MSYS_NO_PATHCONV=1` の前置きで塞ぐ。変数は `docker` の
+プロセスにだけ渡し、呼び出し側のシェルへ export しない（`dock.sh` と同じ形）。
+
+各テストに、`docker` のフェイクが受け取った環境から `MSYS_NO_PATHCONV=1` が渡っていることを
+検査するケースを足す。フェイクの作法は既存のものに倣う。パス変換そのものは MSYS 上でしか
+起きないため、Linux の CI で検査できるのは「変数を渡していること」までであり、変換が実際に
+止まることの確認は検収に委ねる。
 
 ### 文書
 

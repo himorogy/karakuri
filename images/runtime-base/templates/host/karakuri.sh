@@ -975,7 +975,11 @@ karakuri-prod-shell() {
 		return 1
 	fi
 
-	docker exec -it -w /src "$cid" bash
+	# MSYS_NO_PATHCONV=1 は docker のプロセスにだけ渡す（呼び出し側の
+	# 対話シェルへは export しない）。Git Bash(MSYS2) は先頭が `/` の
+	# 引数を Windows パスへ変換するため、これが無いと `-w /src` がコン
+	# テナ内に存在しないパスへ化ける（dock.sh と同じ対策）。
+	env MSYS_NO_PATHCONV=1 docker exec -it -w /src "$cid" bash
 }
 
 # --- image の digest -------------------------------------------------------------

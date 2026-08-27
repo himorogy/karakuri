@@ -147,7 +147,13 @@ fi
 # ラインを `if` の条件として実行する。`if` の条件式は `set -e` の対象外
 # なので、ここでパイプが失敗してもスクリプトはまだ終了せず、両者の終了
 # コードを個別に検査してから然るべきメッセージで終了できる。
-if "$PROD_BROKER" | docker compose -f "$PROD_COMPOSE_FILE" run -T --rm prod "$@"; then
+# MSYS_NO_PATHCONV=1 は docker のプロセスにだけ渡す（呼び出し側のシェルへは
+# export しない）。Git Bash(MSYS2) は先頭が `/` の引数を Windows パスへ
+# 変換するため、`"$@"` に渡すタスクの引数が `/` で始まるとこれが無いと
+# コンテナ内で解決できないパスに化ける（dock.sh と同じ対策）。env が
+# docker を exec するので PIPESTATUS[1] は docker compose run 自身の
+# 終了コードのままである。
+if "$PROD_BROKER" | env MSYS_NO_PATHCONV=1 docker compose -f "$PROD_COMPOSE_FILE" run -T --rm prod "$@"; then
 	broker_rc=0
 	docker_rc=0
 else

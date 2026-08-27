@@ -40,6 +40,7 @@ mkdir -p "$FAKE_BIN_DIR"
 cat >"$FAKE_BIN_DIR/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >"${FAKE_DOCKER_ARGV_FILE:?}"
+printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_DOCKER_ENV_FILE:?}"
 cat >"${FAKE_DOCKER_STDIN_FILE:?}"
 exit "${FAKE_DOCKER_EXIT_CODE:-0}"
 FAKE_DOCKER
@@ -88,6 +89,7 @@ reset_env() {
 	export FAKE_DOCKER_EXIT_CODE=0
 	export FAKE_DOCKER_ARGV_FILE="$WORKDIR/argv.$$.$RANDOM"
 	export FAKE_DOCKER_STDIN_FILE="$WORKDIR/stdin.$$.$RANDOM"
+	export FAKE_DOCKER_ENV_FILE="$WORKDIR/env.$$.$RANDOM"
 }
 
 # run_case <argv...> — 現在 export 済みの環境と、PATH 先頭のフェイク docker
@@ -253,6 +255,14 @@ if [ -f "$FAKE_DOCKER_STDIN_FILE" ]; then
 	fi
 else
 	ng "fake docker was never invoked (no stdin file)"
+fi
+
+# MSYS_NO_PATHCONV=1 が無いと、Git Bash(MSYS2) がタスク引数の先頭の `/`
+# を Windows パスへ変換してしまう（実機で踏んだ不具合）。
+if [ -f "$FAKE_DOCKER_ENV_FILE" ] && [ "$(cat "$FAKE_DOCKER_ENV_FILE")" = "MSYS_NO_PATHCONV=1" ]; then
+	ok "docker receives MSYS_NO_PATHCONV=1"
+else
+	ng "docker did not receive MSYS_NO_PATHCONV=1 (got: $(cat "$FAKE_DOCKER_ENV_FILE" 2>/dev/null))"
 fi
 
 # --- GIT_REF が 40 桁 hex でない (既定): 早期に拒否される ---------------------

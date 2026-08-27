@@ -52,6 +52,7 @@ compose)
 	;;
 exec)
 	printf '%s\n' "$@" >"${FAKE_EXEC_ARGV_FILE:?}"
+	printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_EXEC_ENV_FILE:?}"
 	cat >"${FAKE_EXEC_STDIN_FILE:?}"
 	exit "${FAKE_EXEC_EXIT_CODE:-0}"
 	;;
@@ -106,6 +107,7 @@ reset_env() {
 	export FAKE_COMPOSE_ARGV_FILE="$WORKDIR/compose-argv.$$.$RANDOM"
 	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$RANDOM"
 	export FAKE_EXEC_STDIN_FILE="$WORKDIR/exec-stdin.$$.$RANDOM"
+	export FAKE_EXEC_ENV_FILE="$WORKDIR/exec-env.$$.$RANDOM"
 }
 
 # run_case <argv...> — 現在 export 済みの環境と、PATH 先頭のフェイク docker
@@ -273,6 +275,14 @@ if [ -f "$FAKE_EXEC_STDIN_FILE" ]; then
 	fi
 else
 	ng "fake docker exec was never invoked (no stdin file)"
+fi
+
+# MSYS_NO_PATHCONV=1 が無いと、Git Bash(MSYS2) が /usr/local/bin/... を
+# Windows パスへ変換してしまう（実機で踏んだ不具合）。
+if [ -f "$FAKE_EXEC_ENV_FILE" ] && [ "$(cat "$FAKE_EXEC_ENV_FILE")" = "MSYS_NO_PATHCONV=1" ]; then
+	ok "docker exec receives MSYS_NO_PATHCONV=1"
+else
+	ng "docker exec did not receive MSYS_NO_PATHCONV=1 (got: $(cat "$FAKE_EXEC_ENV_FILE" 2>/dev/null))"
 fi
 
 # --- DEV_SERVICE で service 名を差し替えられる（既定は dev） --------------------
