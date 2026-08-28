@@ -206,13 +206,15 @@ karakuri-dock -p <your-project>-dev -b <your-project> up
 
 `--stdio` は未注入なら fail closed で終了するため、これを忘れると mac 側には「secret が無い」という明示的なエラーが返ります。
 
+`karakuri-dock` は `up` の内部に転送を張る段を持ちますが、それは実行ホスト（Windows）の `~/.ssh/config` を見て Windows 側から張るものです。上の 2 行の手順で mac 側に別セッションを立てているのはこれとは別物で、mac のブラウザからコンテナへ届く転送は mac の ssh が張ります。Windows 側でその名前（`-H` 省略時は `<your-project>-dev`）に `LocalForward` が無ければ「転送を持たないホスト」として飛ばされ、その旨の 1 行が出ます。`-H` を渡しても実行ホストは変わらないため、Windows 側で `-H` に mac の Host 別名を渡しても、`ssh -G` を評価するのも `ssh -fN` を打つのも Windows のままです。
+
 `ProxyCommand` の中で注入は代行できません。`ssh <windows-host> 'karakuri-dock -p <your-project>-dev -b <your-project> up && dock.sh ... --stdio'` の形は、`up` の出力が `ProxyCommand` の stdout に混ざって SSH トランスポートを壊すことと、注入が求める認可（パスワード / 生体認証）に非対話の `ProxyCommand` が応答できないことの 2 つで成立しません。
 
 2 段を 1 コマンドにまとめたい場合は、mac 側に注入 → 転送 → 接続を並べる薄い関数を置いてください。
 
 ```sh
 win-dock() {
-  ssh <windows-host> bash -lc "karakuri-dock -p $1-dev -b $1 up" || return 1
+  ssh <windows-host> "bash -lc 'karakuri-dock -p $1-dev -b $1 up'" || return 1
   if karakuri-port-forward "devc-win-$1"; then
     ssh "devc-win-$1"
   else
@@ -222,9 +224,17 @@ win-dock() {
 }
 ```
 
-`dock.sh` と `karakuri-dock` では、リモートでの呼び出し方が非対称です。`dock.sh` は実行ファイルの絶対パス指定なので `ssh <windows-host> <dock.sh の絶対パス> ...` とそのまま書けますが、`karakuri-dock` は `karakuri.sh` が `source` で定義する関数なので、`ssh <host> <command>` の非対話・非ログイン経路には存在しません。`bash -lc "..."` を挟んで login shell にすることで `~/.bash_profile`（[images/runtime-base/README.md](../runtime-base/README.md) 参照）を読ませ、関数を見えるようにする必要があります（実機で確認済み）。
+`dock.sh` と `karakuri-dock` では、リモートでの呼び出し方が非対称です。`dock.sh` は実行ファイルの絶対パス指定なので `ssh <windows-host> <dock.sh の絶対パス> ...` とそのまま書けますが、`karakuri-dock` は `karakuri.sh` が `source` で定義する関数なので、`ssh <host> <command>` の非対話・非ログイン経路には存在しません。`bash -lc '...'` を 1 つの引数としてリモートへ渡し（上の例のようにクォートを 2 段重ねます）、login shell として `~/.bash_profile`（[images/runtime-base/README.md](../runtime-base/README.md) 参照）を読ませて関数を見えるようにする必要があります（実機で確認済み）。この形はリモート側のシェルが単引用符を剥がすことに依存する二段構えで、実測した環境は Windows の OpenSSH の `DefaultShell` に Git Bash の `bash.exe` が設定されたものです。
 
 転送が張れないときに「警告に留めて入る」が単純には成立しない点に注意してください。上の設定は `ExitOnForwardFailure yes` を持つため、転送先のポートが bind できない状態では `ssh devc-win-<your-project>` そのものが `Could not request local forwarding.` で失敗し、**入れません**。`karakuri-dock` 本体（`docker exec` で入る通常経路）が転送の失敗を警告に留められるのは、入る経路と転送が別プロセスだからです。1 ホップ経路は同じ ssh セッションなのでこの前提が無く、入る側だけを通すには `-o ClearAllForwardings=yes` で転送を外して繋ぎ直す必要があります。`win-dock` はこれを行っています。`ExitOnForwardFailure` を `no` に緩めて済ませないでください——それを外すと `karakuri-port-forward` が転送の失敗を検出できなくなります（転送が無いまま master だけ残り、成功したように見えます）。この関数は規約の吸収と同じ扱いで利用者側に置くもので、karakuri の配布物には入りません。
+
+### 作業ディレクトリを固定する
+
+この経路では `-w` は使えません。`--stdio` はコンテナ内の sshd を起動するだけで、ログイン後の作業ディレクトリは sshd とログインシェルが決めます。
+
+固定したい場合は、`win-dock` の接続段——通常の `ssh "devc-win-$1"`（`if` 側）と、転送が失敗したときのフォールバック `ssh -o ClearAllForwardings=yes "devc-win-$1"`（`else` 側）——の両方に `-o RequestTTY=yes -o RemoteCommand="cd <workspace> && exec zsh -l"` を渡してください。片方だけに付けると、転送が失敗した回だけ作業ディレクトリが home に戻ります。
+
+`~/.ssh/config` の `Host` ブロックに `RemoteCommand` を書く形は勧めません。その Host では `ssh <host> <command>` と `sftp` が `Cannot execute command-line and remote command.` で失敗します（OpenSSH 9.2p1 での実測では、`karakuri-port-forward` の `ssh -fN` は `-N` がセッションチャネルを開かないため影響を受けず、`scp` は自身で `-oRemoteCommand=none` を付けるため影響を受けません）。接続段にだけ渡せばこの副作用がありません。
 
 ## VS Code 利用者の設定
 
