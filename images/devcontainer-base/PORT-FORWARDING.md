@@ -54,7 +54,9 @@ Host devc-*
   UserKnownHostsFile /dev/null
 ```
 
-`Host` の別名は `HostName`（= dock.sh へ渡る compose project 名そのもの）と同じ値にしてください。`karakuri-dock` は `-p` に渡した値から `devc-<その値>` という ssh Host を組み立てて port forwarding を張るため（`_karakuri_ssh_host` 参照）、別名を `HostName` と違う値にすると `karakuri-dock` が張り直す転送と `LocalForward` を書いた Host ブロックが一致せず、書いてあるのに「転送を持たないホスト」と誤診断されます。雛形の compose project 名の付け方（`<your-project>-dev`）に従うなら、別名も `devc-<your-project>-dev` です。
+`Host` の別名は `HostName`（= dock.sh へ渡る compose project 名そのもの）と同じ値にすることを推奨します。`karakuri-dock` は既定では `-p` に渡した値から `devc-<その値>` という ssh Host を組み立てて port forwarding を張るため（`_karakuri_ssh_host` 参照）、別名を `HostName` と違う値にすると `karakuri-dock` が張り直す転送と `LocalForward` を書いた Host ブロックが一致せず、書いてあるのに「転送を持たないホスト」と誤診断されます。雛形の compose project 名の付け方（`<your-project>-dev`）に従うなら、別名も `devc-<your-project>-dev` です。
+
+別名を `HostName` と違う値にしたい場合は、`karakuri-dock -p <compose-project> -H <ssh-host>` でその ssh Host を明示してください。`-H` は `-p` から独立に指定でき、`ssh -G` の検査・`karakuri-port-forward` の呼び出し先の両方に使われます（`devc-` は無ければ補われます）。
 
 接続は `ssh devc-<your-project>-dev` です。転送を張り直すときは `karakuri-port-forward <your-project>-dev` を使います（古い master を落としてから繋ぎ直します）。
 

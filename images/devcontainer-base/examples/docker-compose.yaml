@@ -14,12 +14,12 @@
 # プロジェクトごとに違う値にすること。1 つのネットワークを共有すると、同居する
 # コンテナが相互に名前解決して到達できる。
 #
-# **末尾の -dev は規約であり、外せない。** ホスト側のツールはコンテナ名ではなく
-# compose が焼き込むラベル (com.docker.compose.project) でコンテナを引く。
-# karakuri-dev-inject は <project>-dev を、dock.sh (SSH の ProxyCommand) も同じ
-# 名前を組み立てる。prod 側は prod-<repo> なので、接尾辞で dev と prod が
-# 混ざらない。ここを <your-project> だけにすると、どちらのツールも
-# 「該当コンテナなし」で止まる。
+# 末尾の -dev は推奨規約であり、外せない制約ではない。ホスト側ツール
+# （karakuri.sh の関数群・dock.sh）はこの値を引数で受け取るだけで、組み立てない
+# （組み立ては利用者側の dock 関数の役目。example/README.md の「dev の起動」参照）。
+# コンテナを引くのはコンテナ名ではなく compose が焼き込むラベル
+# (com.docker.compose.project)。prod 側は prod-<repo> なので、-dev を付けて
+# おくと接尾辞で dev と prod が混ざらない。
 name: <your-project>-dev
 
 services:
