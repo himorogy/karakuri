@@ -651,24 +651,93 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	fi
 
 	# --- dev-inject ---------------------------------------------------------------
-	echo "[$s] dev-inject builds the item list and the compose project name"
+	echo "[$s] dev-inject builds the item list, and -p reaches DEV_COMPOSE_PROJECT verbatim"
 	reset_env
-	run_case karakuri-dev-inject dotfiles
+	run_case karakuri-dev-inject -p dotfiles-dev -b dotfiles
 
 	assert_rc_zero "[$s] dev-inject succeeds"
-	assert_env_has "DEV_COMPOSE_PROJECT=dotfiles-dev" "[$s] the dev compose project name is <project>-dev"
+	assert_env_has "DEV_COMPOSE_PROJECT=dotfiles-dev" \
+		"[$s] karakuri-dev-inject passes -p through to DEV_COMPOSE_PROJECT verbatim"
 	assert_env_has "BROKER_BW_ITEM=env/dotfiles/shared/dev,env/_common/dev,env/dotfiles/dev" \
-		"[$s] dev broker items are ordered shared, common, personal"
+		"[$s] dev broker items are ordered shared, common, personal, keyed by -b"
 	if [ -n "$(cat "$FAKE_ARGV_FILE" 2>/dev/null)" ]; then
 		ng "[$s] dev-inject.sh is called without arguments"
 	else
 		ok "[$s] dev-inject.sh is called without arguments"
 	fi
 
+	echo "[$s] dev-inject defaults the broker key to the -p value"
 	reset_env
-	run_case karakuri-dev-inject acme/dotfiles
-	assert_rc_nonzero "[$s] dev-inject rejects a project name containing '/'"
-	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed project name"
+	run_case karakuri-dev-inject -p dotfiles
+
+	assert_rc_zero "[$s] dev-inject succeeds without -b"
+	assert_env_has "DEV_COMPOSE_PROJECT=dotfiles" \
+		"[$s] DEV_COMPOSE_PROJECT is the bare -p value when it has no '-dev' suffix"
+	assert_env_has "BROKER_BW_ITEM=env/dotfiles/shared/dev,env/_common/dev,env/dotfiles/dev" \
+		"[$s] karakuri-dev-inject defaults the broker key to the -p value"
+
+	echo "[$s] dev-inject -s sets DEV_SERVICE; omitting -s leaves it unset"
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles -s worker
+	assert_env_has "DEV_SERVICE=worker" "[$s] -s reaches DEV_SERVICE"
+
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles
+	if grep -q '^DEV_SERVICE=' "$FAKE_ENV_FILE" 2>/dev/null; then
+		ng "[$s] DEV_SERVICE is left unset when -s is omitted"
+	else
+		ok "[$s] DEV_SERVICE is left unset when -s is omitted"
+	fi
+
+	echo "[$s] dev-inject rejects a -p or -b value containing '/'"
+	reset_env
+	run_case karakuri-dev-inject -p acme/dotfiles
+	assert_rc_nonzero "[$s] dev-inject rejects a -p value containing '/'"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed -p value"
+
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles -b acme/dotfiles
+	assert_rc_nonzero "[$s] dev-inject rejects a -b value containing '/'"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed -b value"
+
+	echo "[$s] dev-inject rejects the old single positional-argument form"
+	reset_env
+	run_case karakuri-dev-inject dotfiles
+	assert_rc_nonzero "[$s] a bare positional argument fails"
+	assert_stderr_has "Usage:" "[$s] a bare positional argument prints usage"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a positional argument"
+
+	echo "[$s] dev-inject requires -p"
+	reset_env
+	run_case karakuri-dev-inject
+	assert_rc_nonzero "[$s] dev-inject with no arguments fails"
+	assert_stderr_has "Usage:" "[$s] dev-inject with no arguments prints usage"
+
+	reset_env
+	run_case karakuri-dev-inject -b dotfiles
+	assert_rc_nonzero "[$s] dev-inject fails when -p is omitted even if -b is given"
+	assert_stderr_has "Usage:" "[$s] omitting -p prints usage"
+
+	echo "[$s] dev-inject argument errors: missing values and unknown options"
+	reset_env
+	run_case karakuri-dev-inject -p
+	assert_rc_nonzero "[$s] -p without a value fails"
+	assert_stderr_has "-p requires a value" "[$s] the error names -p"
+
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles -b
+	assert_rc_nonzero "[$s] -b without a value fails"
+	assert_stderr_has "-b requires a value" "[$s] the error names -b"
+
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles -s
+	assert_rc_nonzero "[$s] -s without a value fails"
+	assert_stderr_has "-s requires a value" "[$s] the error names -s"
+
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles --bogus
+	assert_rc_nonzero "[$s] an unknown argument fails"
+	assert_stderr_has "Usage:" "[$s] an unknown argument prints usage"
 
 	# --- karakuri-dock: オーケストレーション ---------------------------------------
 	# 起動 → 未注入なら注入 → port forwarding → 対話シェル、の順に呼ぶことを
@@ -737,6 +806,54 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 		ng "[$s] 'ssh -fN' targets 'devc-myproj-dev', matching the -p value exactly (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
 	fi
 
+	# -H は -p から独立に ssh Host 別名を指定する。mac 実機で踏んだ不具合
+	# （Host 別名が compose project 名と違うと port forwarding が誤診断される）
+	# の直接の修正対象なので、-p 側の値がどこにも漏れていないことも確認する。
+	echo "[$s] karakuri-dock -H targets the given ssh host instead of the -p value"
+	reset_env
+	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
+	run_case karakuri-dock -p myproj-dev -H otherhost
+
+	assert_rc_zero "[$s] the happy path succeeds with -H set"
+	if has_line "$FAKE_SSH_G_LOG" "-G devc-otherhost"; then
+		ok "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (ssh -G)"
+	else
+		ng "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (ssh -G) (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
+	fi
+	if has_line "$FAKE_SSH_LOG" "-fN devc-otherhost"; then
+		ok "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (karakuri-port-forward)"
+	else
+		ng "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (karakuri-port-forward) (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
+	fi
+	if has_line "$FAKE_SSH_G_LOG" "-G devc-myproj-dev"; then
+		ng "[$s] the -p value is not used as the ssh host when -H is set"
+	else
+		ok "[$s] the -p value is not used as the ssh host when -H is set"
+	fi
+
+	echo "[$s] karakuri-dock -H does not double the devc- prefix when it is already present"
+	reset_env
+	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
+	run_case karakuri-dock -p myproj-dev -H devc-otherhost
+
+	assert_rc_zero "[$s] the happy path succeeds when -H already carries the devc- prefix"
+	if has_line "$FAKE_SSH_G_LOG" "-G devc-otherhost"; then
+		ok "[$s] -H with an existing devc- prefix reaches 'ssh -G' unchanged"
+	else
+		ng "[$s] -H with an existing devc- prefix reaches 'ssh -G' unchanged (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
+	fi
+	if has_line "$FAKE_SSH_G_LOG" "-G devc-devc-otherhost"; then
+		ng "[$s] -H is not double-prefixed with devc-"
+	else
+		ok "[$s] -H is not double-prefixed with devc-"
+	fi
+
+	echo "[$s] karakuri-dock -H without a value fails"
+	reset_env
+	run_case karakuri-dock -p myproj -H
+	assert_rc_nonzero "[$s] -H without a value fails"
+	assert_stderr_has "-H requires a value" "[$s] the error names -H"
+
 	echo "[$s] karakuri-dock injects only when --secrets-ok fails, using -p verbatim (no <project>-dev assembly)"
 	reset_env
 	export FAKE_DOCK_SECRETS_OK_EXIT_CODE=1
@@ -773,6 +890,14 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_env_has "BROKER_BW_ITEM=env/myproj/shared/dev,env/_common/dev,env/myproj/dev" \
 		"[$s] the broker item names are built from -b, not -p"
 	assert_sequence_lacks "-b myproj" "[$s] -b never reaches dock.sh"
+
+	echo "[$s] karakuri-dock passes -s through to dev-inject as DEV_SERVICE"
+	reset_env
+	export FAKE_DOCK_SECRETS_OK_EXIT_CODE=1
+	run_case karakuri-dock up -p myproj-dev -s worker
+
+	assert_rc_zero "[$s] 'up' succeeds after injecting with -s set"
+	assert_env_has "DEV_SERVICE=worker" "[$s] karakuri-dock passes -s through to dev-inject"
 
 	echo "[$s] karakuri-dock passes the broker key to a redefined karakuri-broker-env"
 	reset_env
@@ -851,6 +976,13 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	run_case karakuri-dock -p myproj --bogus
 	assert_rc_nonzero "[$s] an unknown argument fails"
 	assert_stderr_has "Usage:" "[$s] an unknown argument prints usage"
+
+	# -p の '/' 検査は、secret が注入済みで --secrets-ok が素通りする経路
+	# （karakuri-dev-inject を経由しない）でも掛かることを固定する。
+	reset_env
+	run_case karakuri-dock -p acme/app
+	assert_rc_nonzero "[$s] -p containing '/' fails even when secrets are already ok"
+	assert_not_invoked "$FAKE_SEQUENCE_LOG" "[$s] dock.sh is never invoked for a malformed -p value"
 
 	# スクリプトが無いときは _karakuri_tool のエラーで止まる。実行ビットを
 	# 落とすだけでは足りない（PATH を引く側は、シェルによっては実行ビットの
