@@ -53,8 +53,7 @@
 #
 # --- 提供する関数 ---------------------------------------------------------------
 #
-#   karakuri-port-forward <name>                    port forwarding を張り直す
-#   karakuri-clean-port-forward [name...]           port forwarding の後始末
+#   karakuri-port-forward <host>                    port forwarding を張り直す
 #   karakuri-loopback <install|add|remove|list> [args...]   /etc/hosts と loopback alias の設定（sudo が要る）
 #   karakuri-dev-inject -p <compose-project> [-b <broker-key>] [-s <service>]
 #                                                    dev container へ鍵を注入
@@ -312,18 +311,9 @@ EOF
 }
 
 # --- port forwarding -----------------------------------------------------------
-# ~/.ssh/config 側の規約（ControlPath を ~/.ssh/cm-%n にする・接続先の Host を
-# devc-<project> と書く）に依存している。config そのものはプロジェクトごとに
-# 転送するポートが違うので、ここでは生成も配布もしない。
-
-# _karakuri_ssh_host <name> — devc- 接頭辞を補う。既に付いている場合はその
-# まま使う（利用者が config に書いた名前をそのまま打てるように）。
-_karakuri_ssh_host() {
-	case "$1" in
-	devc-*) printf '%s\n' "$1" ;;
-	*) printf '%s\n' "devc-$1" ;;
-	esac
-}
+# 渡された ssh Host 名をそのまま ssh へ渡すだけで、~/.ssh/config の書き方に
+# ついての前提は持たない。config そのものはプロジェクトごとに転送するポート
+# が違うので、ここでは生成も配布もしない。
 
 # _karakuri_check_loopback <host> — その host の LocalForward が bind しようと
 # している 127.x のアドレスが lo0 に載っているかを、ssh を起こす前に見る。
@@ -390,19 +380,19 @@ EOF
 	return 0
 }
 
-# karakuri-port-forward <name> — port forwarding を張り直す。
+# karakuri-port-forward <host> — port forwarding を張り直す。
 #
 # 「張る」ではなく「張り直す」なのは、コンテナを作り直した後の再接続が
 # 主な用途だから。古い master が残ったままだと、新しいコンテナへ繋いだ
 # つもりで死んだセッションを使い続けることになる。先に必ず落とす。
 karakuri-port-forward() {
 	if [ "$#" -ne 1 ]; then
-		echo "Usage: karakuri-port-forward <name>   (ssh host devc-<name>, or the full host alias)" >&2
+		echo "Usage: karakuri-port-forward <host>   (the full ssh host alias, as written in ~/.ssh/config)" >&2
 		return 1
 	fi
 
 	local host
-	host="$(_karakuri_ssh_host "$1")"
+	host="$1"
 
 	# loopback alias の検査は、古い master を落とすより前に置く。落としてから
 	# 失敗すると、それまで生きていた転送まで巻き添えで消える。「張り直しに
@@ -411,19 +401,22 @@ karakuri-port-forward() {
 
 	# 生きていれば落とす。生きていなければ何も起きない（失敗は無視する）。
 	# -n は「stdin を /dev/null にする」指定。制御コマンドに stdin は要らず、
-	# 付けておけば下の clean-pf のようにループの中で呼んでも、ループが
-	# 読んでいる入力を ssh が横取りしない。
+	# 付けておけば呼び出し元がループの中から呼んでも、ループが読んでいる
+	# 入力を ssh が横取りしない。
 	ssh -n -O exit "$host" >/dev/null 2>&1
 	# 落とせなかった／プロセスだけ先に消えた場合に socket ファイルだけが
-	# 残る。残骸があると次の接続がそこへ繋ぎに行って失敗するので消す。
-	rm -f "${HOME}/.ssh/cm-${host}"
+	# 残りうるが、消さない。OpenSSH は stale な ControlPath socket を自分で
+	# unlink して bind し直すため（macOS / OpenSSH 9.9p2 で実測: `ssh -fN` で
+	# 立てた master を kill -9 で残し、同じ `ssh -fN` を打つと成功して新しい
+	# master が立った）、残骸が張り直しの障害になることはない。
 
 	# ssh -fN は背面へ回った後も端末の stderr を掴み続ける。転送先の dev
 	# サーバが落ちている状態でブラウザが再接続を繰り返すと、
 	# `connect_to localhost port 4301: failed.` が端末に延々と出続け、
-	# karakuri-clean-port-forward で殺すまで止まらない。転送そのものは壊れておらず、
-	# dev サーバを起動し直せばそのまま復活するので、転送を畳むのは過剰な
-	# 対処である。畳まずに黙らせるには、出力先を端末から外すしかない。
+	# `ssh -O exit <host>` で master を落とすまで止まらない。転送そのものは
+	# 壊れておらず、dev サーバを起動し直せばそのまま復活するので、転送を
+	# 畳むのは過剰な対処である。畳まずに黙らせるには、出力先を端末から外す
+	# しかない。
 	#
 	# 以後の転送エラーはこの 1 本のログに溜まる。読みたいときは
 	# `tail -f "${XDG_STATE_HOME:-$HOME/.local/state}/karakuri/port-forward-<host>.log"`。
@@ -457,36 +450,6 @@ karakuri-port-forward() {
 
 	echo "karakuri-port-forward: 'ssh -fN ${host}' failed. Check that the container is up and that ~/.ssh/config has a Host entry for '${host}'" >&2
 	return 1
-}
-
-# karakuri-clean-port-forward [name...] — port forwarding の後始末。
-#
-# 名前を指定しなければ、ControlPath の規約（~/.ssh/cm-<host>）に沿って
-# devc- で始まるものを全部畳む。cm-* まで広げると、この規約と無関係な
-# 利用者自身の ssh 多重化まで巻き添えにするので広げない。
-karakuri-clean-port-forward() {
-	local host sock
-
-	if [ "$#" -gt 0 ]; then
-		for host in "$@"; do
-			host="$(_karakuri_ssh_host "$host")"
-			ssh -n -O exit "$host" >/dev/null 2>&1
-			rm -f "${HOME}/.ssh/cm-${host}"
-		done
-		return 0
-	fi
-
-	# glob をそのまま for に書かないのは、一致が 0 件のときの挙動が
-	# シェルで違うため（bash はパターン文字列をそのまま渡し、zsh は
-	# エラーにする）。find なら 0 件は 0 行になるだけで揃う。
-	find "${HOME}/.ssh" -maxdepth 1 -name 'cm-devc-*' 2>/dev/null |
-		while IFS= read -r sock; do
-			host="${sock##*/}"
-			host="${host#cm-}"
-			ssh -n -O exit "$host" >/dev/null 2>&1
-			rm -f "$sock"
-		done
-	return 0
 }
 
 # karakuri-loopback <install|add|remove|list> [args...] — loopback alias と
@@ -583,6 +546,10 @@ karakuri-dev-inject() {
 	_karakuri_plain_name "project" "$project" "this name becomes the compose project name" || return 1
 	[ -n "$broker_key" ] || broker_key="$project"
 	_karakuri_plain_name "broker key" "$broker_key" || return 1
+	if [ "$broker_key" = "_common" ]; then
+		echo "karakuri-dev-inject: broker key '_common' is reserved — env/_common/dev already holds the personal secrets shared by every project, so using it as a project-specific key would read the same item twice" >&2
+		return 1
+	fi
 
 	local dev_inject broker
 	dev_inject="$(_karakuri_tool dev-inject.sh)" || return 1
@@ -728,7 +695,7 @@ karakuri-dock() {
 	fi
 
 	local host
-	host="$(_karakuri_ssh_host "$ssh_host")"
+	host="$ssh_host"
 
 	if ssh -G "$host" 2>/dev/null | grep -q '^localforward '; then
 		if ! karakuri-port-forward "$host"; then
@@ -822,8 +789,8 @@ _karakuri_compose_for() {
 # その 1 枚。digest の照合のように「repo を 1 つに決めずに全部を見る」側が使う。
 #
 # glob をそのまま展開せず find を使うのは、一致 0 件のときの挙動が bash と
-# zsh で違うため（karakuri-clean-port-forward と同じ理由）。深さを 1 に切ってあるのは、
-# あのディレクトリは git repo なので .git/ の中まで拾ってしまうから。
+# zsh で違うため。深さを 1 に切ってあるのは、あのディレクトリは git repo
+# なので .git/ の中まで拾ってしまうから。
 _karakuri_compose_list() {
 	local mode
 	mode="$(_karakuri_compose_mode)" || return 1
@@ -1321,10 +1288,8 @@ karakuri-help() {
 	cat <<'FUNCS'
 karakuri.sh が提供する関数:
 
-  karakuri-port-forward <name>
+  karakuri-port-forward <host>
       port forwarding を張り直す
-  karakuri-clean-port-forward [name...]
-      port forwarding の後始末（省略時は devc-* を全部畳む）
   karakuri-loopback <install|add|remove|list> [args...]
       /etc/hosts と loopback alias を設定する（alias は macOS のみ。この関数だけ sudo が要る）
   karakuri-dev-inject -p <compose-project> [-b <broker-key>] [-s <service>]
@@ -1400,7 +1365,6 @@ FUNCS
 # これまでの短い名前のまま使える（alias は関数にも効き、引数もそのまま渡る）。
 #
 #   alias pf='karakuri-port-forward'
-#   alias clean-pf='karakuri-clean-port-forward'
 #   alias dev-inject='karakuri-dev-inject'
 #   alias prod-run='karakuri-prod-run'
 #   alias prod-exec='karakuri-prod-exec'
@@ -1414,7 +1378,7 @@ FUNCS
 # 配らないのは、汎用的な `dock` という名前を利用者のシェルへ勝手に持ち込ま
 # ないため:
 #
-#   dock() { karakuri-dock -p "$1-dev" -b "$1" -H "$1-dev" -w "/workspaces/$1" "${@:2}"; }
+#   dock() { karakuri-dock -p "$1-dev" -b "$1" -H "devc-$1-dev" -w "/workspaces/$1" "${@:2}"; }
 #
 # bash に貼る場合、閉じ括弧の前の `;` は省略できない（zsh は省略できる）。
 #

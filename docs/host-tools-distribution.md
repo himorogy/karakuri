@@ -209,6 +209,8 @@ H1 と組み合わせると、利用側の `PATH` 追加は `~/.config/karakuri/
 
 **完全に共通** — `pf` / `clean-pf` はプロジェクトに依存しません。`images/devcontainer-base/PORT-FORWARDING.md` は `~/.ssh/config` の設定（`ControlPath ~/.ssh/cm-%n` を含む）を案内していますが、それを操作する側は案内していません。利用側の `clean-pf` が `~/.ssh/cm-devc-*` を走査しているのは、この文書が定めた `ControlPath` の規約に依存した実装です。規約を持っている側が操作も提供すべきです。
 
+**2026-08-28 追記**: この根拠は成立しなかった。`clean-pf` が消していた残骸 socket は、実機（macOS / OpenSSH 9.9p2）で OpenSSH 自身が stale な ControlPath socket を検出して unlink し、張り直すことを確認した。`ControlPath` の規約を知る必要が無かったため、`karakuri-clean-port-forward` を廃止し、`karakuri-port-forward` も `ControlPath` の規約に依存しなくなった（0002c）。
+
 **規約が karakuri 側にある** — `dev-inject` / `prod-run` / `prod-base` / `prod-shell` の中身は、broker 項目の命名規約・compose project 名の規約・二段構えの手順のいずれも `example/README.md` と本設計書が定めたものです。
 
 **利用側に残すべき** — bw のパス、org 名、compose ファイルの配置先。これらは環境そのものであり、karakuri が決められません。
@@ -228,7 +230,7 @@ H1 と組み合わせると、利用側の `PATH` 追加は `~/.config/karakuri/
 提供する名前は次のとおりです。
 
 ```
-karakuri-port-forward         karakuri-clean-port-forward   karakuri-loopback
+karakuri-port-forward         karakuri-loopback
 karakuri-dev-inject           karakuri-dock
 karakuri-prod-run             karakuri-prod-exec
 karakuri-prod-base            karakuri-prod-shell
@@ -260,7 +262,7 @@ karakuri-image-digest         karakuri-check-image
 
 ### 4.6 範囲に含めないもの
 
-**`~/.ssh/config` の生成や配布はしません。** `images/devcontainer-base/PORT-FORWARDING.md` が設定例を示しており、`karakuri-port-forward` / `karakuri-clean-port-forward` が依存しているのはそのうち `ControlPath ~/.ssh/cm-%n` の規約だけです。`LocalForward` に並べるポートも `HostName` に書くプロジェクト名もプロジェクト固有であり、生成しても利用者が全面的に書き換えることになります。書き方の参考を示すに留めます。
+**`~/.ssh/config` の生成や配布はしません。** `images/devcontainer-base/PORT-FORWARDING.md` が設定例を示していますが、`karakuri-port-forward` はそのうちどの規約にも依存しません（0002c で `ControlPath` への依存を外した）。`LocalForward` に並べるポートも `HostName` に書くプロジェクト名もプロジェクト固有であり、生成しても利用者が全面的に書き換えることになります。書き方の参考を示すに留めます。
 
 **`ProxyCommand` が呼ぶスクリプト（`dock.sh`）は配ります。** 上の判断と矛盾しません。`~/.ssh/config` に書く 1 行は利用者のものですが、その 1 行が起動する処理の中身は karakuri の規約そのものです。コンテナの引き方（`com.docker.compose.project` と `com.docker.compose.service` のラベルの厳密一致で引き、コンテナ名を組み立てない）も、`/usr/local/sbin/sshd-inetd` を絶対パスで exec することも、規約を決めた側が持つべきものです。project 名・service 名・workspace は `dock.sh -p <compose-project> [-s <service>] [-w <workspace>]` の引数として渡し、`dock.sh` 側では `<project>-dev` のような組み立てを一切行いません（規約の組み立ては利用側の関数に委ねる。§4.4 参照）。`~/.ssh/config` に長い `docker exec` を直接書かせると、規約が変わるたびに全利用者が自分の config を書き換えることになります。
 

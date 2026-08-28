@@ -700,6 +700,19 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_rc_nonzero "[$s] dev-inject rejects a -b value containing '/'"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed -b value"
 
+	echo "[$s] dev-inject rejects _common as the broker key"
+	reset_env
+	run_case karakuri-dev-inject -p dotfiles -b _common
+	assert_rc_nonzero "[$s] -b _common fails"
+	assert_stderr_has "_common" "[$s] the error names _common"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked when -b is _common"
+
+	reset_env
+	run_case karakuri-dev-inject -p _common
+	assert_rc_nonzero "[$s] -p _common fails when -b is omitted, since the broker key then defaults to _common"
+	assert_stderr_has "_common" "[$s] the error names _common"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked when the broker key defaults to _common"
+
 	echo "[$s] dev-inject rejects the old single positional-argument form"
 	reset_env
 	run_case karakuri-dev-inject dotfiles
@@ -770,82 +783,63 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_sequence_lacks "dev-inject" \
 		"[$s] dev-inject is not called when --secrets-ok already succeeds"
 
-	# -p の値と ssh Host 別名の対応関係を固定する。karakuri-dock は
-	# `_karakuri_ssh_host` で `-p` の値へ `devc-` を補うだけで、compose
-	# project 名からさらに何かを組み立てたり削ったりしない。ここがずれると
-	# PORT-FORWARDING.md / example/README.md が案内する `Host
-	# devc-<compose-project>` と食い違い、`LocalForward` を書いていても
-	# 「転送を持たないホスト」と誤診断される（実際に踏んだ不具合）。
-	if has_line "$FAKE_SSH_G_LOG" "-G devc-myproj"; then
-		ok "[$s] the port-forward check queries 'ssh -G' for devc-<the -p value> verbatim"
+	# -H を省略したとき、karakuri-dock は -p の値をそのまま ssh Host として
+	# 使う（compose project 名からさらに何かを組み立てたり削ったりしない）。
+	# ここがずれると PORT-FORWARDING.md / example/README.md が案内する ssh
+	# Host と食い違い、`LocalForward` を書いていても「転送を持たないホスト」
+	# と誤診断される（実際に踏んだ不具合）。
+	if has_line "$FAKE_SSH_G_LOG" "-G myproj"; then
+		ok "[$s] the port-forward check queries 'ssh -G' with the -p value verbatim when -H is omitted"
 	else
-		ng "[$s] the port-forward check queries 'ssh -G' for devc-<the -p value> verbatim (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
+		ng "[$s] the port-forward check queries 'ssh -G' with the -p value verbatim when -H is omitted (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
 	fi
-	if has_line "$FAKE_SSH_LOG" "-fN devc-myproj"; then
-		ok "[$s] 'ssh -fN' is started against devc-<the -p value> verbatim"
+	if has_line "$FAKE_SSH_LOG" "-fN myproj"; then
+		ok "[$s] 'ssh -fN' is started against the -p value verbatim when -H is omitted"
 	else
-		ng "[$s] 'ssh -fN' is started against devc-<the -p value> verbatim (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
+		ng "[$s] 'ssh -fN' is started against the -p value verbatim when -H is omitted (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
 	fi
 
 	# 同じ対応関係を、compose project 名がすでに `-dev` を含む場合でも見る。
-	# `-p` の値をそのまま使うのであれば host は `devc-myproj-dev` になり、
-	# `-dev` を剥がした `devc-myproj` にはならない。
+	# `-p` の値をそのまま使うのであれば host は `myproj-dev` になり、`-dev`
+	# を剥がした `myproj` にはならない。
 	reset_env
 	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	run_case karakuri-dock -p myproj-dev
 
 	assert_rc_zero "[$s] the happy path succeeds when -p already carries the compose '-dev' suffix"
-	if has_line "$FAKE_SSH_G_LOG" "-G devc-myproj-dev"; then
-		ok "[$s] the ssh host keeps the full -p value ('devc-myproj-dev'), not a stripped 'devc-myproj'"
+	if has_line "$FAKE_SSH_G_LOG" "-G myproj-dev"; then
+		ok "[$s] the ssh host keeps the full -p value ('myproj-dev'), not a stripped 'myproj'"
 	else
-		ng "[$s] the ssh host keeps the full -p value ('devc-myproj-dev'), not a stripped 'devc-myproj' (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
+		ng "[$s] the ssh host keeps the full -p value ('myproj-dev'), not a stripped 'myproj' (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
 	fi
-	if has_line "$FAKE_SSH_LOG" "-fN devc-myproj-dev"; then
-		ok "[$s] 'ssh -fN' targets 'devc-myproj-dev', matching the -p value exactly"
+	if has_line "$FAKE_SSH_LOG" "-fN myproj-dev"; then
+		ok "[$s] 'ssh -fN' targets 'myproj-dev', matching the -p value exactly"
 	else
-		ng "[$s] 'ssh -fN' targets 'devc-myproj-dev', matching the -p value exactly (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
+		ng "[$s] 'ssh -fN' targets 'myproj-dev', matching the -p value exactly (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
 	fi
 
-	# -H は -p から独立に ssh Host 別名を指定する。mac 実機で踏んだ不具合
-	# （Host 別名が compose project 名と違うと port forwarding が誤診断される）
-	# の直接の修正対象なので、-p 側の値がどこにも漏れていないことも確認する。
-	echo "[$s] karakuri-dock -H targets the given ssh host instead of the -p value"
+	# -H は -p から独立に ssh Host 名を指定する。渡した名前がそのまま ssh
+	# へ行き、-p 側の値がどこにも漏れていないことを見る。
+	echo "[$s] karakuri-dock -H uses the given name verbatim"
 	reset_env
 	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	run_case karakuri-dock -p myproj-dev -H otherhost
 
 	assert_rc_zero "[$s] the happy path succeeds with -H set"
-	if has_line "$FAKE_SSH_G_LOG" "-G devc-otherhost"; then
-		ok "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (ssh -G)"
+	if has_line "$FAKE_SSH_G_LOG" "-G otherhost"; then
+		ok "[$s] karakuri-dock -H uses the given name verbatim (ssh -G)"
 	else
-		ng "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (ssh -G) (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
+		ng "[$s] karakuri-dock -H uses the given name verbatim (ssh -G) (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
 	fi
-	if has_line "$FAKE_SSH_LOG" "-fN devc-otherhost"; then
-		ok "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (karakuri-port-forward)"
+	if has_line "$FAKE_SSH_LOG" "-fN otherhost"; then
+		ok "[$s] karakuri-dock -H uses the given name verbatim (karakuri-port-forward)"
 	else
-		ng "[$s] karakuri-dock -H targets the given ssh host instead of the -p value (karakuri-port-forward) (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
+		ng "[$s] karakuri-dock -H uses the given name verbatim (karakuri-port-forward) (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
 	fi
-	if has_line "$FAKE_SSH_G_LOG" "-G devc-myproj-dev"; then
+	if has_line "$FAKE_SSH_G_LOG" "-G myproj-dev"; then
 		ng "[$s] the -p value is not used as the ssh host when -H is set"
 	else
 		ok "[$s] the -p value is not used as the ssh host when -H is set"
-	fi
-
-	echo "[$s] karakuri-dock -H does not double the devc- prefix when it is already present"
-	reset_env
-	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
-	run_case karakuri-dock -p myproj-dev -H devc-otherhost
-
-	assert_rc_zero "[$s] the happy path succeeds when -H already carries the devc- prefix"
-	if has_line "$FAKE_SSH_G_LOG" "-G devc-otherhost"; then
-		ok "[$s] -H with an existing devc- prefix reaches 'ssh -G' unchanged"
-	else
-		ng "[$s] -H with an existing devc- prefix reaches 'ssh -G' unchanged (log: $(cat "$FAKE_SSH_G_LOG" 2>/dev/null))"
-	fi
-	if has_line "$FAKE_SSH_G_LOG" "-G devc-devc-otherhost"; then
-		ng "[$s] -H is not double-prefixed with devc-"
-	else
-		ok "[$s] -H is not double-prefixed with devc-"
 	fi
 
 	echo "[$s] karakuri-dock -H without a value fails"
@@ -1321,10 +1315,26 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 		"[$s] the full reference decides the image name without reading any compose file"
 
 	# --- port forwarding -------------------------------------------------------------
+	echo "[$s] karakuri-port-forward uses the given name verbatim"
+	reset_env
+	run_case karakuri-port-forward otherhost
+
+	assert_rc_zero "[$s] pf succeeds"
+	if has_line "$FAKE_SSH_LOG" "-fN otherhost"; then
+		ok "[$s] karakuri-port-forward uses the given name verbatim"
+	else
+		ng "[$s] karakuri-port-forward uses the given name verbatim (log: $(cat "$FAKE_SSH_LOG" 2>/dev/null))"
+	fi
+	if has_line "$FAKE_SSH_LOG" "-fN devc-otherhost"; then
+		ng "[$s] karakuri-port-forward does not add a devc- prefix to a name that lacks one"
+	else
+		ok "[$s] karakuri-port-forward does not add a devc- prefix to a name that lacks one"
+	fi
+
 	echo "[$s] port forwarding is torn down before it is set up"
 	reset_env
 	: >"$FAKE_HOME/.ssh/cm-devc-app"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] pf succeeds"
 	if [ -f "$FAKE_SSH_LOG" ] && [ "$(head -1 "$FAKE_SSH_LOG")" = "-n -O exit devc-app" ]; then
@@ -1338,35 +1348,16 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 		ng "[$s] pf then starts a new forwarding session"
 	fi
 
+	echo "[$s] karakuri-port-forward leaves the control socket alone"
 	reset_env
-	: >"$FAKE_HOME/.ssh/cm-devc-one"
-	: >"$FAKE_HOME/.ssh/cm-devc-two"
-	: >"$FAKE_HOME/.ssh/cm-unrelated"
-	run_case karakuri-clean-port-forward
+	: >"$FAKE_HOME/.ssh/cm-devc-app"
+	run_case karakuri-port-forward devc-app
 
-	assert_rc_zero "[$s] clean-pf without arguments succeeds"
-	if [ ! -e "$FAKE_HOME/.ssh/cm-devc-one" ] && [ ! -e "$FAKE_HOME/.ssh/cm-devc-two" ]; then
-		ok "[$s] clean-pf removes the sockets it owns"
+	assert_rc_zero "[$s] pf succeeds"
+	if [ -e "$FAKE_HOME/.ssh/cm-devc-app" ]; then
+		ok "[$s] karakuri-port-forward leaves the control socket alone"
 	else
-		ng "[$s] clean-pf removes the sockets it owns"
-	fi
-	if [ -e "$FAKE_HOME/.ssh/cm-unrelated" ]; then
-		ok "[$s] clean-pf leaves unrelated control sockets alone"
-	else
-		ng "[$s] clean-pf leaves unrelated control sockets alone"
-	fi
-
-	reset_env
-	run_case karakuri-clean-port-forward
-	assert_rc_zero "[$s] clean-pf succeeds when there is nothing to clean up"
-
-	reset_env
-	: >"$FAKE_HOME/.ssh/cm-devc-one"
-	run_case karakuri-clean-port-forward one
-	if [ ! -e "$FAKE_HOME/.ssh/cm-devc-one" ]; then
-		ok "[$s] clean-pf <name> removes just that socket"
-	else
-		ng "[$s] clean-pf <name> removes just that socket"
+		ng "[$s] karakuri-port-forward leaves the control socket alone"
 	fi
 
 	# --- 転送エラーをログへ逃がす --------------------------------------------------
@@ -1383,7 +1374,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	# 成功側でも stderr を吐かせて黙ることを見る。
 	reset_env
 	export FAKE_SSH_STDERR="connect_to localhost port 4301: failed."
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] pf succeeds when ssh -fN succeeds"
 	assert_stdout_is "" "[$s] a successful pf prints nothing on stdout"
@@ -1401,7 +1392,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	reset_env
 	export FAKE_SSH_EXIT_CODE=1
 	export FAKE_SSH_STDERR="connect_to localhost port 4301: failed."
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_nonzero "[$s] pf fails when ssh -fN fails"
 	if has_line "$pf_log" "$FAKE_SSH_STDERR"; then
@@ -1417,7 +1408,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	# 2 回目は追記であること。上書きだと、転送が転び続けている間の経緯
 	# （どのポートが何回失敗したか）が毎回消える。reset_env は FAKE_HOME ごと
 	# 作り直すので、ここでは意図的に挟まない。
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 	if [ "$(grep -cF -- "$FAKE_SSH_STDERR" "$pf_log" 2>/dev/null)" = "2" ]; then
 		ok "[$s] a second failure is appended to the log, not written over it"
 	else
@@ -1429,7 +1420,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	unset XDG_STATE_HOME
 	export FAKE_SSH_EXIT_CODE=1
 	export FAKE_SSH_STDERR="bind: Can't assign requested address"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	if has_line "$FAKE_HOME/.local/state/karakuri/port-forward-devc-app.log" "$FAKE_SSH_STDERR"; then
 		ok "[$s] the log falls back to \$HOME/.local/state when XDG_STATE_HOME is unset"
@@ -1444,7 +1435,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	# open）まで含めて見る。
 	echo "[$s] pf checks the loopback aliases before it tears anything down"
 	reset_env
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] pf succeeds on a non-Darwin host"
 	assert_not_invoked "$FAKE_SSH_G_LOG" "[$s] the loopback check does not even run 'ssh -G' outside Darwin"
@@ -1458,7 +1449,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	export FAKE_UNAME_S=Darwin
 	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	export FAKE_IFCONFIG_STDOUT="$LO0_WITH_ALIAS"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] pf succeeds on Darwin when the alias is on lo0"
 	if has_line "$FAKE_SSH_LOG" "-fN devc-app"; then
@@ -1475,7 +1466,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	export FAKE_UNAME_S=Darwin
 	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_nonzero "[$s] pf fails on Darwin when the bind address is missing from lo0"
 	assert_stderr_has "127.0.1.1" "[$s] the error names the address that is missing"
@@ -1496,7 +1487,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	export FAKE_UNAME_S=Darwin
 	export FAKE_SSH_G_STDOUT="localforward [127.0.1.1]:4519 [localhost]:4519"
 	export FAKE_IFCONFIG_STDOUT="$LO0_NEAR_MISS"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_nonzero "[$s] an address that is only a prefix of one on lo0 counts as missing"
 	assert_stderr_has "127.0.1.1 is not on lo0" "[$s] the near-miss error still names the address that is missing"
@@ -1507,7 +1498,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	export FAKE_UNAME_S=Darwin
 	export FAKE_SSH_G_EXIT_CODE=1
 	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] a failing 'ssh -G' lets the forward through"
 	if [ -z "$CASE_STDERR" ]; then
@@ -1522,7 +1513,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	FAKE_SSH_G_STDOUT="$(printf 'user someone\nport 22')"
 	export FAKE_SSH_G_STDOUT
 	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] a config with no localforward lets the forward through"
 	if has_line "$FAKE_SSH_LOG" "-fN devc-app"; then
@@ -1539,7 +1530,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	FAKE_SSH_G_STDOUT="$(printf 'localforward localhost:4519 localhost:4519\nlocalforward [::1]:4520 localhost:4520')"
 	export FAKE_SSH_G_STDOUT
 	export FAKE_IFCONFIG_STDOUT="$LO0_BARE"
-	run_case karakuri-port-forward app
+	run_case karakuri-port-forward devc-app
 
 	assert_rc_zero "[$s] a bind address that is not 127.x is not checked against lo0"
 	if [ -z "$CASE_STDERR" ]; then
@@ -1558,7 +1549,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	assert_rc_zero "[$s] karakuri-help succeeds"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] karakuri-help does not call prod-run.sh / dev-inject.sh / broker"
 
-	for fn in karakuri-port-forward karakuri-clean-port-forward karakuri-loopback karakuri-dev-inject \
+	for fn in karakuri-port-forward karakuri-loopback karakuri-dev-inject \
 		karakuri-dock karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image karakuri-help; do
@@ -1609,7 +1600,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	# --- 関数が全部定義されていること --------------------------------------------------
 	echo "[$s] every documented function is defined"
 	reset_env
-	for fn in karakuri-port-forward karakuri-clean-port-forward karakuri-loopback karakuri-dev-inject \
+	for fn in karakuri-port-forward karakuri-loopback karakuri-dev-inject \
 		karakuri-dock karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image \
@@ -1626,7 +1617,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 
 	echo "[$s] the old pf / clean-pf names are gone"
 	reset_env
-	for fn in karakuri-pf karakuri-clean-pf; do
+	for fn in karakuri-pf karakuri-clean-pf karakuri-clean-port-forward; do
 		# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
 		if PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \
 			"$SHELL_UNDER_TEST" -c '. "$KARAKURI_SH" || exit 90; command -v "$1" >/dev/null' \

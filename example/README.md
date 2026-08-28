@@ -150,17 +150,17 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 
    `-p` は compose project 名で、`.devcontainer/docker-compose.yaml` の `name:` の値そのもの（雛形どおりなら `<project>-dev`）を渡す。`-b` は broker アイテムキーで、省略時は `-p` の値を使う。上の Bitwarden 側の項目名（`env/<project>/dev` 等）は素のプロジェクト名で付けるため、`-b` に明示的に渡す。サービス名が `dev` 以外なら `-s` で指定する
 
-   コンテナ内のサービスへホストのブラウザから到達するには、続けて `karakuri-port-forward app-dev` で port forwarding を張る（VS Code の自動転送を使う場合は不要）。引数は `~/.ssh/config` の `Host devc-app-dev` と同じ値にする（`karakuri-port-forward` はこれに `devc-` を補って ssh host にするだけで、compose project 名からの組み立てはしない）。初回だけ `~/.ssh/config` の設定が要り、macOS では loopback エイリアスの用意（`karakuri-loopback install` を 1 回、プロジェクトごとに `karakuri-loopback add <addr> <hostname>`）も要る。
+   コンテナ内のサービスへホストのブラウザから到達するには、続けて `karakuri-port-forward devc-app-dev` で port forwarding を張る（VS Code の自動転送を使う場合は不要）。引数は `~/.ssh/config` の `Host devc-app-dev` と同じ、完全な ssh Host 名を渡す（`karakuri-port-forward` は受け取った名前をそのまま ssh host として使うだけで、compose project 名からの組み立てはしない）。初回だけ `~/.ssh/config` の設定が要り、macOS では loopback エイリアスの用意（`karakuri-loopback install` を 1 回、プロジェクトごとに `karakuri-loopback add <addr> <hostname>`）も要る。
 
    ターミナルからコンテナへ入るのは `karakuri-dock`。compose project 名・broker アイテムキー・ssh Host 別名・service 名・workspace を引数で受け取るだけで `<project>-dev` のような規約は組み立てないため、その組み立ては利用者側の短い関数に任せる（karakuri の配布物には `dock` という名前の関数は含めない）。`~/.zshrc` あるいは `~/.bash_profile` に置く:
 
    ```sh
-   dock() { karakuri-dock -p "$1-dev" -b "$1" -H "$1-dev" -w "/workspaces/$1" "${@:2}"; }
+   dock() { karakuri-dock -p "$1-dev" -b "$1" -H "devc-$1-dev" -w "/workspaces/$1" "${@:2}"; }
    ```
 
    bash（`~/.bash_profile`）に貼る場合、閉じ括弧の前の `;` は省略できない（zsh は省略できる。この違いを踏んで `syntax error: unexpected end of file` を実機で踏んだ）。
 
-   `-p` と `-b` と `-H` は別物。`-p` は compose project 名（`<project>-dev`）、`-b` は broker アイテムキー（素のプロジェクト名。`karakuri-dev-inject` が引くのと同じ `env/<project>/...`）、`-H` は ssh Host 別名（省略時は `-p` の値。`~/.ssh/config` の Host 別名を compose project 名と別にしたい場合に指定する）で、`karakuri-dock` はどれも一方から他方を組み立てない。
+   `-p` と `-b` と `-H` は別物。`-p` は compose project 名（`<project>-dev`）、`-b` は broker アイテムキー（素のプロジェクト名。`karakuri-dev-inject` が引くのと同じ `env/<project>/...`）、`-H` は完全な ssh Host 名（省略時は `-p` の値。`~/.ssh/config` の Host 別名を compose project 名と別にしたい場合に指定する。`devc-` のような接頭辞は補われないので、渡すのは `~/.ssh/config` に書いた Host 名そのもの）で、`karakuri-dock` はどれも一方から他方を組み立てない。
 
    `dock app` で「起動 → 未注入なら注入 → port forwarding → 対話シェル」まで 1 コマンドで済む。`dock app up` を付けると、対話シェルを開く手前（起動・注入・port forwarding まで）で止まる。いずれも手順は [PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)
 
