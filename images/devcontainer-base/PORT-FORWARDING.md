@@ -54,11 +54,34 @@ Host devc-*
   UserKnownHostsFile /dev/null
 ```
 
-`Host` の別名は `HostName`（= dock.sh へ渡る compose project 名そのもの）と同じ値にすることを推奨します。`karakuri-dock` は既定では `-p` に渡した値から `devc-<その値>` という ssh Host を組み立てて port forwarding を張るため（`_karakuri_ssh_host` 参照）、別名を `HostName` と違う値にすると `karakuri-dock` が張り直す転送と `LocalForward` を書いた Host ブロックが一致せず、書いてあるのに「転送を持たないホスト」と誤診断されます。雛形の compose project 名の付け方（`<your-project>-dev`）に従うなら、別名も `devc-<your-project>-dev` です。
+上の雛形では、`Host` の別名（`devc-<your-project>-dev`）と `HostName`（= dock.sh へ渡る compose project 名そのもの、`<your-project>-dev`）は `devc-` の分だけ異なります。`karakuri-dock` は `-H` を省略すると `-p` に渡した値をそのまま ssh Host として使うため、この雛形のままでは `-H` を省略できません。省略すると `ssh -G <your-project>-dev` を引いてしまい、`Host devc-<your-project>-dev` のブロックに当たらず、「転送を持たないホスト」として port forwarding が飛ばされます。
 
-別名を `HostName` と違う値にしたい場合は、`karakuri-dock -p <compose-project> -H <ssh-host>` でその ssh Host を明示してください。`-H` は `-p` から独立に指定でき、`ssh -G` の検査・`karakuri-port-forward` の呼び出し先の両方に使われます（`devc-` は無ければ補われます）。
+雛形どおりに使うときは、`karakuri-dock -p <compose-project> -H devc-<compose-project>` のように `-H` へ別名をそのまま渡してください（[example/README.md](../../example/README.md) の `dock` 関数はこの形です）。`-H` は `-p` から独立に指定でき、`ssh -G` の検査・`karakuri-port-forward` の呼び出し先の両方に使われます。渡す値は完全な ssh Host 名です（`karakuri-dock` / `karakuri-port-forward` は `devc-` のような接頭辞を補いません）。
 
-接続は `ssh devc-<your-project>-dev` です。転送を張り直すときは `karakuri-port-forward <your-project>-dev` を使います（古い master を落としてから繋ぎ直します）。
+`-H` を省略できるのは、別名を `-p` の値と完全に一致させた場合だけです。その場合、別名は `devc-` で始まらなくなるため上の `Host devc-*` のワイルドカードには当たらず、その Host 専用の `ProxyCommand` ブロックを別に書く必要があります（下の `Host devc-<your-alias>` の例を参照）。
+
+接続は `ssh devc-<your-project>-dev` です。転送を張り直すときは `karakuri-port-forward devc-<your-project>-dev` を使います（古い master を落としてから繋ぎ直します）。
+
+上の `Host devc-*` とワイルドカード `%h` の組み合わせは、別名を `HostName`（compose project 名）と揃える運用が前提です。別名を自由にしつつ `HostName` を compose project 名から切り離したい場合、`ProxyCommand` の `-p` へ compose project 名をリテラルで書けば `%h` の結合が外れます。このブロックは既存の `Host devc-*`（上の設定例）より前に置いてください。ssh は各キーで最初に見つかった指定が勝つため、後ろに置くと `devc-*` の `ProxyCommand ... -p %h` が勝ち、`dock.sh` が `devc-<your-alias>` という誤った project 名で呼ばれます。
+
+```
+Host devc-<your-alias>
+  ProxyCommand ~/.config/karakuri/images/runtime-base/templates/host/dock.sh -p <compose-project> --stdio
+  # プロジェクトのポート一覧に合わせて列挙する
+  LocalForward 127.0.1.1:4588 localhost:4588
+  LocalForward 127.0.1.1:<port> localhost:<port>
+  User node
+  IdentityFile ~/.ssh/keys/<your-key>
+  IdentitiesOnly yes
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%n
+  ControlPersist no
+  ExitOnForwardFailure yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+```
+
+代償は、`Host devc-*` の 1 本では済まなくなることです。プロジェクトを増やすたびに、この形の `Host` ブロックを 1 つずつ足すことになります。
 
 `ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../templates/host/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
 
@@ -173,7 +196,7 @@ karakuri-port-forward devc-win-<your-project>   # master を張る（ログは p
 ssh devc-win-<your-project>                     # 既存の master に相乗りして入る
 ```
 
-`karakuri-port-forward` は `devc-` で始まる名前をそのまま受け取ります（`_karakuri_ssh_host` が `devc-*` を素通しします）ので、`devc-win-<your-project>` をそのまま渡せます。新しい仕組みは要りません。
+`karakuri-port-forward` は渡した名前をそのまま ssh へ渡すので、`devc-win-<your-project>` もそのまま渡せます。新しい仕組みは要りません。
 
 secret の注入は Windows 側で行います。`dev-inject` は broker をコンテナから到達不能な場所に置くためにホスト側で実行する設計であり、コンテナが Windows 上の docker で動く以上、注入できるのは Windows ホストだけです。mac から接続する前に、Windows 側で次を実行して注入を済ませてください。
 
@@ -315,7 +338,7 @@ Vite / Astro の dev サーバは、未知の Host ヘッダを持つリクエ�
 
 `karakuri-port-forward` は `ssh -fN` の stderr を `${XDG_STATE_HOME:-~/.local/state}/karakuri/port-forward-<host>.log` へ逃がすので、端末は汚れません。中身を見たいときは `tail -f` してください。
 
-`karakuri-clean-port-forward` で畳めば止まりますが、これは転送ごと捨てる操作です。`ssh` を黙らせる目的で使わないでください。
+`ssh -O exit <host>` で master を落とせば止まりますが、これは転送ごと捨てる操作です。`ssh` を黙らせる目的で使わないでください。
 
 mac から Windows 上のコンテナへ入る 1 ホップ経路で、`karakuri-port-forward` を挟まず対話セッションに `LocalForward` を直書きした場合は、ログへ逃げずこのメッセージが作業中の端末そのものへ出ます（「mac から Windows 上のコンテナへ入る（1 ホップ）」の「転送は `karakuri-port-forward` で別に張る」参照）。
 
