@@ -762,6 +762,41 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	assert_sequence_lacks "dev-inject" \
 		"[$s] --secrets-ok succeeding means dev-inject is never called"
 
+	echo "[$s] karakuri-dock -b sets the broker item key independently of -p"
+	reset_env
+	export FAKE_DOCK_SECRETS_OK_EXIT_CODE=1
+	run_case karakuri-dock up -p myproj-dev -b myproj
+
+	assert_rc_zero "[$s] 'up' succeeds after injecting with -b set"
+	assert_env_has "DEV_COMPOSE_PROJECT=myproj-dev" \
+		"[$s] DEV_COMPOSE_PROJECT stays the -p value when -b is set"
+	assert_env_has "BROKER_BW_ITEM=env/myproj/shared/dev,env/_common/dev,env/myproj/dev" \
+		"[$s] the broker item names are built from -b, not -p"
+	assert_sequence_lacks "-b myproj" "[$s] -b never reaches dock.sh"
+
+	echo "[$s] karakuri-dock passes the broker key to a redefined karakuri-broker-env"
+	reset_env
+	export FAKE_DOCK_SECRETS_OK_EXIT_CODE=1
+	local out err
+	out="$(mktemp)"
+	err="$(mktemp)"
+	# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
+	if PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \
+		"$SHELL_UNDER_TEST" -c '. "$KARAKURI_SH" || exit 90
+karakuri-broker-env() { printf "OTHER_BROKER_REF=%s/%s\n" "$1" "$2"; }
+karakuri-broker-command() { printf "/opt/other-broker-%s\n" "$2"; }
+karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
+		ok "[$s] karakuri-dock succeeds with a redefined karakuri-broker-env"
+	else
+		ng "[$s] karakuri-dock succeeds with a redefined karakuri-broker-env (stderr: $(cat "$err"))"
+	fi
+	rm -f "$out" "$err"
+
+	assert_env_has "OTHER_BROKER_REF=dev/myproj" \
+		"[$s] the redefined karakuri-broker-env receives -b, not the -p value"
+	assert_env_has "DEV_BROKER=/opt/other-broker-myproj" \
+		"[$s] the redefined karakuri-broker-command receives -b, not the -p value"
+
 	echo "[$s] karakuri-dock skips port forwarding, and says so, for a host with no LocalForward"
 	reset_env
 	run_case karakuri-dock -p myproj
@@ -806,6 +841,11 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	run_case karakuri-dock -p
 	assert_rc_nonzero "[$s] -p without a value fails"
 	assert_stderr_has "-p requires a value" "[$s] the error names -p"
+
+	reset_env
+	run_case karakuri-dock -p myproj -b
+	assert_rc_nonzero "[$s] -b without a value fails"
+	assert_stderr_has "-b requires a value" "[$s] the error names -b"
 
 	reset_env
 	run_case karakuri-dock -p myproj --bogus

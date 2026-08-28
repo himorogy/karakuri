@@ -60,7 +60,7 @@ Host devc-*
 
 `ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../templates/host/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
 
-**ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock -p <compose-project>` で呼べますが（利用者側に置く短い `dock` 関数の作り方は [example/README.md](../../example/README.md) の「dev の起動」を参照）、`ProxyCommand` は関数を経由できません。
+**ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock -p <compose-project> [-b <broker-key>]` で呼べますが（利用者側に置く短い `dock` 関数の作り方は [example/README.md](../../example/README.md) の「dev の起動」を参照）、`ProxyCommand` は関数を経由できません。
 
 `dock.sh` は実行ファイルなので、`templates/host` を `PATH` に入れていれば `ProxyCommand dock.sh -p %h --stdio` とも書けます。ただし `ssh` を起動する側の環境の `PATH` に依存します（対話シェルから打つ分には効きますが、GUI アプリや別ツールが `ssh` を起動する経路では違う `PATH` になります）。**絶対パスを勧めます。**
 
@@ -176,18 +176,18 @@ ssh devc-win-<your-project>                     # 既存の master に相乗り�
 secret の注入は Windows 側で行います。`dev-inject` は broker をコンテナから到達不能な場所に置くためにホスト側で実行する設計であり、コンテナが Windows 上の docker で動く以上、注入できるのは Windows ホストだけです。mac から接続する前に、Windows 側で次を実行して注入を済ませてください。
 
 ```
-karakuri-dock -p <your-project>-dev up
+karakuri-dock -p <your-project>-dev -b <your-project> up
 ```
 
 `--stdio` は未注入なら fail closed で終了するため、これを忘れると mac 側には「secret が無い」という明示的なエラーが返ります。
 
-`ProxyCommand` の中で注入は代行できません。`ssh <windows-host> 'karakuri-dock -p <your-project>-dev up && dock.sh ... --stdio'` の形は、`up` の出力が `ProxyCommand` の stdout に混ざって SSH トランスポートを壊すことと、注入が求める認可（パスワード / 生体認証）に非対話の `ProxyCommand` が応答できないことの 2 つで成立しません。
+`ProxyCommand` の中で注入は代行できません。`ssh <windows-host> 'karakuri-dock -p <your-project>-dev -b <your-project> up && dock.sh ... --stdio'` の形は、`up` の出力が `ProxyCommand` の stdout に混ざって SSH トランスポートを壊すことと、注入が求める認可（パスワード / 生体認証）に非対話の `ProxyCommand` が応答できないことの 2 つで成立しません。
 
 2 段を 1 コマンドにまとめたい場合は、mac 側に注入 → 転送 → 接続を並べる薄い関数を置いてください。
 
 ```sh
 win-dock() {
-  ssh <windows-host> bash -lc "karakuri-dock -p $1-dev up" || return 1
+  ssh <windows-host> bash -lc "karakuri-dock -p $1-dev -b $1 up" || return 1
   if karakuri-port-forward "devc-win-$1"; then
     ssh "devc-win-$1"
   else

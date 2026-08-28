@@ -251,7 +251,7 @@ case "$mode" in
         # しない（非対話の ssh 接続の裏で黙って認可を求めると応答できない
         # まま固まる）。
         if ! docker exec -u root "$container" test -f /run/secrets/SSH_AUTHORIZED_KEYS >/dev/null 2>&1; then
-            echo "dock: secrets are not injected into '${container}'. Run 'karakuri-dock up -p ${project}' on the host, then reconnect" >&2
+            echo "dock: secrets are not injected into '${container}'. Run 'karakuri-dock up -p ${project} -b <broker-key>' on the host, then reconnect" >&2
             exit 1
         fi
 

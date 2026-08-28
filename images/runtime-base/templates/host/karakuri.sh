@@ -57,7 +57,7 @@
 #   karakuri-clean-port-forward [name...]           port forwarding の後始末
 #   karakuri-loopback <install|add|remove|list> [args...]   /etc/hosts と loopback alias の設定（sudo が要る）
 #   karakuri-dev-inject <project>                   dev container へ鍵を注入
-#   karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]
+#   karakuri-dock -p <compose-project> [-b <broker-key>] [-s <service>] [-w <workspace>] [up]
 #                                                    dev container を使える状態にしてから入る
 #                                                    （起動 → 未注入なら注入 → port forwarding → 対話シェル）
 #   karakuri-prod-run <org/repo> <sha> <task> [args...]
@@ -537,27 +537,26 @@ karakuri-dev-inject() {
 		"$dev_inject"
 }
 
-# _karakuri_dock_inject <compose-project> [service] — karakuri-dock が
-# `--secrets-ok` の失敗時にだけ呼ぶ注入経路。
+# _karakuri_dock_inject <compose-project> <broker-key> [service] —
+# karakuri-dock が `--secrets-ok` の失敗時にだけ呼ぶ注入経路。
 #
-# karakuri-dev-inject とは別にしてあるのは、DEV_COMPOSE_PROJECT に渡す値が
-# 違うため。karakuri-dev-inject は `<project>-dev` を組み立てるが、
-# karakuri-dock の `-p` は compose project 名そのものなので、ここでは
-# 変換をかけずそのまま使う（dock.sh が compose project 名の組み立てを
-# やめたのと同じ理由で、呼び出し側が渡した値をそのまま使う）。
+# compose project 名と broker アイテムキーは別物であり、どちらも呼び出し側
+# （karakuri-dock の `-p` / `-b`）が決める。ここでは一方から他方を導かず、
+# 渡された 2 つをそれぞれの行き先（DEV_COMPOSE_PROJECT / broker 呼び出し）に
+# そのまま渡す。
 #
 # DEV_BROKER が空かどうかはここでは検査しない。dev-inject.sh 自身が
 # 必須環境変数の欠落を検査して名指しするので、同じ検査をここにも置くと
 # 片方だけ直したときに食い違う。
 _karakuri_dock_inject() {
-	local project="$1" service="$2"
+	local project="$1" broker_key="$2" service="$3"
 	local dev_inject broker
 	dev_inject="$(_karakuri_tool dev-inject.sh)" || return 1
-	broker="$(karakuri-broker-command dev "$project")" || return 1
+	broker="$(karakuri-broker-command dev "$broker_key")" || return 1
 
 	local -a _karakuri_env
 	_karakuri_env=()
-	_karakuri_broker_env_into dev "$project" || return 1
+	_karakuri_broker_env_into dev "$broker_key" || return 1
 
 	local -a _karakuri_dev_env
 	_karakuri_dev_env=("DEV_BROKER=${broker}" "DEV_COMPOSE_PROJECT=${project}")
@@ -566,16 +565,21 @@ _karakuri_dock_inject() {
 	env "${_karakuri_env[@]}" "${_karakuri_dev_env[@]}" "$dev_inject"
 }
 
-# karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up] —
-# dev container を使える状態にしてから入る: 起動 → 未注入なら注入 →
-# port forwarding → 対話シェル。`up` を付けると、入る手前（対話シェルを
-# 開く前）で止まる。
+# karakuri-dock -p <compose-project> [-b <broker-key>] [-s <service>]
+# [-w <workspace>] [up] — dev container を使える状態にしてから入る:
+# 起動 → 未注入なら注入 → port forwarding → 対話シェル。`up` を付けると、
+# 入る手前（対話シェルを開く前）で止まる。
 #
 # `-p` に渡す値は compose project 名そのもの（dock.sh 側の規約と同じ）。
 # ssh の Host（`devc-<compose-project>`）にも、注入先の DEV_COMPOSE_PROJECT
 # にも変換をかけずこの値をそのまま使う。`<project>-dev` のような規約の
 # 組み立ては呼び出し側（利用者の `dock` 関数、~/.ssh/config の HostName）に
 # 委ねてあり、ここではもう行わない。
+#
+# `-b` は broker アイテムキーを `-p` と独立に指定する。省略時は `-p` の値を
+# そのまま使う。compose project 名と broker アイテムキーが別の命名規約
+# （それぞれ `<project>-dev` と素の `<project>`）に従う場合、両方を渡すのは
+# 呼び出し側の役目である。
 #
 # `dock.sh` を対話シェルなしで 2 回呼ぶのは、コンテナの起動状態を変えずに
 # secret の有無だけを見る `--secrets-ok` と、起動だけを行う
@@ -593,8 +597,8 @@ _karakuri_dock_inject() {
 # 転送の成否をそのまま返す。`up` 無しは警告に留めて入る（転送が張れない
 # ことと、コンテナで作業を始められることは別である）。
 karakuri-dock() {
-	local usage="Usage: karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]"
-	local project="" service="" workspace="" up=0
+	local usage="Usage: karakuri-dock -p <compose-project> [-b <broker-key>] [-s <service>] [-w <workspace>] [up]"
+	local project="" broker_key="" service="" workspace="" up=0
 
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
@@ -605,6 +609,15 @@ karakuri-dock() {
 				return 1
 			fi
 			project="$2"
+			shift 2
+			;;
+		-b)
+			if [ "$#" -lt 2 ]; then
+				echo "karakuri-dock: -b requires a value" >&2
+				echo "$usage" >&2
+				return 1
+			fi
+			broker_key="$2"
 			shift 2
 			;;
 		-s)
@@ -645,6 +658,7 @@ karakuri-dock() {
 		echo "$usage" >&2
 		return 1
 	fi
+	[ -n "$broker_key" ] || broker_key="$project"
 
 	local dock
 	dock="$(_karakuri_tool dock.sh)" || return 1
@@ -657,7 +671,7 @@ karakuri-dock() {
 	"$dock" "${dock_argv[@]}" --ensure-running || return 1
 
 	if ! "$dock" "${dock_argv[@]}" --secrets-ok; then
-		_karakuri_dock_inject "$project" "$service" || return 1
+		_karakuri_dock_inject "$project" "$broker_key" "$service" || return 1
 	fi
 
 	local host
@@ -1262,7 +1276,7 @@ karakuri.sh が提供する関数:
       /etc/hosts と loopback alias を設定する（alias は macOS のみ。この関数だけ sudo が要る）
   karakuri-dev-inject <project>
       起動済みの dev container へ鍵を注入する
-  karakuri-dock -p <compose-project> [-s <service>] [-w <workspace>] [up]
+  karakuri-dock -p <compose-project> [-b <broker-key>] [-s <service>] [-w <workspace>] [up]
       dev container を使える状態にしてから入る（起動 → 未注入なら注入 → port forwarding → 対話シェル。up で入る手前で止まる）
       ssh の ProxyCommand には dock.sh の絶対パスが要る（同じファイルの --stdio モード）
   karakuri-prod-run <org/repo> <sha> <task> [task-args...]
@@ -1340,13 +1354,13 @@ FUNCS
 #   alias prod-base='karakuri-prod-base'
 #   alias prod-shell='karakuri-prod-shell'
 #
-# karakuri-dock は compose project 名・service 名・workspace を引数で
-# 受け取るだけで、`<project>-dev` のような規約を組み立てない（この点だけは
-# alias ではなく短い関数にする。alias は引数をそのまま渡す口しか持たず、
-# `-p "$1-dev"` のような組み立てができない）。配らないのは、汎用的な
-# `dock` という名前を利用者のシェルへ勝手に持ち込まないため:
+# karakuri-dock は compose project 名・broker アイテムキー・service 名・
+# workspace を引数で受け取るだけで、`<project>-dev` のような規約を組み立て
+# ない（この点だけは alias ではなく短い関数にする。alias は引数をそのまま
+# 渡す口しか持たず、`-p "$1-dev"` のような組み立てができない）。配らないの
+# は、汎用的な `dock` という名前を利用者のシェルへ勝手に持ち込まないため:
 #
-#   dock() { karakuri-dock -p "$1-dev" -w "/workspaces/$1" "${@:2}" }
+#   dock() { karakuri-dock -p "$1-dev" -b "$1" -w "/workspaces/$1" "${@:2}" }
 #
 # 環境変数の設定例:
 #
