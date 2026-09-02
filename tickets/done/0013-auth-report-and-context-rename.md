@@ -10,6 +10,7 @@ targets:
   - images/runtime-base/tests/karakuri-context.test.sh
   - images/runtime-base/tests/git-credential.test.sh
   - images/runtime-base/tests/run.sh
+  - images/runtime-base/tests/verify-docker.sh
   - images/runtime-base/Dockerfile
   - images/devcontainer-base/Dockerfile
   - images/runtime-base/README.md
@@ -53,6 +54,10 @@ verify:
 `prod-context` という名前とラベルが dev container でも表示される。ホスト側に `karakuri-loopback` / `karakuri-dock` の慣習があるので `karakuri-context` に揃える。実体は「このコンテナが何を持ち、どこへ認証するか」を出すものなので、意味の上でも prod に限らない。
 
 利用者へ直接実行を案内している記述は文書のどこにも無く、`/etc/bash.bashrc` と `/etc/zsh/zshrc` から source される内部スクリプトに閉じている。ただし台帳の公開面の定義 C-1 に名前で列挙されているため、そこの記述も併せて更新する。
+
+### 実イメージ側の検査
+
+`images/runtime-base/tests/verify-docker.sh` の M6 が、廃止する「一致していれば何も出力しない」契約を実イメージで検査している。この枚で新しい契約へ書き換える。`git-credential.test.sh` の H 節が `git-auth-check` のコピーを叩くのに対し、M6 は実イメージへ焼かれた実体を PATH から叩くので、役割が違う。検査自体は残す。
 
 ### 順序依存
 

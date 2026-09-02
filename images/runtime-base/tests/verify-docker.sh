@@ -2301,7 +2301,9 @@ a6_credential_quit() {
 assert M6 "GH_TOKEN 不在時、helper が quit=1 で連鎖を止め askpass へ落ちない" a6_credential_quit
 
 # 固定が黙って外れたときに気づける側 (git-auth-check) も、実イメージで
-# 「正常時は黙る / 外れたら喋る」の両方を見る。
+# 「実効 helper のパスと、イメージ固定の生死を常に1行報告する」ことを見る。
+# イメージが焼く GIT_CONFIG_* が実際に効いていることを確認できる唯一の経路
+# でもあるため、GIT_CONFIG_* を落とした状態も併せて叩く。
 #
 # shellcheck disable=SC2016 # 同上。
 a6_auth_check() {
@@ -2309,11 +2311,15 @@ a6_auth_check() {
 		printf "#!/bin/sh\nexit 0\n" > /tmp/vscode-helper.sh
 		chmod +x /tmp/vscode-helper.sh
 		git config --global credential.helper /tmp/vscode-helper.sh
-		[ -z "$(git-auth-check 2>&1)" ] || exit 1
-		[ -n "$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 git-auth-check 2>&1)" ] || exit 2
+		alive="$(git-auth-check 2>&1)"
+		[ -n "$alive" ] || exit 1
+		printf "%s\n" "$alive" | grep -q "git-credential-gh-token" || exit 2
+		printf "%s\n" "$alive" | grep -q "生きている" || exit 3
+		broken="$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 git-auth-check 2>&1)"
+		printf "%s\n" "$broken" | grep -q "外れている" || exit 4
 	'
 }
-assert M6 "git-auth-check が正常時は黙り、固定が外れると警告する" a6_auth_check
+assert M6 "git-auth-check が実効 helper のパスと固定の生死を常に1行報告する" a6_auth_check
 
 # --- git 設定優先順位 ------------------------------------------------------------
 m6_hookspath_precedence() {
