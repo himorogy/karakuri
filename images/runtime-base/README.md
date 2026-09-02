@@ -206,6 +206,29 @@ prod container は `/home/node` が tmpfs で毎回空であり、`~/.wrangler` 
 fallback 資格情報が存在しえない。したがって必要な secret を欠いたコマンドは、下流の認証失敗
 として顕在化する。加えて entrypoint が取込件数 ≥ 1 と各値の非空を検証している。
 
+### ホストにも同名の shim がある（`_dotenvx`）
+
+コンテナ側の3本とは別に、ホストで実行するコマンド向けの shim が
+[`templates/host/shims/_dotenvx`](./templates/host/shims/_dotenvx) に1本だけある。置く名前は
+`_dotenvx` だけで、素の `dotenvx` は置かない。ホストには karakuri 所有の dotenvx 実体が無いため
+素の名前に対応する実体を持てず、素の名前で置くと無関係なプロジェクトのグローバル dotenvx まで
+覆ってしまう。
+
+上の「`pnpm run` の内側では効かない」制約はホスト側にも当てはまるが、答えはこの `_dotenvx` と
+いう名前そのものである。プロジェクトの `package.json` の呼び出しを `_dotenvx` へ揃えておけば、
+`pnpm run` が `node_modules/.bin` を PATH 先頭に積んでも、そちらは `dotenvx` という名前の解決
+にしか勝てず、`_dotenvx`（karakuri 側の shim）は迂回されない。
+
+**意味論もコンテナ側と反転する。** コンテナ側は鍵ファイルの不在を「このコンテナは秘密を要らない」
+として素通しするが（上記「素通しは fail-open ではない」）、ホスト側の不在は「渡されるはずの鍵が
+渡っていない」ことを意味するので、必ず落とす。通す条件は `DOTENV_PRIVATE_KEY*` が environ に
+あることだけで、出どころは問わない（下記 `karakuri-run` 経由でも、CI が secrets から直接渡した
+鍵でも通る）。鍵の値は検査も出力もしない。
+
+Windows 用に [`_dotenvx.cmd`](./templates/host/shims/_dotenvx.cmd) も同梱する。`pnpm` の
+run-script は Windows で cmd.exe から起動するため、拡張子の無いスクリプトは PATH に置いても
+解決されない。配るのは `.cmd` の1本だけで、PowerShell 用の `.ps1` は配らない。
+
 ---
 
 ## git の認証（github.com）
@@ -705,6 +728,9 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 `KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
 関数の一覧と推奨 alias はファイル末尾のコメントにある。
 
+この `source` で `templates/host/shims`（上記の `_dotenvx`）も `PATH` の末尾へ自動で加わる。
+別途 `PATH` へ足す手順は要らない — **導入手順の行数はここで増えない。**
+
 Windows(Git Bash) では `~/.bash_profile` に書く。無ければ作り、直接
 `source ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh` を書くか、
 `~/.bashrc` にまとめる習慣があるなら `~/.bash_profile` から `~/.bashrc` を source する
@@ -783,6 +809,69 @@ vault の同期は broker が取得のたびに 1 回行うので、`bw sync` �
 （`BROKER_BW_SYNC=0` で無効化できる）。鍵束をどう Bitwarden 側に置くか — Secure Note の
 項目名の付け方、共有分と個人分の分け方 — は
 [`templates/host/broker-bitwarden.sh`](./templates/host/broker-bitwarden.sh) の冒頭にある。
+
+### ホストで実行するコマンドへ鍵を渡す（`karakuri-run`）
+
+Electron・ネイティブ拡張を持つプロジェクトなど、ホストでしかビルドできないプロジェクト向けの
+入口。dev container も prod も経由しない。
+
+```sh
+karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]
+```
+
+`-b` は必須で、`karakuri-dev-inject` / `karakuri-dock` の `-p` のような既定の供給元へは落ちない
+（この関数は compose project を持たないため）。`-e` は `dev`（既定）か `prod`。`--` を終端子とし、
+それ以降は一切解釈せず逐語で実行する。
+
+broker の項目名は既存の dev 注入・prod 起動と同じ規約で組み立つので、鍵の置き場を増やす必要は
+ない — `dev` は共有 → 全プロジェクト共通の個人 → プロジェクト個人の3項目、`prod` は共有 →
+プロジェクトの2項目。
+
+```sh
+karakuri-run -b acme -- dotenvx run -f .env -- pnpm build
+karakuri-run -b acme -e prod -- dotenvx run --strict -f .env.prod -- pnpm build
+```
+
+**`-e prod` の限界。** `prod-run.sh` が持つ隔離（tmpfs のコンテナで走り、workspace を mount
+しない）はホストでのビルドでは構造的に取れない。`-e prod` を選ぶと、本番の私鍵がホストの
+ビルド木全体に入り、その木で走る全ての依存・postinstall・ビルドツールの子プロセスから読める。
+既定を `dev` にし、`prod` を明示的に打たせるのはこの代償を意識させるためである。
+
+### CI から `_dotenvx` を解決する
+
+利用側の `package.json` を `_dotenvx` へ揃えると、その `package.json` のスクリプトは CI からも
+呼ばれる。CI の runner には karakuri も shim も無いので、`_dotenvx` を名前解決させるには
+shim のディレクトリを `PATH` へ足す。鍵は環境変数（secrets）で渡せば、そのまま通る
+（`_dotenvx` は鍵の出どころを問わない）。
+
+```sh
+# タグ指定の浅い clone で shim のディレクトリだけ取り、PATH へ足す
+git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git "$RUNNER_TEMP/karakuri"
+export PATH="$RUNNER_TEMP/karakuri/images/runtime-base/templates/host/shims:$PATH"
+```
+
+Windows runner でも同じレシピが成立する。パスは runner のテンポラリディレクトリ
+（`$RUNNER_TEMP` 等）を使い、POSIX 固定のパスは書かない。`_dotenvx.cmd` の同梱が前提になる
+（上記「ホストにも同名の shim がある」参照）。
+
+**npm の `bin` として配る形は採らない。** そうすればラッパーを手書きせずに済むが、関門が
+`node_modules`、すなわち workspace の内側へ降りる。`node_modules/.bin` は PATH 先頭なので、
+守るべき相手（dev container 内のエージェント等）が書ける場所へ私鍵の関門を移すことになる。
+
+**移行時に CI が赤くなりうる。** `_dotenvx` へ揃えると、鍵が供給されていない CI ジョブは
+「鍵が無い」として明示的に落ちる。それまでは dotenvx が rc=0 で暗号文を値として注入していた
+ため成功に見えていただけである。落ちたら既存の鍵未供給が顕在化したものであって、この経路が
+壊したのではない。
+
+**限界。** 手で export した古い鍵での実行は、shim からは CI の正当な供給と区別できないため
+通る。閉じる手段は shim の側には無い（利用側の穴を検査するのは別チケットの範囲）。
+
+**利用側が受け入れのために必要な作業。**
+
+- `package.json` の dotenvx 呼び出しを `_dotenvx` へ揃える
+- ホスト実行の入口を `karakuri-run` 経由にする
+- ワークツリーに置いていた dotenvx の私鍵ファイルを消す
+- CI に shim ディレクトリの `PATH` を足す（上記レシピ）
 
 ### compose ファイルを置く
 

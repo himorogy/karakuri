@@ -1,0 +1,33 @@
+#!/bin/sh
+# host/shims/_dotenvx — ホスト側で dotenvx を呼ぶときに挟む shim
+#
+# コンテナ側 shim（images/runtime-base/shims/dotenvx）と違い、置く名前は
+# _dotenvx の1つだけ。ホストには karakuri 所有の dotenvx 実体が無いため
+# 素の名前に対応する実体を持てず、素の名前で置くと無関係なプロジェクトの
+# グローバル dotenvx まで覆ってしまう。
+#
+# 意味論もコンテナ側と違う。コンテナ側は鍵ファイル不在を「このコンテナは
+# 秘密を要らない」として素通しするが、ここでの不在は「渡されるはずの鍵が
+# 渡っていない」ことを意味するので、素通しにはせず必ず落とす。
+#
+# 鍵の出どころは問わない。host-run.sh 経由で渡った鍵も、CI が secrets から
+# 直接 export した鍵も、どちらも environ にあれば通す。手で export した
+# 古い鍵との区別は付かないため、通す。閉じる手段はこの shim の外にある。
+set -eu
+
+# `env | grep` は値も行として出すため、改行を含む値を持つ無関係な変数が
+# あると行頭一致が誤って成立する（PEM・JSON・CI 由来の値で普通に起きる）。
+# awk の ENVIRON は変数名の集合であり値の中身を行として読まないため、
+# 改行を含む値に左右されない。
+if ! awk 'BEGIN { for (k in ENVIRON) if (k ~ /^DOTENV_PRIVATE_KEY/) exit 0; exit 1 }'; then
+  echo "_dotenvx: no DOTENV_PRIVATE_KEY* found in the environment" >&2
+  echo "_dotenvx:   supply it via 'karakuri-run', or set it directly as an" >&2
+  echo "_dotenvx:   environment variable (e.g. from CI secrets)" >&2
+  exit 1
+fi
+
+# 実体は PATH 解決に任せる。この shim 自身の名前は _dotenvx なので、素の
+# 'dotenvx' の解決にこのファイル自身が割り込むことはない。プロジェクトが
+# node_modules/.bin に自前の dotenvx を持てばそちらが、無ければ他の PATH
+# 上の dotenvx が動く。
+exec dotenvx "$@"
