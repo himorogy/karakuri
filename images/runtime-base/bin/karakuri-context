@@ -1,5 +1,5 @@
 #!/bin/sh
-# /usr/local/bin/prod-context
+# /usr/local/bin/karakuri-context
 #
 # 対話シェルの起動時に、注入済みの secret 鍵名 (値ではない) と
 # /run/prod-ref の内容を表示する。「持っているべき鍵の一覧」はプロジェクト
@@ -10,7 +10,7 @@
 # /run/secrets の「ファイル名」だけを出す。ファイル名は環境変数名そのもの
 # なので安全に出せるが、値は絶対に出さない。
 #
-# 置き場所: /etc/bash.bashrc から `. /usr/local/bin/prod-context` として
+# 置き場所: /etc/bash.bashrc から `. /usr/local/bin/karakuri-context` として
 # source する。profile.d はログインシェルでしか読まれず、
 # `docker exec -it <container> bash` は非ログインシェルなので取りこぼす。
 # /etc/bash.bashrc は bash が対話シェルとして起動するたびに読む。
@@ -75,11 +75,11 @@ esac
 	fi
 
 	if [ -n "$names" ]; then
-		echo "prod-context: 注入済み:$names"
+		echo "karakuri-context: 注入済み:$names"
 	else
 		# /run/secrets が無い、または空。dev で鍵が入っていないことに
 		# ここで気づけるようにする一行。
-		echo "prod-context: /run/secrets に注入済みの鍵が無い"
+		echo "karakuri-context: /run/secrets に注入済みの鍵が無い"
 	fi
 
 	# /run/prod-ref は prod-entrypoint.sh が GIT_REF= / GIT_COMMIT= /
@@ -99,16 +99,15 @@ esac
 		done <"/run/prod-ref"
 
 		if [ "$mutable_ref" = "1" ]; then
-			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit (mutable ref)"
+			echo "karakuri-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit (mutable ref)"
 		else
-			echo "prod-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit"
+			echo "karakuri-context: GIT_REF=$git_ref GIT_COMMIT=$git_commit"
 		fi
 	fi
 
-	# git の認証経路の検査。何も言わないのが正常で、github.com の credential
-	# helper が生き残っているときだけ喋る。ここから呼ぶのは、対話シェルの起動
-	# ごとに一度だけ走る場所がここしかないため (対話判定と失敗の握り潰しは上で
-	# 済んでいる)。検査の中身は /usr/local/bin/git-auth-check のコメント。
+	# git の認証経路の検査。対話シェルの起動ごとに一度だけ走る場所がここしか
+	# ないので、ここから呼ぶ。検査の中身は /usr/local/bin/git-auth-check の
+	# コメント。
 	if [ -x /usr/local/bin/git-auth-check ]; then
 		/usr/local/bin/git-auth-check
 	fi

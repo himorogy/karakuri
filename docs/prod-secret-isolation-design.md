@@ -500,7 +500,7 @@ github.com の helper 一覧が自前 1 本だけになることで、4 つの�
 
 **代償**: `GH_TOKEN` を注入していないコンテナでは、github.com への認証が要る https 操作が失敗する。ホスト側の資格情報へフォールバックしないことが目的なので、これは副作用ではない。public repo の clone（401 が返らないため credential 解決自体が起きない）、ssh remote、github.com 以外のホストは影響しない。
 
-**この防御は黙って外れうる。** `GIT_CONFIG_COUNT` は git が持つ唯一のカウンタで、イメージがスロット 0 と 1 を占有する。利用側が同じ仕組みで設定を足すとイメージの 2 スロットが消え、消えても認証は（ホスト側の資格情報で）通る。`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認し、自前 helper のパスと一致しなければ警告する（`prod-context` から呼ぶ。空なら「askpass へ落ちる」、別物なら「確定先と `store` の宛先を奪われる」と原因を分ける）。到達範囲は prod-context と同じで、非対話の git まではカバーしない。
+**この防御は黙って外れうる。** `GIT_CONFIG_COUNT` は git が持つ唯一のカウンタで、イメージがスロット 0 と 1 を占有する。利用側が同じ仕組みで設定を足すとイメージの 2 スロットが消え、消えても認証は（ホスト側の資格情報で）通る。`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効 helper のパスと、イメージの固定が生きているかどうかを常に1行報告する（`karakuri-context` から呼ぶ）。到達範囲は karakuri-context と同じで、非対話の git まではカバーしない。
 
 **VS Code 側の設定も併用する。** `git.terminalAuthentication: false` を雛形の `devcontainer.json` に入れて、environ への `GIT_ASKPASS` 注入自体を止める。github.com はイメージ側で閉じているので必須ではないが、github.com 以外のホストでも注入は起きるため重ねてある。ホストのユーザー設定ではなくコンテナ側に適用される設定なので、雛形から配れる。
 
@@ -771,7 +771,7 @@ enclave-env の廃止で 1 つ実害を持ち越している。公開済みの v
 
 stdin が secret の搬送路のため、`run` の対話 TTY とは両立しない（§4.1 / D3）。dryrun → 適用のような対話的な運用は**二段構え**で行う（D29）。
 
-**土台は attached で起動する（2 端末。rev.9 実測で確定）。** rev.9 当初案の `run -dT`（detach）は実測で不成立と判明した: attached モードでは stdin パイプをコンテナへ中継するのは compose クライアント自身であり、`-d` はそのクライアントを即座に終了させる。結果は三重の失敗になる — (1) broker は書き込み先を失い Broken pipe で死ぬ、(2) コンテナ側の stdin は open のまま誰も閉じないため、取込スクリプトが EOF を永遠に待って entrypoint が取込の行で停止する（clone にも `exec "$@"` にも到達しない）、(3) したがって `sleep 8h` は一度も走らず、時間切れによる自動回収も存在しない — `--rm` は正常終了時にしか効かないため、手で `docker rm -f` するまでコンテナが残る。secret はゼロ注入のまま `docker exec` でシェルが取れてしまうが、prod-context が「注入済みの鍵が無い」と警告する（沈黙はしない）。
+**土台は attached で起動する（2 端末。rev.9 実測で確定）。** rev.9 当初案の `run -dT`（detach）は実測で不成立と判明した: attached モードでは stdin パイプをコンテナへ中継するのは compose クライアント自身であり、`-d` はそのクライアントを即座に終了させる。結果は三重の失敗になる — (1) broker は書き込み先を失い Broken pipe で死ぬ、(2) コンテナ側の stdin は open のまま誰も閉じないため、取込スクリプトが EOF を永遠に待って entrypoint が取込の行で停止する（clone にも `exec "$@"` にも到達しない）、(3) したがって `sleep 8h` は一度も走らず、時間切れによる自動回収も存在しない — `--rm` は正常終了時にしか効かないため、手で `docker rm -f` するまでコンテナが残る。secret はゼロ注入のまま `docker exec` でシェルが取れてしまうが、karakuri-context が「注入済みの鍵が無い」と警告する（沈黙はしない）。
 
 ```sh
 # 端末 1: 土台を前面（attached）で起動する。broker の認可プロンプトも
@@ -1009,7 +1009,7 @@ secret scanning の補完として `gitleaks` 等の OSS スキャナを同 work
 - [ ] prod container: 必要 secret を欠いた状態で下流コマンドが認証失敗として**顕在化**すること（`$HOME` tmpfs により fallback 資格情報が拾われないことを含む）
 - [ ] dev container に `/var/run/docker.sock` がマウントされていないこと（§2.1 の前提。devcontainer 構成変更時の恒常チェック）
 - [ ] `logging: driver: none` でもアタッチ時に stdout が手元に表示されること
-- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが prod-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。**attached 形は実測で成立**（2026-08-14: TTY シェル取得・prod-context の鍵名表示・`/run/prod-ref`・`pnpm install` 完走・`_wrangler` / `_dotenvx` 動作）。回収も実測済み: pid 1 = `sleep` が Ctrl-C / SIGTERM を無視することを実測 → `init: true` を compose に追加（§6.4）→ init 有りで Ctrl-C 一発 → 終了・回収まで通ることを確認（2026-08-14）。**対話二段構えは attached 2 端末形で完了**
+- [x] 対話二段構え: **`run -dT` は不成立と実測**（2026-08-08、macOS 実機。broker が Broken pipe / entrypoint が stdin EOF 待ちで停止 / `sleep` 未実行で自動回収消滅 / secret ゼロのまま exec 可能だが karakuri-context は警告した）。標準手順を attached 2 端末形へ改訂（§6.4 / D29）。**attached 形は実測で成立**（2026-08-14: TTY シェル取得・karakuri-context の鍵名表示・`/run/prod-ref`・`pnpm install` 完走・`_wrangler` / `_dotenvx` 動作）。回収も実測済み: pid 1 = `sleep` が Ctrl-C / SIGTERM を無視することを実測 → `init: true` を compose に追加（§6.4）→ init 有りで Ctrl-C 一発 → 終了・回収まで通ることを確認（2026-08-14）。**対話二段構えは attached 2 端末形で完了**
 - [ ] `GIT_REF` 未指定時に compose が失敗すること
 - [ ] `read_only: true` + tmpfs 構成で `git fetch` / `pnpm install` / ビルドが完走すること（`/home/node` の書き込み先、named volume `/src` の所有権を含む）
 - [ ] `/src` 非空・`.git` 無しの状態（前回失敗の残骸）から entrypoint が復帰できること
@@ -1060,7 +1060,7 @@ rev.7 で追加した項目:
 - [ ] **大文字の完全 commit sha が誤って拒否されないこと**（小文字への畳み込みの回帰）
 - [ ] **`GIT_REPO` に資格情報を埋めた URL を渡すと非ゼロ終了し、stderr にトークンが現れないこと**。ssh 形式（`git@host:owner/repo.git`）は誤検知しないこと
 - [ ] **dotenvx shim: prod 鍵が注入済みで `run` に `--strict` が無いときだけ警告が出ること**。`--strict` あり / prod 鍵不在では出ないこと。警告の有無で実体への引数と rc が変わらないこと（D22）
-- [ ] **prod-context: `/run/secrets` が存在して空のとき、zsh でもエラーを出さずに完走すること**
+- [ ] **karakuri-context: `/run/secrets` が存在して空のとき、zsh でもエラーを出さずに完走すること**
 - [ ] **pre-commit hook: サブディレクトリの `.env.keys` を検出すること**。`node_modules` 配下は無視すること。`find` 自体が失敗した場合に、その理由が読み取れる形で fail-closed になること
 - [ ] **CI の env-guard が平文の tracked `.env` を実際に検出すること**（合成 fixture による検知能力の証明。「0 件検査して緑」と「N 件検査して緑」が出力から区別できること）
 - [ ] **karakuri 自身が env-guard スタブで自分を呼んでいること**（伝播機構を自分で使っていること）

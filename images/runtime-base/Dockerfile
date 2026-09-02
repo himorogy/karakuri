@@ -268,7 +268,7 @@ ENV GIT_CONFIG_COUNT=2 \
     GIT_CONFIG_KEY_1=credential.https://github.com.helper \
     GIT_CONFIG_VALUE_1=/usr/local/bin/git-credential-gh-token
 
-# --- prod-context: 注入済み鍵名の表示 (rev.6 / §4.3) ----------------------------
+# --- karakuri-context: 注入済み鍵名の表示 (rev.6 / §4.3) ----------------------------
 # 対話シェルの起動時に、/run/secrets の「ファイル名」(= 環境変数名) と
 # /run/prod-ref を表示する。値は出さない。dev では「持っているべき鍵の
 # 一覧」がプロジェクト固有で runtime-base には持てないため、注入済みの
@@ -277,10 +277,10 @@ ENV GIT_CONFIG_COUNT=2 \
 # /etc/bash.bashrc から source する。profile.d はログインシェルでしか
 # 読まれず、`docker exec -it <c> bash` は非ログインシェルなので取りこぼす。
 # /etc/bash.bashrc は bash が対話シェルとして起動するたびに読む。
-COPY bin/prod-context /usr/local/bin/prod-context
-RUN chown root:root /usr/local/bin/prod-context \
-    && chmod 0755 /usr/local/bin/prod-context \
-    && printf '%s\n' '. /usr/local/bin/prod-context' >> /etc/bash.bashrc
+COPY bin/karakuri-context /usr/local/bin/karakuri-context
+RUN chown root:root /usr/local/bin/karakuri-context \
+    && chmod 0755 /usr/local/bin/karakuri-context \
+    && printf '%s\n' '. /usr/local/bin/karakuri-context' >> /etc/bash.bashrc
 
 # entrypoint が clone/fetch する先。/src は named volume ではなく tmpfs で
 # ある (§4.6 / D18。named volume を再利用すると、前回実行のコードが打った

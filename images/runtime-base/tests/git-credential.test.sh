@@ -150,7 +150,10 @@ make_stage() {
 	chmod +x "$HELPER"
 
 	# git-auth-check も同じ絶対パスを期待値として持つので、同じ差し替えを施す。
-	sed -e "s#$CFG_VALUE1#$HELPER#g" "$AUTH_CHECK_SRC" >"$dir/git-auth-check"
+	# /run/secrets も差し替えないと、値の非漏洩テストが実在しないパスを見て
+	# 素通りする。
+	sed -e "s#/run/secrets#$dir/secrets#g" -e "s#$CFG_VALUE1#$HELPER#g" \
+		"$AUTH_CHECK_SRC" >"$dir/git-auth-check"
 	chmod +x "$dir/git-auth-check"
 
 	{
@@ -530,9 +533,9 @@ fi
 rm -rf "$t"
 
 # --- H. git-auth-check ---------------------------------------------------------------
-# 設定が黙って外れたことを検出する側。正常時は何も言わないので、「言わないこと」と
-# 「言うこと」の両方を見る。警告は気づかせるためのものなので、シェルの起動を
-# 止めないよう rc は常に 0 である。
+# 実効 helper のパスを、想定どおりのときも含めて常に1行で報告する側。加えて、
+# イメージが GIT_CONFIG_COUNT 系で行っている固定が生きているかどうかの別も
+# 報告に付く。rc は常に 0 で、シェルの起動を止めない。
 echo "git-auth-check"
 
 run_check() {
@@ -553,58 +556,130 @@ t="$(mktemp -d)"
 make_stage "$t"
 out="$(run_check "$t" on 2>&1)"
 rc=$?
-if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
-	ok "実効 helper が自前 helper と一致: 何も言わない"
+if [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] &&
+	printf '%s\n' "$out" | grep -q "$HELPER"; then
+	ok "実効 helper が自前 helper と一致: パスを1行報告して rc=0"
 else
-	ng "実効 helper が自前 helper と一致: 何も言わない (rc=$rc out=$out)"
+	ng "実効 helper が自前 helper と一致: パスを1行報告して rc=0 (rc=$rc out=$out)"
+fi
+# 否定対照: 以前の「一致なら何も出さない」仕様への逆行を検出する。
+if [ -n "$out" ]; then
+	ok "否定対照: 一致していても出力が空にならない"
+else
+	ng "否定対照: 一致していても出力が空にならない"
 fi
 rm -rf "$t"
 
-# 別の helper が勝っている場合。どこから来た設定かを特定できるよう、値を名指し
-# する必要がある。
+# 別の helper が勝っている場合。イメージの固定 (GIT_CONFIG_*) は生きていない
+# ので、実効 helper の値によらず「外れている」の別が読めるはずである。
 t="$(mktemp -d)"
 make_stage "$t"
 other="$(run_check "$t" off 2>&1)"
 rc=$?
-if [ "$rc" -eq 0 ] && printf '%s\n' "$other" | grep -q "$t/helper.sh" &&
-	printf '%s\n' "$other" | grep -q "GIT_CONFIG_COUNT"; then
-	ok "実効 helper が別物: 生き残った helper を名指しで警告して rc=0"
+if [ "$rc" -eq 0 ] && printf '%s\n' "$other" | grep -q "$t/helper.sh"; then
+	ok "実効 helper が別物: 生き残った helper のパスを報告して rc=0"
 else
-	ng "実効 helper が別物: 生き残った helper を名指しで警告して rc=0 (rc=$rc out=$other)"
+	ng "実効 helper が別物: 生き残った helper のパスを報告して rc=0 (rc=$rc out=$other)"
 fi
 rm -rf "$t"
 
-# helper が一本も無い場合。認証が askpass や端末プロンプトへ落ちるという、別物が
-# 勝っている場合とは違う失敗なので、文面も分かれている必要がある。
+# helper が一本も無い場合。実効 helper の値は上のケースと違うが、固定が外れて
+# いること自体は同じく報告に読めるはずである。
 t="$(mktemp -d)"
 make_stage "$t"
 : >"$t/global.gitconfig"
 none="$(run_check "$t" off 2>&1)"
 rc=$?
-if [ "$rc" -eq 0 ] && [ -n "$none" ] &&
-	printf '%s\n' "$none" | grep -q "GIT_ASKPASS" &&
-	printf '%s\n' "$none" | grep -q "GIT_CONFIG_COUNT"; then
-	ok "実効 helper が空: askpass へ落ちることを警告して rc=0"
+if [ "$rc" -eq 0 ] && [ -n "$none" ]; then
+	ok "実効 helper が空でも rc=0 で1行報告する"
 else
-	ng "実効 helper が空: askpass へ落ちることを警告して rc=0 (rc=$rc out=$none)"
+	ng "実効 helper が空でも rc=0 で1行報告する (rc=$rc out=$none)"
 fi
 rm -rf "$t"
 
-# 二つの警告は原因が違う。同じ文面なら、受け取った側はどちらを直せばよいか
-# 分からない。
-if [ -n "$other" ] && [ -n "$none" ] && [ "$other" != "$none" ]; then
-	ok "helper が空の場合と別物の場合で警告の文面が違う"
+# イメージ固定が外れている (cfg=off) 場合、実効 helper が別物でも空でも、
+# 報告からその別が読める必要がある。固定が生きている場合の報告 ($out) とは
+# 区別できることも併せて見る。
+if printf '%s\n' "$other" | grep -q "外れている" &&
+	printf '%s\n' "$none" | grep -q "外れている" &&
+	! printf '%s\n' "$out" | grep -q "外れている"; then
+	ok "イメージ固定が外れていれば報告にその別が付く (実効 helper が別物でも空でも)"
 else
-	ng "helper が空の場合と別物の場合で警告の文面が違う"
+	ng "イメージ固定が外れていれば報告にその別が付く (other=$other none=$none out=$out)"
+fi
+if [ -n "$other" ] && [ -n "$none" ] && [ "$other" != "$none" ]; then
+	ok "helper が空の場合と別物の場合で報告の文面が違う"
+else
+	ng "helper が空の場合と別物の場合で報告の文面が違う"
 fi
 
-# 警告文は、このリポジトリの外の人間が読んでも意味が通る必要がある。参照先が
+# 部分的な上書き (a): README が案内する形。イメージの 5 変数はそのままに、
+# COUNT を増やして利用側のスロットを追加する。スロット 0/1 は無傷なので
+# 固定は生きているままのはずである (COUNT の完全一致を求めると誤って
+# 「外れている」になる、というのがこの回帰の対象)。
+t="$(mktemp -d)"
+make_stage "$t"
+extended="$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
+	-u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 \
+	"GIT_CONFIG_SYSTEM=$t/system.gitconfig" \
+	"GIT_CONFIG_GLOBAL=$t/global.gitconfig" \
+	"GIT_CONFIG_COUNT=3" \
+	"GIT_CONFIG_KEY_0=$CFG_KEY0" "GIT_CONFIG_VALUE_0=$CFG_VALUE0" \
+	"GIT_CONFIG_KEY_1=$CFG_KEY1" "GIT_CONFIG_VALUE_1=$HELPER" \
+	"GIT_CONFIG_KEY_2=credential.helper" "GIT_CONFIG_VALUE_2=" \
+	sh "$t/git-auth-check" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$extended" | grep -q "$HELPER" &&
+	! printf '%s\n' "$extended" | grep -q "外れている"; then
+	ok "利用側が案内どおりに COUNT を増やして足しても固定は生きている扱いになる"
+else
+	ng "利用側が案内どおりに COUNT を増やして足しても固定は生きている扱いになる (rc=$rc out=$extended)"
+fi
+rm -rf "$t"
+
+# 部分的な上書き (b): COUNT は 2 のままキー側だけが別物にすり替わっている。
+# 5 変数のうち 1 本でも想定と違えば固定は外れている扱いになるはずである。
+t="$(mktemp -d)"
+make_stage "$t"
+tampered="$(env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 \
+	-u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 \
+	"GIT_CONFIG_SYSTEM=$t/system.gitconfig" \
+	"GIT_CONFIG_GLOBAL=$t/global.gitconfig" \
+	"GIT_CONFIG_COUNT=$CFG_COUNT" \
+	"GIT_CONFIG_KEY_0=$CFG_KEY0" "GIT_CONFIG_VALUE_0=$CFG_VALUE0" \
+	"GIT_CONFIG_KEY_1=credential.helper" "GIT_CONFIG_VALUE_1=$HELPER" \
+	sh "$t/git-auth-check" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$tampered" | grep -q "外れている"; then
+	ok "5本のうち1本だけ別物にすり替わっていても固定は外れている扱いになる"
+else
+	ng "5本のうち1本だけ別物にすり替わっていても固定は外れている扱いになる (rc=$rc out=$tampered)"
+fi
+rm -rf "$t"
+
+# 報告文は、このリポジトリの外の人間が読んでも意味が通る必要がある。参照先が
 # 手元に無い記号を混ぜないことの回帰確認 (tests/shipped-symbols.test.sh と同じ
 # 趣旨を、実際に出た文字列に対して見る)。
 if ! printf '%s\n%s\n' "$other" "$none" | grep -qE '§|\b[A-Z][0-9]+\b'; then
-	ok "警告文に参照先の無い記号が出ない"
+	ok "報告文に参照先の無い記号が出ない"
 else
-	ng "警告文に参照先の無い記号が出ない"
+	ng "報告文に参照先の無い記号が出ない"
+fi
+
+# 資格情報の値は報告に現れない。GH_TOKEN の中身に目印を仕込み、一致・別物・
+# 空のいずれの報告にも現れないことを見る (git-auth-check は helper のパスと
+# GIT_CONFIG_* しか扱わず、トークンの値そのものには触れない設計)。
+t="$(mktemp -d)"
+make_stage "$t"
+marker="AUTH_CHECK_MARKER_$$"
+printf '%s' "$marker" >"$t/secrets/GH_TOKEN"
+matched="$(run_check "$t" on 2>&1)"
+mismatched="$(run_check "$t" off 2>&1)"
+rm -rf "$t"
+if ! printf '%s\n%s\n' "$matched" "$mismatched" | grep -q "$marker"; then
+	ok "報告に注入した値が出ない"
+else
+	ng "報告に注入した値が出ない (matched=$matched mismatched=$mismatched)"
 fi
 
 # --- result --------------------------------------------------------------------
