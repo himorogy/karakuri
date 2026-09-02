@@ -276,13 +276,13 @@ prod-run.sh pnpm deploy
 - `$( )` は末尾改行を除去するため、secret ファイルの trailing newline は自動処理される。
 - **読み取りは `exec` の引数内に置かない（rev.4 で修正）。** `exec env VAR="$(cat "$f")" ...` の形だと、`cat` が失敗しても終了コードは外側の `env` のものになり、`set -e` は発火しない。結果として「ファイルは存在し非空だが読めない」状態が**空値の注入**として素通りする — I6 が排除したい「沈黙した成功」そのものである。`v=$(cat "$f") || exit 1` と独立した文で読み、非空を再検査してから `exec` する。dotenvx shim の `export "NAME=$(cat "$f")"` も同型（終了コードは `export` のものになる）なので同じ分解が要る。
 - **素通し側にも `env -u NODE_OPTIONS` を付ける。** §4.4 の diagnostic report 遮断は secret 注入の有無と無関係に効くべきものである。
-- dotenvx 用 shim は**固定 1 変数ではなく `DOTENV_PRIVATE_KEY_*` の汎用ループ**にする。鍵変数名は環境ごとに異なり（`_PROD` / `_DEVELOPMENT` / `_LOCAL`）、prod container には `_PROD` だけが、dev container には dev 向けの鍵だけが `/run/secrets` に置かれる。shim を環境別に分けない理由は D5 と同じ: shim は PATH 上で実体と同名（`dotenvx`）を名乗ることで `pnpm run` / Makefile 内の呼び出しを無改変で横取りしており、別名コマンド（`dotenv-prod` 等）にすると既存スクリプトの `dotenvx` 呼び出しが素のバイナリへ直行して shim を素通りする。複数の鍵が同時に注入されても、dotenvx は `-f` のファイル名規約（`.env.prod` → `_PROD`）で正しい鍵を選ぶ。
+- dotenvx 用 shim は**固定 1 変数ではなく `DOTENV_PRIVATE_KEY*` の汎用ループ**にする。鍵変数名は対応する `.env` ファイルごとに異なり（無サフィックスの `DOTENV_PRIVATE_KEY` が素の `.env` に、`_PROD` / `_DEVELOPMENT` / `_LOCAL` が `.env.<環境名>` に対応する）、prod container には `_PROD` だけが、dev container には dev 向けの鍵だけが `/run/secrets` に置かれる。shim を環境別に分けない理由は D5 と同じ: shim は PATH 上で実体と同名（`dotenvx`）を名乗ることで `pnpm run` / Makefile 内の呼び出しを無改変で横取りしており、別名コマンド（`dotenv-prod` 等）にすると既存スクリプトの `dotenvx` 呼び出しが素のバイナリへ直行して shim を素通りする。複数の鍵が同時に注入されても、dotenvx は `-f` のファイル名規約（`.env.prod` → `_PROD`）で正しい鍵を選ぶ。glob は当初 `DOTENV_PRIVATE_KEY_*`（末尾に1文字以上を要求）で無サフィックスの `DOTENV_PRIVATE_KEY` を取りこぼしていた。**2026-09-02 追記**: `DOTENV_PRIVATE_KEY*` へ広げた。
 
 ```sh
 #!/bin/sh
 # /usr/local/bin/dotenvx  （実体は /opt/tools/bin/ に退避）
 set -eu
-for f in /run/secrets/DOTENV_PRIVATE_KEY_*; do
+for f in /run/secrets/DOTENV_PRIVATE_KEY*; do
   [ -e "$f" ] || continue          # glob 不一致（ファイルなし）は素通し
   [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
   v=$(cat "$f") || exit 1          # export の中で読むと cat の失敗が消える
@@ -311,7 +311,7 @@ dotenvx:   is absent. dotenvx exits 0 even when decryption
 dotenvx:   fails, injecting the ciphertext as the value.
 ```
 
-**これは環境の判別ではなく、注入済み鍵の観測である。** shim が既に行っていること（`/run/secrets/DOTENV_PRIVATE_KEY_*` を見る）の延長にすぎず、D15 の三値意味論とは矛盾しない。prod 鍵は dev container には来ない設計なので、dev 側でのノイズはゼロになる。`--convention flow` も `--ignore=` も壊さない。R12 の「静かな失敗」が「うるさい成功」に変わるだけで、強制なしに I6 の趣旨を回収できる。
+**これは環境の判別ではなく、注入済み鍵の観測である。** shim が既に行っていること（`/run/secrets/DOTENV_PRIVATE_KEY*` を見る）の延長にすぎず、D15 の三値意味論とは矛盾しない。prod 鍵は dev container には来ない設計なので、dev 側でのノイズはゼロになる。`--convention flow` も `--ignore=` も壊さない。R12 の「静かな失敗」が「うるさい成功」に変わるだけで、強制なしに I6 の趣旨を回収できる。
 - dotenvx には raw な鍵ファイルを直接読む仕組みがない（`-fk` は dotenv 形式のファイルを要求する）ため、shim による env 注入が正当な経路である。なお dotenvx は私鍵 env が無い場合 `.env.prod` に隣接する `.env.keys` へ**自動フォールバック**するため、workspace 内に `.env.keys` が存在しないことの検査は移行後も維持する（共有スキャナが担う。§8.2）。
 - **注入済みの鍵名を対話シェルで表示する（rev.6）。** `/run/secrets` のファイル名は環境変数名そのものなので、**名前だけなら安全に出せる**（値は出さない）。対話シェルの起動時に一覧を出し、`/run/prod-ref` があればそれも出す。
 

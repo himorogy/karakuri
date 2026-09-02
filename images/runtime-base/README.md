@@ -91,6 +91,11 @@ writable layer は `/var/lib/docker/overlay2`、すなわちホスト（Docker D
 prod では entrypoint が prod secret を書き、dev では dev 向けのトークンが別機構で与えられる。
 どちらでも同じ shim が同じように振る舞う。
 
+`dotenvx` の `<VAR>` は `wrangler` / `gh` と違って固定 1 個ではなく、対応する `.env` ファイルごとに
+`DOTENV_PRIVATE_KEY*` の glob で複数ありうる。素の `.env` を使うプロジェクトの鍵ファイルは
+`/run/secrets/DOTENV_PRIVATE_KEY`（無サフィックス）、`.env.<環境名>` を使うプロジェクトの鍵ファイルは
+`/run/secrets/DOTENV_PRIVATE_KEY_<環境名>`（大文字。例: `.env.prod` → `DOTENV_PRIVATE_KEY_PROD`）になる。
+
 **シェル関数ではなく PATH 上の実行ファイルにしてある。** `pnpm run` / Makefile / `xargs` は
 `sh -c` を起動して rc を読まないため、関数はスコープ外になって素のバイナリが呼ばれる。
 PATH 上の実行ファイルであればこれらの経路でも効く。
@@ -139,7 +144,7 @@ shim は以下を**すべて**満たすときだけ、stderr へ 1 行（3 行�
 
 - 引数に `run` がある
 - 引数に `--strict` が無い
-- `/run/secrets/DOTENV_PRIVATE_KEY_PROD` が存在する
+- `/run/secrets/DOTENV_PRIVATE_KEY_PROD*`（glob）に一致するファイルが存在する
 
 ```
 dotenvx: WARNING: production key is injected but --strict

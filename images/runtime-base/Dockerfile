@@ -26,7 +26,7 @@ ARG PNPM_VERSION=11.20.0
 #
 # 未実測の前提がひとつある: 2.0.0 は keyring 対応の導入にあわせて
 # run / config / get を @dotenvx/primitives 由来の共有 resolver 経由に
-# 付け替えている。本設計は shim で DOTENV_PRIVATE_KEY_* を環境変数と
+# 付け替えている。本設計は shim で DOTENV_PRIVATE_KEY* を環境変数と
 # して注入する経路に依存しており (§4.3)、この経路が 2.x でも従来通り
 # 効くことは docker が使える環境で実測して確認すること (§10)。
 #

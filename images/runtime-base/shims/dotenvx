@@ -1,12 +1,13 @@
 #!/bin/sh
 # /usr/local/bin/dotenvx  （実体は /opt/tools/bin/dotenvx に退避してある）
 #
-# 固定 1 変数ではなく DOTENV_PRIVATE_KEY_* の汎用ループにする。鍵変数名は
-# 環境ごとに異なり (_PROD / _DEVELOPMENT / _LOCAL)、prod container には
-# _PROD だけが、dev container には dev 向けの鍵だけが /run/secrets に
-# 置かれる想定。複数の鍵が同時に注入されても、dotenvx は -f のファイル名
-# 規約 (.env.prod → _PROD) で対応する鍵を選ぶため、ここでは全て export
-# すればよい (docs/prod-secret-isolation-design.md §4.3)。
+# 固定 1 変数ではなく DOTENV_PRIVATE_KEY* の汎用ループにする。dotenvx の
+# ファイル名規約では .env → DOTENV_PRIVATE_KEY (無サフィックス)、
+# .env.prod → DOTENV_PRIVATE_KEY_PROD のように鍵変数名が対応する .env
+# ファイルごとに変わり、prod container には _PROD だけが、dev container
+# には dev 向けの鍵だけが /run/secrets に置かれる想定。複数の鍵が同時に
+# 注入されても、dotenvx は -f のファイル名規約で対応する鍵を選ぶため、
+# ここでは全て export すればよい (docs/prod-secret-isolation-design.md §4.3)。
 #
 # dotenvx には raw な鍵ファイルを直接読む仕組みがないため (-fk は dotenv
 # 形式のファイルを要求する)、shim による env 注入が正当な経路になる。
@@ -22,7 +23,7 @@ case "${0##*/}" in
 _*) real=dotenvx ;;
 *) real=/opt/tools/bin/dotenvx ;;
 esac
-for f in /run/secrets/DOTENV_PRIVATE_KEY_*; do
+for f in /run/secrets/DOTENV_PRIVATE_KEY*; do
   [ -e "$f" ] || continue          # glob 不一致 (ファイルなし) は素通し
   [ -s "$f" ] || { echo "empty secret: $f" >&2; exit 1; }
   # 読み取りは export の中ではなく独立した文で行う。
