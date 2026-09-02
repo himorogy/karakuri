@@ -173,7 +173,7 @@ check_var_shim() {
 check_var_shim wrangler CLOUDFLARE_API_TOKEN
 check_var_shim gh GH_TOKEN
 
-# --- dotenvx: DOTENV_PRIVATE_KEY_* の汎用ループ -------------------------------
+# --- dotenvx: DOTENV_PRIVATE_KEY* の汎用ループ --------------------------------
 echo "dotenvx shim"
 
 # 5. DOTENV_PRIVATE_KEY_LOCAL と DOTENV_PRIVATE_KEY_DEVELOPMENT を同時に
@@ -195,6 +195,52 @@ else
 fi
 rm -rf "$t"
 
+# 5a. DOTENV_PRIVATE_KEY (無サフィックス、素の .env に対応) 単独 -> 注入される
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-plain' >"$t/secrets/DOTENV_PRIVATE_KEY"
+out="$("$t/bin/dotenvx" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx "DOTENV_PRIVATE_KEY=key-plain"; then
+	ok "dotenvx: DOTENV_PRIVATE_KEY (無サフィックス) 単独 -> 注入される"
+else
+	ng "dotenvx: DOTENV_PRIVATE_KEY (無サフィックス) 単独 -> 注入される (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 5b. DOTENV_PRIVATE_KEY_LOCAL (サフィックス有り) 単独 -> 注入される (回帰)
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-local' >"$t/secrets/DOTENV_PRIVATE_KEY_LOCAL"
+out="$("$t/bin/dotenvx" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx "DOTENV_PRIVATE_KEY_LOCAL=key-local"; then
+	ok "dotenvx: DOTENV_PRIVATE_KEY_LOCAL (サフィックス有り) 単独 -> 注入される"
+else
+	ng "dotenvx: DOTENV_PRIVATE_KEY_LOCAL (サフィックス有り) 単独 -> 注入される (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 5c. DOTENV_PRIVATE_KEY (無サフィックス) と DOTENV_PRIVATE_KEY_LOCAL の
+#     混在 -> 両方 export される
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-plain' >"$t/secrets/DOTENV_PRIVATE_KEY"
+printf 'key-local' >"$t/secrets/DOTENV_PRIVATE_KEY_LOCAL"
+out="$("$t/bin/dotenvx" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] &&
+	printf '%s\n' "$out" | grep -qx "DOTENV_PRIVATE_KEY=key-plain" &&
+	printf '%s\n' "$out" | grep -qx "DOTENV_PRIVATE_KEY_LOCAL=key-local"; then
+	ok "dotenvx: DOTENV_PRIVATE_KEY と DOTENV_PRIVATE_KEY_LOCAL の混在 -> 両方 export される"
+else
+	ng "dotenvx: DOTENV_PRIVATE_KEY と DOTENV_PRIVATE_KEY_LOCAL の混在 -> 両方 export される (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
 # 6. glob 不一致 (該当ファイルなし) は素通し
 t="$(mktemp -d)"
 make_shim dotenvx "$t"
@@ -202,13 +248,13 @@ fake_real dotenvx "$t"
 out="$(env SOME_OTHER_VAR=untouched "$t/bin/dotenvx" 2>&1)"
 rc=$?
 if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qx "SOME_OTHER_VAR=untouched"; then
-	ok "dotenvx: DOTENV_PRIVATE_KEY_* が無いときは素通し"
+	ok "dotenvx: DOTENV_PRIVATE_KEY* が無いときは素通し"
 else
-	ng "dotenvx: DOTENV_PRIVATE_KEY_* が無いときは素通し (rc=$rc out=$out)"
+	ng "dotenvx: DOTENV_PRIVATE_KEY* が無いときは素通し (rc=$rc out=$out)"
 fi
 rm -rf "$t"
 
-# 7. 空ファイルが一つでもあれば非ゼロ終了 + empty secret
+# 7. 空ファイルが一つでもあれば非ゼロ終了 + empty secret（当該パスを含む）
 t="$(mktemp -d)"
 make_shim dotenvx "$t"
 fake_real dotenvx "$t"
@@ -216,10 +262,43 @@ printf 'key-local' >"$t/secrets/DOTENV_PRIVATE_KEY_LOCAL"
 : >"$t/secrets/DOTENV_PRIVATE_KEY_DEVELOPMENT"
 out="$("$t/bin/dotenvx" 2>&1 1>/dev/null)"
 rc=$?
-if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q "empty secret"; then
-	ok "dotenvx: DOTENV_PRIVATE_KEY_* の一つが空なら非ゼロ終了"
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qx "empty secret: $t/secrets/DOTENV_PRIVATE_KEY_DEVELOPMENT"; then
+	ok "dotenvx: DOTENV_PRIVATE_KEY_* の一つが空なら非ゼロ終了、当該パスが出る"
 else
-	ng "dotenvx: DOTENV_PRIVATE_KEY_* の一つが空なら非ゼロ終了 (rc=$rc out=$out)"
+	ng "dotenvx: DOTENV_PRIVATE_KEY_* の一つが空なら非ゼロ終了、当該パスが出る (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 7a. DOTENV_PRIVATE_KEY (無サフィックス) が空単独 -> 非ゼロ終了 + empty secret
+#     （当該パスを含む）
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+: >"$t/secrets/DOTENV_PRIVATE_KEY"
+out="$("$t/bin/dotenvx" 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qx "empty secret: $t/secrets/DOTENV_PRIVATE_KEY" &&
+	! printf '%s\n' "$out" | grep -q "^REAL:"; then
+	ok "dotenvx: DOTENV_PRIVATE_KEY (無サフィックス) が空単独 -> 非ゼロ終了、当該パスが出て実体は呼ばれない"
+else
+	ng "dotenvx: DOTENV_PRIVATE_KEY (無サフィックス) が空単独 -> 非ゼロ終了、当該パスが出て実体は呼ばれない (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+# 7b. DOTENV_PRIVATE_KEY_LOCAL が非空、DOTENV_PRIVATE_KEY (無サフィックス) が
+#     空の混在 -> 非ゼロ終了 + empty secret（空だった側のパス）、実体は呼ばれない
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-local' >"$t/secrets/DOTENV_PRIVATE_KEY_LOCAL"
+: >"$t/secrets/DOTENV_PRIVATE_KEY"
+out="$("$t/bin/dotenvx" 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -qx "empty secret: $t/secrets/DOTENV_PRIVATE_KEY" &&
+	! printf '%s\n' "$out" | grep -q "^REAL:"; then
+	ok "dotenvx: 非空 (サフィックス有り) と空 (無サフィックス) の混在 -> 空だった側のパスで非ゼロ終了"
+else
+	ng "dotenvx: 非空 (サフィックス有り) と空 (無サフィックス) の混在 -> 空だった側のパスで非ゼロ終了 (rc=$rc out=$out)"
 fi
 rm -rf "$t"
 
@@ -364,6 +443,22 @@ if [ "$rc" -eq 0 ] &&
 	ok "dotenvx: _PRODUCTION のみ注入済み + run + --strict 無し -> 警告が出る"
 else
 	ng "dotenvx: _PRODUCTION のみ注入済み + run + --strict 無し -> 警告が出る (rc=$rc err=$err)"
+fi
+rm -rf "$t"
+
+# 12c. 否定対照: DOTENV_PRIVATE_KEY (無サフィックス) のみ + run + --strict 無し
+#      -> 警告は出ない。prod 判定の glob (DOTENV_PRIVATE_KEY_PROD*) を鍵取り込み
+#      ループと一緒に広げていないことの裏取りであり、保証には載せない。
+t="$(mktemp -d)"
+make_shim dotenvx "$t"
+fake_real dotenvx "$t"
+printf 'key-plain' >"$t/secrets/DOTENV_PRIVATE_KEY"
+err="$("$t/bin/dotenvx" run -- node -e 1 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! printf '%s\n' "$err" | grep -q "WARNING"; then
+	ok "dotenvx: DOTENV_PRIVATE_KEY (無サフィックス) のみ + run + --strict 無し -> 警告は出ない (否定対照)"
+else
+	ng "dotenvx: DOTENV_PRIVATE_KEY (無サフィックス) のみ + run + --strict 無し -> 警告は出ない (否定対照) (rc=$rc err=$err)"
 fi
 rm -rf "$t"
 
