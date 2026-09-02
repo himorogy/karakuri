@@ -41,12 +41,23 @@ skip() {
 # --- 足回り --------------------------------------------------------------------
 
 # make_repo <dir> — $dir/repo に git repo を作る。package.json は呼び出し側が置く。
+#
+# core.hooksPath を local で明示するのは、fixture を環境から切り離すためで
+# ある。system の /etc/gitconfig がこの値を持つ環境 (このリポジトリの dev
+# container がそれで、イメージが /usr/local/share/git-hooks を焼いている) では
+# git init しただけの repo もそれを継承し、`git rev-parse --git-path hooks` が
+# イメージ側のディレクトリを返す。そうなると (1) 代役の simple-git-hooks が
+# そこへ書こうとして失敗し (root 所有で書けない)、テストが叩く
+# .git/hooks/pre-commit が生まれない (2) env-guard install の検証もイメージの
+# hook を読んで通ってしまい、「hook の呼び先が無い」の否定対照が緑にならない。
+# core.hooksPath を意図的に使う検査 10 は自分で設定し直すので影響を受けない。
 make_repo() {
 	local dir="$1"
 	mkdir -p "$dir/repo"
 	git init -q "$dir/repo"
 	git -C "$dir/repo" config user.email "env-guard@example.invalid"
 	git -C "$dir/repo" config user.name "env-guard test"
+	git -C "$dir/repo" config core.hooksPath .git/hooks
 }
 
 # link_package <repo> — node_modules/@himorogy/env-guard を作業ツリーへ向ける。
@@ -438,6 +449,37 @@ if [ "$rc" -ne 0 ]; then
 	ok "否定対照: 検査に繋がらない hooksPath ファイル -> --check は非ゼロ"
 else
 	ng "否定対照: 検査に繋がらない hooksPath ファイル -> --check は非ゼロ"
+fi
+rm -rf "$t"
+
+# --- 11. git が使えない場所では何も書かない -------------------------------------
+#
+# install は git hook を実体化する機能なので、git repo の外 (または git が
+# PATH に無いとき) には成立しない。ここで package.json だけ書き換えると、
+# hook を置けたのか確かめられないまま設定だけが残る。何も書かずに落ちる
+# ことを見る。
+
+t="$(mktemp -d)"
+mkdir -p "$t/repo"
+printf '%s' "$PKG_WITH_SGH" >"$t/repo/package.json"
+cp "$t/repo/package.json" "$t/before.json"
+if git -C "$t/repo" rev-parse --git-dir >/dev/null 2>&1; then
+	# mktemp の作り先がたまたま git repo の中だった場合。前提が崩れて
+	# いるので、通ったことにせず未検証として残す。
+	skip "git repo の外の検査: $t が git repo の中にあるため未検証"
+else
+	out="$(run_cli "$t/repo" install)"
+	rc=$?
+	if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q "Nothing was written."; then
+		ok "git repo の外 -> 非ゼロ終了し、何も書かなかったことを出力する"
+	else
+		ng "git repo の外 -> 非ゼロ終了し、何も書かなかったことを出力する (rc=$rc out=$out)"
+	fi
+	if cmp -s "$t/before.json" "$t/repo/package.json"; then
+		ok "git repo の外 -> package.json が 1 バイトも変わらない"
+	else
+		ng "git repo の外 -> package.json が 1 バイトも変わらない"
+	fi
 fi
 rm -rf "$t"
 
