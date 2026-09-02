@@ -466,6 +466,54 @@ run_hook "$conf_allow_off"
 expect_rc "the hook still fails on docs/.env.sample without the override" 1
 
 # ---------------------------------------------------------------------------
+# 6. hook は判定を自分で持たない
+# ---------------------------------------------------------------------------
+
+echo "== the hook owns no verdict of its own"
+
+# 前提の節で見た grep は「hook のソースに env-guard-scan と書いてある」
+# ことしか言えない。判定が本当に呼び先にあるかは、呼び先を差し替えて結果が
+# 追随することでしか外から見えない。hook は自分の隣 (../bin/) を先に見て
+# から /usr/local/bin へ落ちるので、コピーしたツリーの bin へ置いた代役が
+# 必ず選ばれる (イメージが焼いたスキャナは見られない)。
+
+# fake_scanner_hook <name> <rc> — hook のコピーと、標準入力を捨てて rc を
+# 返すだけの代役を並べたツリーを作り、その hook のパスを返す。
+fake_scanner_hook() {
+	local name="$1" rc="$2"
+	local dir="$TMPDIR_TEST/delegate/$name"
+	mkdir -p "$dir/hooks" "$dir/bin"
+	cp "$HOOK" "$dir/hooks/pre-commit"
+	chmod +x "$dir/hooks/pre-commit"
+	cat >"$dir/bin/env-guard-scan" <<FAKE
+#!/bin/sh
+cat >/dev/null
+echo "FAKE-SCANNER-WAS-HERE"
+exit $rc
+FAKE
+	chmod +x "$dir/bin/env-guard-scan"
+	printf '%s\n' "$dir/hooks/pre-commit"
+}
+
+# run_hook_at <hook> <repo> — 指定した hook を repo の中で実行する。
+run_hook_at() {
+	RC=0
+	(cd "$2" && "$1") >"$OUT" 2>&1 || RC=$?
+}
+
+# 代役が 0 を返すなら、平文の .env が staged でも hook は通る。hook が
+# 自前の判定を持っていれば、ここは落ちるはずである (否定対照)。
+run_hook_at "$(fake_scanner_hook pass 0)" "$plain"
+expect_rc "the hook passes plaintext when the scanner it calls passes" 0
+expect_out "the hook ran the stand-in scanner (pass)" "FAKE-SCANNER-WAS-HERE"
+
+# 逆向き。代役が 42 を返すなら、本来は通る暗号化済みの入力でも hook は 42 を
+# そのまま返す。合否も終了コードも hook ではなく呼び先のものである。
+run_hook_at "$(fake_scanner_hook fail 42)" "$encrypted"
+expect_rc "the hook returns the stand-in scanner's own exit code" 42
+expect_out "the hook ran the stand-in scanner (fail)" "FAKE-SCANNER-WAS-HERE"
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]
