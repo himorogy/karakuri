@@ -184,10 +184,10 @@ RUN mkdir -p /commandhistory \
 # /etc/zsh/zshrc は interactive shell でのみ読まれる。
 # プロンプト装飾 (starship) と fzf keybinding は個人フックが ~/.zshrc に置く。
 #
-# prod-context (images/runtime-base 由来) は /etc/bash.bashrc からは既に
+# karakuri-context (images/runtime-base 由来) は /etc/bash.bashrc からは既に
 # source されているが、zsh は devcontainer-base 側にしかない (prod
 # container に zsh は無い) ため、ここで zshrc にも同じ source 行を足す。
-# zsh は POSIX 互換モードで prod-context を解釈でき (対話判定の
+# zsh は POSIX 互換モードで karakuri-context を解釈でき (対話判定の
 # `case $- in *i*)` は zsh でも効き、/run/secrets の列挙は glob ではなく
 # `ls -A` で行うため zsh の nomatch 既定でも落ちない)、bash 用に書き分ける
 # 必要はない (設計書 §4.3 rev.6)。
@@ -197,7 +197,7 @@ RUN printf '%s\n' \
       'HISTSIZE=10000' \
       'SAVEHIST=10000' \
       'setopt SHARE_HISTORY APPEND_HISTORY' \
-      '. /usr/local/bin/prod-context' \
+      '. /usr/local/bin/karakuri-context' \
     >> /etc/zsh/zshrc
 
 # --- ディレクトリ --------------------------------------------------------------

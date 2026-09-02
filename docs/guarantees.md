@@ -68,7 +68,7 @@
 - `templates/firewall.json` / `firewall.audit.json` / `firewall.example.json` — 利用者がコピーする設定テンプレート
 
 **C-1. `runtime-base` イメージへ焼かれたコードの振る舞い**
-- `/usr/local/bin/prod-entrypoint.sh`、`secrets-ingest.sh`、`git-askpass`、`git-auth-check`、`git-credential-gh-token`、`prod-context`、`env-guard-scan`、`init-project-firewall.sh`
+- `/usr/local/bin/prod-entrypoint.sh`、`secrets-ingest.sh`、`git-askpass`、`git-auth-check`、`git-credential-gh-token`、`karakuri-context`、`env-guard-scan`、`init-project-firewall.sh`
 - `/usr/local/bin/wrangler`、`gh`、`dotenvx`（shim）
 - `/usr/local/share/git-hooks/pre-commit`
 

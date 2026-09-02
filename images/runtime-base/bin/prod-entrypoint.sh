@@ -267,7 +267,7 @@ fi
 # のため docker logs では取れないが、アタッチしている手元の stderr には出る。
 # 対話シェルを二段構え (`compose run -dT` で起動しておき `docker exec -it`
 # で入る) にした場合は entrypoint の出力が detached 側へ行くため、
-# `docker exec` で入ったシェルからは /run/prod-ref を読む (prod-context が
+# `docker exec` で入ったシェルからは /run/prod-ref を読む (karakuri-context が
 # 表示する。docs/prod-secret-isolation-design.md §4.3 / §4.6)。
 echo "prod-entrypoint: GIT_REF=$GIT_REF resolved to $commit" >&2
 

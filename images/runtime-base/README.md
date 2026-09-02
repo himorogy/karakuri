@@ -188,8 +188,9 @@ push されたイメージに対しても CI の smoke test が同じ検証を�
 
 ```
 $ docker exec -it <container> bash
-prod-context: 注入済み: DOTENV_PRIVATE_KEY_LOCAL GH_TOKEN
-prod-context: GIT_REF=main GIT_COMMIT=4f3a9c2b8e1d7a05... (mutable ref)
+karakuri-context: 注入済み: DOTENV_PRIVATE_KEY_LOCAL GH_TOKEN
+karakuri-context: GIT_REF=main GIT_COMMIT=4f3a9c2b8e1d7a05... (mutable ref)
+git-auth-check: 実効 helper=/usr/local/bin/git-credential-gh-token / イメージ固定: 生きている
 ```
 
 これが効くのは主に dev である。`DOTENV_PRIVATE_KEY_LOCAL` は持つが `_DEVELOPMENT` は持たない、
@@ -328,10 +329,9 @@ github.com 以外のホストと、prod の entrypoint 経路で使う。
 設定すると、イメージの 2 スロットは**黙って**消える。消えても認証は（ホスト側の資格情報で）
 通るので、失敗としては現れない。
 
-`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認する（`prod-context` から
-呼ばれる）。`git config --get-urlmatch credential.helper https://github.com` が自前 helper の
-パスと一致していれば何も出さない。空なら「askpass へ落ちる」、別物なら「その helper が確定先と
-`store` の宛先を奪う」と、原因を分けて警告する。
+`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認する（`karakuri-context` から
+呼ばれる）。`git config --get-urlmatch credential.helper https://github.com` の結果と、イメージが
+固定した `GIT_CONFIG_COUNT` 系が生きているかどうかを、想定どおりのときも含めて常に1行で報告する。
 
 利用側で `GIT_CONFIG_COUNT` を使いたい場合は、イメージが置いている 5 つを引き継いだうえで、
 自分の設定を 2 番以降に足すこと。

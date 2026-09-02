@@ -608,7 +608,7 @@ output: env-guard: inspected docs/.env.sample
 なる」の 2 件。**D24 の本題がテストで守られている**ことの直接の証拠になる。
 
 どちらも元に戻して 68 passed / 0 failed に復帰することを確認済み。全スイート合計は
-25（shim）+ 38（entrypoint）+ 15（prod-context）+ 68（env-guard）+ 5（hook）= **151 passed,
+25（shim）+ 38（entrypoint）+ 15（karakuri-context）+ 68（env-guard）+ 5（hook）= **151 passed,
 0 failed**、`shellcheck` は rc=0。
 
 **GitHub Actions 上での実行は未実施。** reusable workflow の呼び出し規約（呼び出し側の
@@ -1040,10 +1040,10 @@ fatal: credential helper ... told us to quit    rc=128
 **採った形**: runtime-base が `GIT_CONFIG_COUNT=2`（スロット 0 = 打ち消し、スロット 1 =
 `/usr/local/bin/git-credential-gh-token`）を焼き、devcontainer-base が `/etc/environment` へ
 5 つとも転記する（sshd 経由のセッションに ENV は届かないため）。設定が黙って外れることへの
-備えとして `git-auth-check` を置き、`prod-context` から対話シェルの起動ごとに呼ぶ（判定は
-「空か否か」ではなく「実効 helper が自前のパスと一致するか」）。雛形の `devcontainer.json` には
+備えとして `git-auth-check` を置き、`karakuri-context` から対話シェルの起動ごとに呼ぶ（実効 helper の
+パスと、イメージが置いた 5 変数が生きているかを毎回報告する）。雛形の `devcontainer.json` には
 `git.terminalAuthentication: false` を入れ、environ への注入自体も止める。回帰は
-`tests/git-credential.test.sh`（docker 不要、27 件・すべて否定対照付き）と `verify-docker.sh` の
+`tests/git-credential.test.sh`（docker 不要、32 件・すべて否定対照付き）と `verify-docker.sh` の
 M6（実イメージ）。
 
 **実機での確認 1 回目（2026-08-16、統合ターミナル。一度目の対策の時点）。** `/etc/environment` に
@@ -1159,7 +1159,7 @@ pam_env が `/etc/environment` から読んだものである。
 | 29 | URL に username が埋まっていても helper の username が使われる | ✅ | 同上（`copyGitConfig` が持ち込む `insteadOf` 対策） |
 | 30 | `git-credential-gh-token`: トークンあり / 不在 / 空 / 読めない（mode 000）/ store・erase の no-op | ✅ | 同上（不在・空・読めないはいずれも `quit=1`。mode 000 は root 実行時 skip） |
 | 31 | トークン不在時に git が非ゼロで落ち、敵対的な askpass が呼ばれない（否定対照込み） | ✅ | 同上（`quit=1` が連鎖を止めている証拠） |
-| 32 | `git-auth-check`: 一致なら黙る / 空 / 別物 で警告の文面が分かれる | ✅ | 同上 + `tests/prod-context.test.sh`（配線） |
+| 32 | `git-auth-check`: 実効 helper を常に1行報告し、イメージ固定が生きているかの別が付く | ✅ | 同上 + `tests/karakuri-context.test.sh`（配線） |
 
 ---
 
@@ -1245,7 +1245,7 @@ runtime-base は dotenvx **2.19.2** を焼く（既存 4 repo は enclave-env �
 | 54 | 大文字の完全 commit sha が誤って拒否されない | ✅ | `tests/entrypoint.test.sh` |
 | 55 | `GIT_REPO` の資格情報埋め込みを拒否し、stderr にトークンが出ない | ✅ | `tests/entrypoint.test.sh`（ssh 形式を誤検知しないことも含む） |
 | 56 | dotenvx shim が prod 鍵注入時の `--strict` 欠落だけを警告する | ✅ | `tests/shim.test.sh`（警告の有無で引数と rc が変わらないことを含む） |
-| 57 | prod-context が空の `/run/secrets` で zsh でも完走する | ✅ | `tests/prod-context.test.sh`（zsh 実行込み。旧実装が実際に落ちることも確認済み） |
+| 57 | karakuri-context が空の `/run/secrets` で zsh でも完走する | ✅ | `tests/karakuri-context.test.sh`（zsh 実行込み。旧実装が実際に落ちることも確認済み） |
 | 58 | pre-commit hook がサブディレクトリの `.env.keys` を検出する | ✅ | `tests/hook.test.sh`（`node_modules` 除外、`find` 自体の失敗時の fail-closed を含む） |
 | 59 | env-guard が平文の tracked `.env` を実際に検出する | ✅ | `tests/env-guard.test.sh`。**GitHub Actions 上でも実行した**（2026-08-06、`ci` の env-guard job が緑。呼び出し側の作業ツリーのスキャナを使う経路）。下記 §0.11 の否定対照を参照 |
 | 60 | hook と CI が同一 fixture に対して同一の判定を返す | ✅ | `tests/env-guard.test.sh`（終了コードだけでなく**出力がバイト単位で同一**であることまで見る）。D24 の本題 |
