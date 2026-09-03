@@ -81,6 +81,27 @@ allowlist の変更をエージェントに頼むときは
 
 ---
 
+## 固定値の追従
+
+`images/runtime-base` と `images/devcontainer-base` は、node / pnpm / dotenvx /
+wrangler / egress-guard / crit / golang（crit のビルドに使う）の版を固定しています。
+固定は上流の侵害リリースを自動で取り込まないための措置なので、上げる作業は自動化せず、
+上げ忘れだけを監視で拾います。
+
+- **node は Active LTS を追います。** LTS 化から数パッチ寝かせてから移行します。移行
+できない利用側が出た場合は、旧 LTS の fork を検討します
+- **固定値の棚卸しは月に1度です。** security advisory の影響下にあるとわかった場合だけ
+例外で、即時に上げます。advisory を自動で照会できるのは npm 由来の3つ（pnpm /
+dotenvx / wrangler）だけで、node / crit / golang builder / egress-guard の advisory は
+この経路では照会できません
+- **`.github/workflows/monitor.yml` は上げ忘れを拾う装置で、上げる判断はしません。**
+通知が異常検知（`alert`）のときだけ即時に対応し、それ以外は月次の棚卸しで「上げる」か
+「見送る」かを確定させます。見送った対象が翌月も同じ内容で並ぶのは正常です
+- **通知の文面に「advisory は照会対象外」の印が付いている対象は、棚卸しのときに人が
+上流のリリースノートを読みます。** 自動で拾えるのは npm 由来の3つだけだからです
+
+---
+
 ## この repo での開発
 
 pnpm workspace（`packages/*`）です。CI が回すのと同じ 3 つをルートで実行できます。

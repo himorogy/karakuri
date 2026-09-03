@@ -2,13 +2,13 @@
 	"name": "karakuri",
 	"private": true,
 	"description": "Common",
-	"packageManager": "pnpm@11.20.0",
+	"packageManager": "pnpm@11.25.0",
 	"scripts": {
 		"format": "biome check --write .",
 		"lint": "biome ci .",
 		"lint:sh": "pnpm -r lint:sh && pnpm lint:sh:images",
-		"lint:sh:images": "shellcheck -x --shell=sh --severity=style images/runtime-base/bin/* images/runtime-base/shims/* images/runtime-base/templates/host/loopback/karakuri-loopback-aliases packages/env-guard/bin/env-guard-scan packages/env-guard/hooks/* && shellcheck -x --shell=bash --severity=style images/runtime-base/tests/*.sh images/runtime-base/templates/host/*.sh images/runtime-base/templates/tests/*.sh",
-		"test": "pnpm -r test && bash images/runtime-base/tests/run.sh && bash images/runtime-base/templates/tests/prod-run.test.sh && bash images/runtime-base/templates/tests/dev-inject.test.sh && bash images/runtime-base/templates/tests/broker-bitwarden.test.sh && bash images/runtime-base/templates/tests/karakuri.test.sh && bash images/runtime-base/templates/tests/loopback-setup.test.sh && bash images/runtime-base/templates/tests/dock.test.sh",
+		"lint:sh:images": "shellcheck -x --shell=sh --severity=style images/runtime-base/bin/* images/runtime-base/shims/* images/runtime-base/templates/host/loopback/karakuri-loopback-aliases packages/env-guard/bin/env-guard-scan packages/env-guard/hooks/* && shellcheck -x --shell=bash --severity=style images/runtime-base/tests/*.sh images/runtime-base/templates/host/*.sh images/runtime-base/templates/tests/*.sh .github/scripts/*.sh .github/scripts/tests/*.sh",
+		"test": "pnpm -r test && bash images/runtime-base/tests/run.sh && bash images/runtime-base/templates/tests/prod-run.test.sh && bash images/runtime-base/templates/tests/dev-inject.test.sh && bash images/runtime-base/templates/tests/broker-bitwarden.test.sh && bash images/runtime-base/templates/tests/karakuri.test.sh && bash images/runtime-base/templates/tests/loopback-setup.test.sh && bash images/runtime-base/templates/tests/dock.test.sh && bash .github/scripts/tests/pin-lag.test.sh",
 		"verify:docker": "bash images/runtime-base/tests/verify-docker.sh"
 	},
 	"devDependencies": {

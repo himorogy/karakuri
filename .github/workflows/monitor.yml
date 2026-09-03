@@ -3,9 +3,11 @@ name: Registry Monitor
 # レジストリ上の版とリポジトリの状態を毎日照合し、経路を通らずに
 # 公開された版を検出する。判定の意味は docs/secure-publish.md §6 を参照。
 #
-# あわせて devcontainer base image が pin している egress-guard / crit の版が
-# 上流の最新から遅れていないかも見る。base の再ビルドは手動のため、
-# 上げ忘れをここで拾う。
+# あわせて runtime-base / devcontainer-base が pin している全ての版が、上流の
+# 最新から遅れていないかも見る。base の再ビルドは手動のため、上げ忘れを
+# ここで拾う。遅れの深刻度判定そのものは .github/scripts/pin-lag.sh が持ち、
+# ここでは取得した値を渡して文面を組み立てるだけにする（テストは
+# .github/scripts/tests/pin-lag.test.sh）。
 on:
   schedule:
     - cron: "0 0 * * *" # 毎日 09:00 JST
@@ -51,6 +53,107 @@ jobs:
               alert) STATUS="alert" ;;
               warn)  [ "$STATUS" = "alert" ] || STATUS="warn" ;;
             esac
+          }
+
+          PIN_LAG=".github/scripts/pin-lag.sh"
+
+          # check_npm_pin <dockerfile> <ARG名> <npm パッケージ名>
+          #
+          # 固定値・上流最新・advisory 照会の3つを取得し、判定は pin-lag.sh に
+          # 委ねる。深刻度は pin-lag.sh の契約により alert / info の2値のみで、
+          # ここでの warn は「判定そのものが行えない」（値が読めない・取得
+          # できない・照会が失敗した）場合に限る。
+          check_npm_pin() {
+            local dockerfile="$1" arg_name="$2" package="$3"
+            local pinned latest lag lag_rc query_json query_rc adv adv_rc sev
+
+            pinned=$(sed -n "s/^ARG ${arg_name}=//p" "$dockerfile" | head -1)
+            latest=$(npm view "$package" version 2>/dev/null) || latest=""
+
+            lag=$("$PIN_LAG" lag "$pinned" "$latest") && lag_rc=0 || lag_rc=$?
+
+            if [ "$lag_rc" -ne 0 ]; then
+              case "$lag" in
+                pinned-unreadable)
+                  TEXT="${TEXT}⚠️ ${dockerfile} から ARG ${arg_name} を読めない\n\n" ;;
+                latest-unavailable)
+                  TEXT="${TEXT}⚠️ ${package} の最新版を取得できない\n\n" ;;
+              esac
+              escalate warn
+              return
+            fi
+
+            # scoped 名（@dotenvx/dotenvx 等）の "@" "/" はクエリ文字列に
+            # 未エスケープで載せない。-f と --method GET の組み合わせは
+            # gh api がクエリ文字列として URL エンコードして載せる（値を
+            # 素朴に埋め込むと "/" 以降が別のパス階層と誤読されうる）。
+            # 実運用でのエンコード結果は、初回実行時の Slack 文面で確認する。
+            query_json=$(gh api /advisories --method GET \
+              -f ecosystem=npm -f "affects=${package}@${pinned}" 2>/dev/null) && query_rc=0 || query_rc=$?
+            adv=$("$PIN_LAG" advisory yes "$query_rc" "$query_json") && adv_rc=0 || adv_rc=$?
+
+            if [ "$adv_rc" -ne 0 ]; then
+              TEXT="${TEXT}⚠️ ${package} の advisory 照会に失敗した（pin ${pinned}、最新 ${latest}）\n\n"
+              escalate warn
+              return
+            fi
+
+            sev=$("$PIN_LAG" severity "$lag" "$adv")
+
+            if [ "$sev" = alert ]; then
+              TEXT="${TEXT}🚨 ${package} の pin (${pinned}) が advisory の影響下にある（最新 ${latest}）。今すぐ上げる\n\n"
+              escalate alert
+              return
+            fi
+
+            if [ "$lag" = none ]; then
+              TEXT="${TEXT}✅ ${package} ${pinned} は最新（advisory 該当なし）\n\n"
+            elif [ "${lag%% *}" = differs ]; then
+              # 3桁とも一致するが文字列が異なる版（プレリリース識別子違い等）。
+              # 「0版遅れ」と読める文面にはしない（文面の出し分けであり、
+              # 深刻度の判断はしない。severity の結果はこの分岐に無関係）。
+              TEXT="${TEXT}ℹ️ ${package} の pin が ${pinned}、最新は ${latest}（版数では比較できない差がある、advisory 該当なし）。次回の棚卸しで確定する\n\n"
+            else
+              TEXT="${TEXT}ℹ️ ${package} の pin が ${pinned}、最新は ${latest}（${lag} 遅れ、advisory 該当なし）。次回の棚卸しで確定する\n\n"
+            fi
+          }
+
+          # report_lag_no_advisory <表示名> <dockerfile> <固定値の場所> <固定値> <上流最新>
+          #
+          # crit / golang builder / egress-guard 向け。供給元が npm と別
+          # （egress-guard は npm だがこの枚が追加する照会対象には含めない）
+          # で advisory 照会に乗らないため、advisory は常に not-checked
+          # 扱いになる（照会していないことを常に文面に残す）。
+          report_lag_no_advisory() {
+            local label="$1" dockerfile="$2" locator="$3" pinned="$4" latest="$5"
+            local lag lag_rc
+
+            lag=$("$PIN_LAG" lag "$pinned" "$latest") && lag_rc=0 || lag_rc=$?
+
+            if [ "$lag_rc" -ne 0 ]; then
+              case "$lag" in
+                pinned-unreadable)
+                  TEXT="${TEXT}⚠️ ${dockerfile} から ${locator} を読めない\n\n" ;;
+                latest-unavailable)
+                  TEXT="${TEXT}⚠️ ${label} の最新版を取得できない\n\n" ;;
+              esac
+              escalate warn
+              return
+            fi
+
+            # advisory には常に not-checked を渡す対象なので、severity は
+            # info 以外を返しようがない（alert になるのは checked-alert の
+            # ときだけ）。ここでは呼ばず、info 側の文面だけを組み立てる。
+            if [ "$lag" = none ]; then
+              TEXT="${TEXT}✅ ${label} ${pinned} は最新（advisory は照会対象外）\n\n"
+            elif [ "${lag%% *}" = differs ]; then
+              # 3桁とも一致するが文字列が異なる版（プレリリース識別子違い等）。
+              # 「0版遅れ」と読める文面にはしない（文面の出し分けであり、
+              # 深刻度の判断はしない）。
+              TEXT="${TEXT}ℹ️ ${label} の pin が ${pinned}、最新は ${latest}（版数では比較できない差がある、advisory は照会対象外）。次回の棚卸しで確定する\n\n"
+            else
+              TEXT="${TEXT}ℹ️ ${label} の pin が ${pinned}、最新は ${latest}（${lag} 遅れ、advisory は照会対象外）。次回の棚卸しで確定する\n\n"
+            fi
           }
 
           # 監視対象はワークスペースから引く。パッケージが増えても
@@ -121,38 +224,63 @@ jobs:
             fi
           done
 
-          # --- 3. runtime-base が pin している egress-guard の版 ---
-          # egress-guard のスクリプト本体は base image に焼かれており、
-          # プロジェクト側から差し替えられない。上げるレバーは runtime-base の
-          # ARG しかないため、上げ忘れると全プロジェクトが古い版のまま動き続ける。
-          # 落ちるのはセキュリティ制御そのものなので、乖離をここで見る。
+          # --- 3. runtime-base の固定値 ---
+          # egress-guard・pnpm・dotenvx・wrangler・node はいずれも base image
+          # に焼かれており、プロジェクト側から差し替えられない。上げる
+          # レバーは runtime-base の ARG / FROM しかないため、上げ忘れると
+          # 全プロジェクトが古い版のまま動き続ける。
           RUNTIME_BASE_DOCKERFILE="images/runtime-base/Dockerfile"
-          GUARD_PACKAGE="@himorogy/egress-guard"
 
           if [ -f "$RUNTIME_BASE_DOCKERFILE" ]; then
             TEXT="${TEXT}*runtime-base*\n"
 
-            PINNED=$(sed -n 's/^ARG EGRESS_GUARD_VERSION=//p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
-            GUARD_LATEST=$(npm view "$GUARD_PACKAGE" version 2>/dev/null) || GUARD_LATEST=""
+            # advisory 照会は npm 由来の3つ（pnpm / dotenvx / wrangler）だけに
+            # 限る。egress-guard も npm registry には乗るが、この照会対象には
+            # 含めない（README 参照）。lag の判定自体は同じ pin-lag.sh を
+            # 使うため、report_lag_no_advisory 経由で crit / golang builder
+            # と同じ扱いにする。
+            EGRESS_GUARD_PACKAGE="@himorogy/egress-guard"
+            EGRESS_GUARD_PINNED=$(sed -n 's/^ARG EGRESS_GUARD_VERSION=//p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
+            EGRESS_GUARD_LATEST=$(npm view "$EGRESS_GUARD_PACKAGE" version 2>/dev/null) || EGRESS_GUARD_LATEST=""
+            report_lag_no_advisory "$EGRESS_GUARD_PACKAGE" "$RUNTIME_BASE_DOCKERFILE" "ARG EGRESS_GUARD_VERSION" \
+              "$EGRESS_GUARD_PINNED" "$EGRESS_GUARD_LATEST"
 
-            if [ -z "$PINNED" ]; then
-              TEXT="${TEXT}⚠️ ${RUNTIME_BASE_DOCKERFILE} から ARG EGRESS_GUARD_VERSION を読めない\n\n"
+            check_npm_pin "$RUNTIME_BASE_DOCKERFILE" PNPM_VERSION pnpm
+            check_npm_pin "$RUNTIME_BASE_DOCKERFILE" DOTENVX_VERSION "@dotenvx/dotenvx"
+            check_npm_pin "$RUNTIME_BASE_DOCKERFILE" WRANGLER_VERSION wrangler
+
+            # node は npm ではなく Node.js 自身の security release を持ち、
+            # advisory 照会には乗らない（README 参照）。上げる判断は
+            # GitHub issue が持ち、ここでは maintenance / EOL までの
+            # 残り日数を出すだけで、日数の大小で escalate はしない。
+            NODE_PINNED=$(sed -n 's/^FROM node:\(.*\)/\1/p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
+            NODE_SCHEDULE=$(curl -fsS https://raw.githubusercontent.com/nodejs/Release/main/schedule.json 2>/dev/null) || NODE_SCHEDULE=""
+
+            if [ -z "$NODE_PINNED" ]; then
+              TEXT="${TEXT}⚠️ ${RUNTIME_BASE_DOCKERFILE} から FROM node: の版を読めない\n\n"
               escalate warn
-            elif [ -z "$GUARD_LATEST" ]; then
-              TEXT="${TEXT}⚠️ ${GUARD_PACKAGE} の最新版を取得できない\n\n"
-              escalate warn
-            elif [ "$PINNED" != "$GUARD_LATEST" ]; then
-              TEXT="${TEXT}⚠️ egress-guard の pin が ${PINNED}、最新は ${GUARD_LATEST}。runtime-base の再ビルドが要る\n\n"
+            elif [ -z "$NODE_SCHEDULE" ]; then
+              TEXT="${TEXT}⚠️ nodejs/Release の schedule.json を取得できない\n\n"
               escalate warn
             else
-              TEXT="${TEXT}✅ egress-guard ${PINNED} は最新\n\n"
+              NODE_DAYS=$("$PIN_LAG" node-schedule "$NODE_SCHEDULE" "$NODE_PINNED") && NODE_DAYS_RC=0 || NODE_DAYS_RC=$?
+              if [ "$NODE_DAYS_RC" -ne 0 ]; then
+                TEXT="${TEXT}⚠️ node ${NODE_PINNED} の maintenance/EOL 日程が schedule.json に無い\n\n"
+                escalate warn
+              else
+                NODE_MAINT_DAYS="${NODE_DAYS%% *}"
+                NODE_EOL_DAYS="${NODE_DAYS#* }"
+                TEXT="${TEXT}ℹ️ node ${NODE_PINNED} は maintenance まで ${NODE_MAINT_DAYS} 日、EOL まで ${NODE_EOL_DAYS} 日（advisory は照会対象外）\n\n"
+              fi
             fi
           fi
 
-          # --- 4. devcontainer-base が pin している crit の版 ---
+          # --- 4. devcontainer-base の固定値 ---
           # crit は無認証でリポジトリを読め agent_cmd を起動しうるため、
           # latest 追従にはせず ARG で pin している（侵害リリースの自動流入を
-          # 防ぐ。egress-guard の pin と同じ判断）。かわりに追従漏れをここで見る。
+          # 防ぐ。egress-guard の pin と同じ判断）。golang builder の版も
+          # 同様に監視対象へ加える。どちらも供給元が npm と別で advisory
+          # 照会には乗らない。
           DEVCONTAINER_BASE_DOCKERFILE="images/devcontainer-base/Dockerfile"
           CRIT_REPO="tomasz-tomczyk/crit"
 
@@ -162,19 +290,18 @@ jobs:
             CRIT_PINNED=$(sed -n 's/^ARG CRIT_VERSION=//p' "$DEVCONTAINER_BASE_DOCKERFILE" | head -1)
             CRIT_LATEST=$(gh api "repos/${CRIT_REPO}/releases/latest" \
               --jq .tag_name 2>/dev/null) || CRIT_LATEST=""
+            report_lag_no_advisory crit "$DEVCONTAINER_BASE_DOCKERFILE" "ARG CRIT_VERSION" \
+              "$CRIT_PINNED" "$CRIT_LATEST"
 
-            if [ -z "$CRIT_PINNED" ]; then
-              TEXT="${TEXT}⚠️ ${DEVCONTAINER_BASE_DOCKERFILE} から ARG CRIT_VERSION を読めない\n\n"
-              escalate warn
-            elif [ -z "$CRIT_LATEST" ]; then
-              TEXT="${TEXT}⚠️ ${CRIT_REPO} の最新リリースを取得できない\n\n"
-              escalate warn
-            elif [ "$CRIT_PINNED" != "$CRIT_LATEST" ]; then
-              TEXT="${TEXT}⚠️ crit の pin が ${CRIT_PINNED}、最新は ${CRIT_LATEST}。devcontainer-base の再ビルドが要る\n\n"
-              escalate warn
-            else
-              TEXT="${TEXT}✅ crit ${CRIT_PINNED} は最新\n\n"
-            fi
+            # golang builder の pin は major.minor までで、Debian の変種
+            # (-bookworm) を伴う。粒度を揃えるため、上流の最新も
+            # major.minor に切り詰めてから比較する。
+            GOLANG_PINNED=$(sed -n 's/^FROM --platform=\$BUILDPLATFORM golang:\([^-]*\)-.*/\1/p' "$DEVCONTAINER_BASE_DOCKERFILE" | head -1)
+            GOLANG_LATEST=$(curl -fsS "https://go.dev/dl/?mode=json" 2>/dev/null \
+              | jq -r '[.[] | select(.stable == true)][0].version // empty' 2>/dev/null \
+              | sed -E 's/^go([0-9]+\.[0-9]+).*/\1/') || GOLANG_LATEST=""
+            report_lag_no_advisory "golang (crit builder)" "$DEVCONTAINER_BASE_DOCKERFILE" \
+              "FROM golang:" "$GOLANG_PINNED" "$GOLANG_LATEST"
           fi
 
           # --- Slack 通知 ---
