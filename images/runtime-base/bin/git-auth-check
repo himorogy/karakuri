@@ -6,27 +6,13 @@
 # /run/secrets/GH_TOKEN) に落ちているかを、対話シェルの起動ごとに1行で報告
 # する。
 #
-# なぜ askpass ではなく helper なのか。git は credential helper を設定順
-# (system -> global -> local -> 環境変数) に呼び、最初に資格情報を返した
-# helper で解決を確定する。GIT_ASKPASS は「どの helper も答えなかった場合」の
-# フォールバックでしかない。dev container では VS Code の Dev Containers 拡張が
-# global の gitconfig へ helper を書き込むうえ、統合ターミナルの environ へ
-# GIT_ASKPASS を注入して上書きしてくる。つまり askpass 側だけを固定しても
-# environ の注入に負ける。helper は gitconfig 側の設定であり、環境変数の
-# GIT_CONFIG_COUNT 系は全ての設定ファイルを読んだ後に適用されるので、こちらなら
-# environ の注入にも gitconfig の記述順にも左右されずに認証先を固定できる。
-#
-# イメージは GIT_CONFIG_COUNT=2 を使い、スロット 0 の空値で github.com 向けに
-# 積まれた helper を全部捨て、スロット 1 で自前の helper を絶対パスで積み直して
-# いる。結果として一覧に残るのは自前 1 本だけになり、認証はそこで確定して
-# askpass へ到達しない。認証成功後に git が全 helper へ配る store の宛先も
-# 自前 1 本だけになる。
-#
 # この報告が要るのは GIT_CONFIG_COUNT が git の持つ唯一のカウンタだからである。
 # 利用側が自分の設定を同じ仕組みで足すと、イメージが置いた 2 つのスロットが
 # 黙って消え、認証は askpass や別の helper へ落ちる。しかもホスト側の資格情報で
-# 成功してしまうため、失敗としては現れない。詳細は
-# docs/prod-secret-isolation-design.md にある。
+# 成功してしまうため、失敗としては現れない。だから正常時も含めて毎回報告する。
+#
+# 固定の仕組みと、打ち消している相手は images/runtime-base/Dockerfile の
+# ENV GIT_CONFIG_COUNT の直上にある。
 #
 # 呼び出し元は karakuri-context (対話シェルの起動時)。対話判定と失敗の握り潰しは
 # 呼び出し元が持っているので、ここでは持たない。
