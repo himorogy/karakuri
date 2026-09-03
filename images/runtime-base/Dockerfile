@@ -214,46 +214,38 @@ RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ing
     && chmod 0755 /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ingest.sh /usr/local/bin/git-askpass /usr/local/bin/git-auth-check /usr/local/bin/git-credential-gh-token
 
 # --- git: github.com の認証を自前 helper 経由へ固定する -------------------------
-# git は credential helper を設定順 (system -> global -> local -> 環境変数) に
-# 呼び、最初に資格情報を返した helper で解決を確定する。GIT_ASKPASS は「どの
-# helper も返さなかった場合」のフォールバックでしかない。dev container では
-# VS Code の Dev Containers 拡張が global の gitconfig へ helper を書き込む
-# うえ、統合ターミナルの environ へ GIT_ASKPASS を注入して上書きしてくる。
-# askpass 側だけを固定しても、helper 側の上書きには効かない。しかも認証自体は
-# ホスト側の資格情報で成功するので、失敗としては現れない (実測)。
+# ここは打ち消しである。相手は VS Code の Dev Containers 拡張で、接続のたびに
+# global の gitconfig へ credential helper を書き込み、統合ターミナルの environ へ
+# GIT_ASKPASS を注入する。どちらもホスト側の認証セッションへ繋がるため、放って
+# おくと github.com への https 認証が /run/secrets/GH_TOKEN ではなくホスト側の
+# 資格情報で通る。**認証は成功するので、失敗としては現れない。**
+# 観測は 2026-08-16 / git 2.39.5 (Debian)。経路の切り分けと否定対照は
+# images/runtime-base/verification-record.md の 0.14 にある。
 #
-# GIT_CONFIG_COUNT 系は全ての設定ファイルを読んだ後に適用されるため、gitconfig
-# 内の記述順や environ の注入タイミングに関係なく上書きできる。スロット 0 の
-# 空文字は「それまでに積まれた helper を捨てる」git の作法で、これで github.com
-# 向けの helper (VS Code が積んだものを含む) を一旦すべて空にする。続くスロット 1
-# で /usr/local/bin/git-credential-gh-token を積み直す。結果として一覧に残るのは
-# 自前の helper 1 本だけになり、github.com への https 認証はここで確定して
-# askpass へは到達しない。
+# 打ち消しを環境変数でやる理由。git は credential helper を設定順 (system ->
+# global -> local -> 環境変数) に呼び、最初に資格情報を返した helper で解決を
+# 確定する。GIT_ASKPASS はどの helper も答えなかった場合のフォールバックでしか
+# ない。全ての設定ファイルの後に適用されるのは GIT_CONFIG_COUNT 系だけなので、
+# gitconfig の記述順にも environ の注入にも左右されずに認証先を固定できるのは
+# こちらだけである。system (/etc/gitconfig) へ書くと global の helper が後から
+# 積み直されて負ける (この「守れない」側の事実は台帳とテストが固定している)。
 #
-# 一覧に自前しか残らないことは副作用として書き戻し経路も塞ぐ: 認証成功後、git は
-# 設定されている **全ての** helper へ store を呼ぶ。自前しか残っていなければ
-# store の配布先も自前の 1 本だけになり、VS Code の helper を経由してホストの
-# 資格情報ストアへ書き戻る経路が消える (実測)。URL に username が埋め込まれて
-# いる場合 (ホストの gitconfig の insteadOf が持ち込まれる等) でも、helper が
-# 返す username がそのまま使われる。
-#
-# スロット 0 の打ち消しは URL 限定 (https://github.com) なので、github.com 以外
-# のホストの helper はそのまま残る。/etc/gitconfig へ同じ打ち消しを書いても
-# 効かない — system を読んだ後に global の helper が積み直されるためで、これも
-# 実測で確認している。
-#
-# prod にも効く: 環境変数の設定は local (.git/config) を含む全設定ファイルの後に
-# 適用されるため、checkout 済みの信頼しないコードが .git/config に仕込んだ
-# credential.helper も、entrypoint 自身の fetch で呼ばれて GH_TOKEN を受け取る
-# 経路ごと github.com について閉じる (実測)。
+# スロット 0 の空文字は「それまでに積まれた helper を捨てる」git の作法で、
+# スロット 1 で自前を積み直す。一覧が自前 1 本になることで得られる性質は 3 つ:
+#   - 認証が helper で確定し askpass へ到達しない。environ の注入が無関係になる
+#   - 認証成功後の store は設定されている **全ての** helper へ配られるため、一覧を
+#     1 本にすることでホストの資格情報ストアへの書き戻り経路も消える (実測)
+#   - checkout 済みの信頼しないコードが .git/config へ仕込んだ helper も、環境変数
+#     が local の後に適用されるため github.com については閉じる (実測)
 #
 # VALUE_1 が絶対パスなのは意図的。helper 名を裸で書くと git は PATH から
 # git-credential-<name> を探すが、このイメージの PATH は
 # ${NPM_CONFIG_PREFIX}/bin が /usr/local/bin より先に来るため、そこへ同名の
 # ものを置かれると乗っ取られる (上の shims セクションと同じ罠)。
 #
-# GIT_ASKPASS は残す。prod の entrypoint 経路 (clone/fetch の間だけ使う) と、
-# github.com 以外のホストへの https 認証で使う。
+# 打ち消しは URL 限定 (https://github.com) なので、他ホストの helper はそのまま
+# 残る。GIT_ASKPASS を消していないのも同じ理由で、他ホストへの https 認証と、
+# prod の entrypoint 経路 (clone/fetch の間だけ使う) で使う。
 #
 # 留意: GIT_CONFIG_COUNT は git が持つ唯一のカウンタである。イメージが 0 と 1 の
 # 2 番を占有するので、同じ仕組みで設定を足したい利用側と衝突しうる。占有が黙って
