@@ -6,7 +6,7 @@
 # TARGETARCH 向けにクロスコンパイルする。ビルドは常に BUILDPLATFORM 上で行い、
 # arm64 ビルド時の QEMU エミュレーションを回避する。
 # =============================================================================
-ARG CRIT_VERSION=v0.18.0
+ARG CRIT_VERSION=v0.19.1
 
 # 下段の `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` が使う。
 # **ここから動かさないこと。** FROM の中で参照する ARG は、最初の FROM より前

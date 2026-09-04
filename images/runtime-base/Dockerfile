@@ -14,7 +14,7 @@ FROM node:24
 
 ARG USERNAME=node
 ARG TZ=Asia/Tokyo
-ARG PNPM_VERSION=11.20.0
+ARG PNPM_VERSION=11.25.0
 # 復号ランナーをアプリ依存グラフから切り離すのが本層の存在理由であり
 # (§4.5)、prod container 内での動的インストールは禁止しているため、
 # ここで固定した版だけが使われる。
@@ -34,8 +34,8 @@ ARG PNPM_VERSION=11.20.0
 # dotenvx をアプリの依存グラフとは別系統に置くのが §4.5 の主旨なので、
 # ここでは揃えていない。1.x で暗号化した .env.* を 2.x が復号できることも
 # §10 の実測項目に含める。
-ARG DOTENVX_VERSION=2.19.2
-ARG WRANGLER_VERSION=4.119.0
+ARG DOTENVX_VERSION=2.23.0
+ARG WRANGLER_VERSION=4.128.0
 ARG EGRESS_GUARD_VERSION=0.2.0
 
 # --- ロケール / タイムゾーン --------------------------------------------------

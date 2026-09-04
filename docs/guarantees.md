@@ -377,6 +377,23 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - 鍵の値は stdout にも stderr にも現れない（テスト: "通し: 鍵の値が出力に出ていない"）
 - Windows 用のラッパーは、同じ判定を同じ終了コードで返す。鍵が無いときに 0 を返さない（テスト: "否定対照: 鍵が無いとき cmd ラッパーが非ゼロを返す"。cmd.exe から実行する Windows のジョブで検査する）
 
+### 21. `.github/scripts/tests/pin-lag.test.sh` — `.github/scripts/pin-lag.sh`
+
+起源: `0015-pin-refresh-and-monitor-tiers`
+
+- 固定値と上流の最新が同一のとき、`lag` は `none` を返す
+- 遅れがあるとき、`lag` はその大きさと種別（`major` / `minor` / `patch`。3桁とも一致するが文字列が異なる場合は `differs`）を返す
+- `severity` が返す深刻度は `alert` / `info` の2値のみである（テスト: "severity は alert / info の2値のみを返し、warn を返さない"）
+- **遅れの大きさや種別だけでは深刻度が `alert` にならない。** `severity` は advisory の状態だけを見て判定し、`major` の遅れがあっても advisory の影響を受けていなければ `info` に留まる（テスト: "major 5 の遅れ + advisory 該当なし -> それでも info（STATUS を上げない）"）
+- 版の文字列が `v` 前置の有無で食い違っていても、`lag` は同一の版として扱う（`v0.19.1` と `0.19.1`）
+- **否定対照:** 上流の版を取得できないとき、`lag` は `none` を返して黙らず `latest-unavailable` を返す（テスト: "否定対照: 上流の版が取得できないとき none ではなく latest-unavailable を返す"）
+- **否定対照:** 固定値を読み出せないとき（`ARG` の行が消えた・名前が変わった場合を含む）、`lag` は `pinned-unreadable` を返す
+- `node-schedule` は `schedule.json` の日付から maintenance 入り・EOL までの残り日数を返す。**残り日数がいくつであっても、`severity` はそれを見ない**（`severity` は `node-schedule` の出力を引数に取らない）
+- 固定値が npm の security advisory の影響範囲に入るとき、`advisory` は `checked-alert` を返す。遅れが `patch 1` でも、遅れが `none` でも、advisory があれば `severity` は `alert` になる
+- **否定対照:** advisory の照会に失敗したとき、`advisory` は該当なしと同じ `checked-none` を返さず `check-failed` を返す（テスト: "否定対照: advisory 照会の失敗は checked-none に化けず check-failed を返す"）
+- `advisory` は深刻度とは別に照会の可否を返す。照会に乗らない対象（node / crit / golang builder / egress-guard）では、遅れの有無にかかわらず `not-checked` を返す
+- **否定対照:** `checked-none`（照会して該当なし）・`not-checked`（照会に乗らない）・`check-failed`（照会に失敗）・`checked-alert`（該当あり）は互いに異なる値である（テスト: "否定対照: not-checked / checked-none / check-failed / checked-alert は互いに異なる値"）
+
 ## Unverified Promises
 
 ### C-2a — `未検証の約束 (テスト困難: CI の runtime-base ワークフローが、push 済みイメージを両アーキで smoke test する)`
