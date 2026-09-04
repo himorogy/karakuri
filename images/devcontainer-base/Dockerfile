@@ -153,6 +153,15 @@ RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ] \
 
 RUN crit --version
 
+# --- git identity ---------------------------------------------------------------
+# commit 者情報 (user.name / user.email) を GH_TOKEN のアカウントから導出する。
+# examples/devcontainer.json の postCreateCommand がコマンド名で呼ぶ
+# (init-project-firewall.sh と同じ、イメージへ焼いて雛形からは呼ぶだけの形)。
+# 狙いと導出の中身は bin/git-identity-setup 自身のコメントと README を参照。
+COPY bin/git-identity-setup /usr/local/bin/git-identity-setup
+RUN chown root:root /usr/local/bin/git-identity-setup \
+    && chmod 0755 /usr/local/bin/git-identity-setup
+
 # --- シェル履歴の永続化 --------------------------------------------------------
 RUN mkdir -p /commandhistory \
     && touch /commandhistory/.bash_history \
