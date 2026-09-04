@@ -4,8 +4,8 @@
 # GIT_ASKPASS の指定元は 2 つある。prod では prod-entrypoint.sh が clone/fetch
 # の直前に設定し、checkout 完了後に GH_TOKEN を破棄して GIT_ASKPASS も unset
 # するため、以降のコード (信頼しない checkout 済みコード) からは呼ばれない。
-# dev では devcontainer-base が ENV と /etc/environment の両方へ焼いており、
-# entrypoint を通らないので破棄もされない (dev の git 認証はこれが本線)。
+# dev では devcontainer-base が ENV へ焼いており、entrypoint を通らないので破棄も
+# されない (dev の git 認証はこれが本線)。
 #
 # git がここへ到達するのは credential helper が 1 本も資格情報を返さなかった
 # 場合だけである。github.com は自前の helper が先に確定するので、ここへは来ない

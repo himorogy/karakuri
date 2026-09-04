@@ -171,7 +171,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
      "dev": "_dotenvx run -f .env.dev --strict -- next dev"
    }
    ```
-3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（devcontainer-base が ENV と `/etc/environment` の両方に焼き込み済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
+3. 以降は shim（dotenvx / gh / wrangler）が実行のたびに対象プロセスへだけ注入する。plain git の fetch / push は `GIT_ASKPASS`（devcontainer-base が焼き込み済み）が `/run/secrets/GH_TOKEN` を読む（dev では entrypoint を通らないため破棄されない）
 
    ただし github.com だけは askpass ではなく、イメージ自前の credential helper
    `git-credential-gh-token` が同じ `/run/secrets/GH_TOKEN` を読む（devcontainer-base 2.2.0 以降）。
@@ -187,10 +187,12 @@ dev compose 側の前提（本ディレクトリの `docker-compose.yaml` に反
 - `/run` が tmpfs（`tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]`）。**これが無いと `/run/secrets` はコンテナの writable layer = ホスト側の不揮発ディスクへ書かれ、平文廃止の意味が消える。** オプション無しの短縮形は root:root 所有になり node ユーザーが `/run/secrets` を作れない点も prod と同じ
 - `GIT_ASKPASS` と `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` /
   `GIT_CONFIG_KEY_1` / `GIT_CONFIG_VALUE_1` は compose に書かない。devcontainer-base が焼き込み
-  済みで、compose の `environment:` は SSH セッションに届かず経路間で値が食い違うため（base の
-  PORT-FORWARDING.md）。base を使わないイメージでは従来どおり compose で設定する。
-  `GIT_CONFIG_COUNT` を自分の設定にも使いたい場合は、base が置いている 5 つを引き継いだうえで
-  2 番以降に足すこと（カウンタは 1 本しかない）
+  済みで、ここで上書きすると認証がホスト側の資格情報へ落ちるため。base を使わないイメージでは
+  従来どおり compose で設定する。`GIT_CONFIG_COUNT` を自分の設定にも使いたい場合は、base が
+  置いている 5 つを引き継いだうえで 2 番以降に足すこと（カウンタは 1 本しかない）
+- それ以外の環境変数は compose の `environment:` に置く（`docs/conventions.md`
+  「環境変数の置き場」）。コンテナは devcontainer ツールで作る前提で、素の `docker compose up` は
+  `postStartCommand` を飛ばすため egress-guard が適用されない
 - `env_file` 節は使わない
 
 注入を忘れた場合は下流の認証失敗として顕在化する（shim は不在なら素通し。ただし dotenvx だけは `--strict` が無いと復号失敗が沈黙する）。`/run` は tmpfs なので、コンテナの再作成だけでなく停止 → 再起動でも消える。**コンテナを起動するたびに、起動後 dev-inject を 1 回**が運用になる（dev-inject は起動ラッパーではない — 起動は従来どおり IDE が行う）。

@@ -68,9 +68,11 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
   [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - `GIT_ASKPASS=/usr/local/bin/git-askpass` と、github.com の credential helper をイメージ自前の
   ものへ固定する `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` /
-  `GIT_CONFIG_KEY_1` / `GIT_CONFIG_VALUE_1`（いずれも ENV と `/etc/environment` の両方。SSH
-  セッションには ENV が届かないため）。値の原本は runtime-base 側で、ここは転記。狙いと影響は
-  [`images/runtime-base/README.md`](../runtime-base/README.md) の「git の認証（github.com）」
+  `GIT_CONFIG_KEY_1` / `GIT_CONFIG_VALUE_1`（`GIT_CONFIG_*` の値の原本は runtime-base 側）。
+  狙いと影響は [`images/runtime-base/README.md`](../runtime-base/README.md) の
+  「git の認証（github.com）」。**利用側が変える前提のある環境変数はイメージに焼かず、
+  プロジェクトの `docker-compose.yaml` に置く**（`docs/conventions.md`「環境変数の置き場」、
+  到達の機構は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
   `WORKDIR` は `/workspaces`（複数形。devcontainer の既定に合わせている）
