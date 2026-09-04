@@ -235,12 +235,15 @@ init-project-firewall.sh --check-config
 
 ## 記入例
 
-**フィールドはこの 7 つだけです。** 未知のフィールドがあると設定全体が拒否されます（タイプミスが黙って無視されるのを防ぐため）。すべて `version` 以外は省略できます。
+**有効なフィールドは、ここに挙げたものだけです。** 未知のフィールドがあると設定全体が拒否されます（タイプミスが黙って無視されるのを防ぐため）。`version` は必須で、それ以外はすべて省略できます。
 
 ```jsonc
 {
-  // スキーマ版。現在は 1 のみ。未知の版は拒否される
-  "version": 1,
+  // スキーマ版。必須。1 と 2 を受理する（省略は拒否される）
+  "version": 2,
+
+  // 実現層。省略時は l7。l3 を明示すると選べる（詳細は下の「実現層」）
+  // "layer": "l3",
 
   // 基底プロファイルの選択。省略すると空 = 何も許可しない
   "profile": ["anthropic", "anthropic-updates", "openai", "npm", "github"],
@@ -248,7 +251,8 @@ init-project-firewall.sh --check-config
   // "enforce"（既定。allowlist 外を遮断）か "audit"（遮断せず記録だけ）
   "mode": "enforce",
 
-  // 追加で許可するホスト名。ワイルドカードは書けない
+  // 追加で許可するホスト名。version 2 では先頭ドット（.example.com）で
+  // ドメインとそのサブドメインをまとめて許可できる。* によるワイルドカードは書けない
   "allowDomains": ["registry.example.com"],
 
   // 追加で許可する CIDR。私設アドレス帯・プレフィックス長 8 未満は書けない
@@ -267,6 +271,28 @@ init-project-firewall.sh --check-config
 > **実際のファイルにコメントは書けません。** `jq` でパースするため、上のコメントを残したままだと**不正な JSON として拒否され、コンテナは panic テーブル（loopback 以外すべて遮断）で起動します。** 貼るときは落としてください。
 
 型・必須・拒否条件の正確な定義は [`docs/spec.md`](./docs/spec.md) §3.1。`allowDomains` にワイルドカードが使えない理由は[こちら](#ワイルドカードドメインは使えません)。
+
+## 実現層（`layer`）
+
+version 2 の設定は `layer` でファイアウォールの実現層を選べます。値は `"l7"` と `"l3"` の2つです。**省略時は `l7`。`l3` は明示したときだけ選べます。** `version` が `1` の設定は、`layer` を書けないまま常に `l3` として扱われます（`version` 自体は省略できません。[記入例](#記入例)を参照）。
+
+```json
+{
+	"version": 2,
+	"layer": "l3",
+	"profile": ["anthropic", "npm"],
+	"allowDomains": ["registry.example.com"]
+}
+```
+
+`l3`（現行の ipset ベースの allowlist）を選ぶと、次を諦めることになります。
+
+- **先頭ドット（`.example.com`）の記法が書けません。** L3 は起動時に解決した IP の集合としてドメインを実現するため、ゾーンの子孫を列挙する手段がなく、受理すれば apex だけが許可されサブドメインが黙って落ちるため（[ワイルドカードドメインは使えません](#ワイルドカードドメインは使えません)を参照）
+- **アドレスが動くドメインを `allowDomains` に書けません。** [アドレスが動くドメインは `allowDomains` に書けません](#アドレスが動くドメインは-allowdomains-に書けません)のとおり、L3 は起動時に解決した IP でしか判定しません
+
+既定の `l7` にはこの2つの制限がありません。
+
+保証: `docs/guarantees.md` の `tests/firewall-config.test.sh` に対応する節を参照。
 
 ## 基底プロファイル（`profile`）
 
@@ -467,14 +493,22 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 
 ```
 [firewall] ERROR: rejected allowDomains entry: *.example.com - wildcards are not supported.
-DNS cannot enumerate the subdomains of a zone, so a wildcard cannot be expanded into addresses.
-List the host names you need instead; run in audit mode and read ipset egress-audit-v4 to find
-out which ones those are.
+Write a leading dot instead: .example.com matches the domain and every subdomain beneath it.
+Run in audit mode and read ipset egress-audit-v4 to find out which hosts you actually need.
 ```
 
-**DNS には「あるゾーンのサブドメインを列挙する」手段がありません。** ドメイン名は起動時に IP へ解決して ipset に載せる方式なので、ワイルドカードを展開できません。受理して apex だけ許可する案を採らなかった理由は [`docs/design.md`](./docs/design.md) §2.10。
+`*.example.com` は一般に apex を含まない記法として使われています。apex を含む意味をこの綴りに与えると書いた内容より広く効くという形のずれが生まれるため、`*` を使った記法自体は version を問わず拒否します。
 
-**回避策: 必要なホスト名を具体的に列挙してください。**
+**回避策: 先頭にドットを付けて書いてください。** version 2 の設定なら `.example.com` で、`example.com` 自身とその下のすべてのサブドメインを許可できます（apex を含みます）。
+
+```json
+{
+	"version": 2,
+	"allowDomains": [".example.com"]
+}
+```
+
+先頭ドットの形が使えるのは version 2 の設定だけです。version 1 の設定や、version 2 で `layer` を `l3` にした設定では、必要なホスト名を個別に列挙してください。
 
 ```json
 {
