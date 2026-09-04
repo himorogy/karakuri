@@ -206,109 +206,62 @@ prod container は `/home/node` が tmpfs で毎回空であり、`~/.wrangler` 
 fallback 資格情報が存在しえない。したがって必要な secret を欠いたコマンドは、下流の認証失敗
 として顕在化する。加えて entrypoint が取込件数 ≥ 1 と各値の非空を検証している。
 
+### ホストにも同名の shim がある（`_dotenvx`）
+
+コンテナ側の3本とは別に、ホストで実行するコマンド向けの shim が
+[`templates/host/shims/_dotenvx`](./templates/host/shims/_dotenvx) に1本だけある。置く名前は
+`_dotenvx` だけで、素の `dotenvx` は置かない。ホストには karakuri 所有の dotenvx 実体が無いため
+素の名前に対応する実体を持てず、素の名前で置くと無関係なプロジェクトのグローバル dotenvx まで
+覆ってしまう。
+
+上の「`pnpm run` の内側では効かない」制約はホスト側にも当てはまるが、答えはこの `_dotenvx` と
+いう名前そのものである。プロジェクトの `package.json` の呼び出しを `_dotenvx` へ揃えておけば、
+`pnpm run` が `node_modules/.bin` を PATH 先頭に積んでも、そちらは `dotenvx` という名前の解決
+にしか勝てず、`_dotenvx`（karakuri 側の shim）は迂回されない。
+
+**意味論もコンテナ側と反転する。** コンテナ側は鍵ファイルの不在を「このコンテナは秘密を要らない」
+として素通しするが（上記「素通しは fail-open ではない」）、ホスト側の不在は「渡されるはずの鍵が
+渡っていない」ことを意味するので、必ず落とす。通す条件は `DOTENV_PRIVATE_KEY*` が environ に
+あることだけで、出どころは問わない（下記 `karakuri-run` 経由でも、CI が secrets から直接渡した
+鍵でも通る）。鍵の値は検査も出力もしない。
+
+Windows 用に [`_dotenvx.cmd`](./templates/host/shims/_dotenvx.cmd) も同梱する。`pnpm` の
+run-script は Windows で cmd.exe から起動するため、拡張子の無いスクリプトは PATH に置いても
+解決されない。配るのは `.cmd` の1本だけで、PowerShell 用の `.ps1` は配らない。
+
 ---
 
 ## git の認証（github.com）
 
-plain な `git` の `clone` / `fetch` / `push` は shim を通らない。github.com への認証は、イメージ
-自前の credential helper `/usr/local/bin/git-credential-gh-token` が `/run/secrets/GH_TOKEN` を
-読む経路に固定してある。トークンが無ければ helper が `quit=1` を返し、git は他の経路へ落ちずに
-その場で失敗する。
+**何のために。** VS Code の Dev Containers 拡張は、接続のたびに global の gitconfig へ credential
+helper を書き込み、統合ターミナルの environ へ `GIT_ASKPASS` を注入する。どちらもホスト側の認証
+セッションへ繋がるため、放っておくとコンテナ内の git は**ホストの資格情報で認証できてしまう**。
+そうなると `/run/secrets/GH_TOKEN` へスコープを絞ったトークンを注入している意味が消え、しかも
+認証は成功するので失敗としては現れない。この 2 経路を打ち消し、github.com の認証を注入した
+トークンだけに固定する。
 
-### なぜ askpass ではなく helper なのか
+**どう動くか。** plain な `git` の `clone` / `fetch` / `push` は shim を通らない。github.com への
+認証は、イメージ自前の credential helper `/usr/local/bin/git-credential-gh-token` が
+`/run/secrets/GH_TOKEN` を読む経路に固定してある。トークンが無ければ helper が `quit=1` を返し、
+git は他の経路へ落ちずにその場で失敗する。なぜ helper でなければ打ち消せないか、スロットの構成、
+実測のログは [`Dockerfile`](./Dockerfile) の `ENV GIT_CONFIG_COUNT` の直上と、
+[`verification-record.md`](./verification-record.md) の 0.14 にある。
 
-git は credential helper を設定順（system → global → local → 環境変数）に呼び、**最初に資格情報を
-返した helper で解決を確定する**。`GIT_ASKPASS` は「どの helper も答えなかった場合」の
-フォールバックにすぎない。
+**保証。** [`docs/guarantees.md`](../../docs/guarantees.md) の `git-credential.test.sh` の節
+（helper の固定、連鎖の停止、打ち消しが github.com に限られること）と、`entrypoint.test.sh` の節
+（prod で clone に使ったトークンが checkout 後に破棄されること）。
 
-dev container では VS Code の Dev Containers 拡張が **2 つとも握っている**。
+### トークンが無いときどうなるか
 
-1. 接続のたびに global の gitconfig へ credential helper を書き込む
-2. 統合ターミナルの environ へ `GIT_ASKPASS` を注入して上書きする
-
-1 だけを潰しても 2 が残る。実測（統合ターミナル内、打ち消しのみを入れた状態）:
-
-```
-$ echo $GIT_ASKPASS
-/vscode/vscode-server/bin/<hash>/extensions/git/dist/askpass.sh
-$ GIT_TRACE=1 git ls-remote https://github.com/<org>/<repo>.git
-...
-trace: run_command: /vscode/vscode-server/bin/<hash>/extensions/git/dist/askpass.sh 'Password for ...'
-```
-
-helper は 1 本も呼ばれていないのに、フォールバック先が VS Code のものに差し替わっていた。
-`GIT_ASKPASS` は environ なので、イメージの `ENV` は接続のたびに上書きされる。
-
-一方 credential helper は**設定**であり、環境変数による設定（`GIT_CONFIG_COUNT` 系）は
-**全ての設定ファイルを読んだ後**に適用される。gitconfig の記述順にも environ の注入にも
-左右されずに認証先を固定できるのは、こちら側だけである。
-
-### スロット 0 で捨て、スロット 1 で積む
-
-```
-GIT_CONFIG_COUNT=2
-GIT_CONFIG_KEY_0=credential.https://github.com.helper
-GIT_CONFIG_VALUE_0=                                        # 空 = それまでの helper を捨てる
-GIT_CONFIG_KEY_1=credential.https://github.com.helper
-GIT_CONFIG_VALUE_1=/usr/local/bin/git-credential-gh-token  # 自前を積み直す
-```
-
-結果、github.com の helper 一覧は**自前の 1 本だけ**になる。得られる性質が 4 つある。
-
-- **`GIT_ASKPASS` の乗っ取りが無関係になる。** 認証は helper で確定し、askpass に到達しない
-- **`store` の宛先が自前 1 本だけになる。** git は認証に成功すると資格情報を `store` で
-  **全ての** helper に配る。VS Code の helper が一覧に残っていると、注入した fine-scoped な
-  トークンがそこを経由してホストの資格情報ストアへ書き戻る（実 clone で観測。
-  `verification-record.md`）。打ち消しが先にあるので、この書き戻し先ごと消える
-- **URL に埋まった username を上書きできる。** `dev.containers.copyGitConfig` でホストの
-  gitconfig が持ち込まれると、`[url "https://<user>@github.com/"] insteadOf` のような設定で
-  username が固定されることがある。helper が返す `username=x-access-token` が使われる
-- **打ち消しは URL 限定。** github.com 以外のホストの helper はそのまま残る
-
-`VALUE_1` が絶対パスなのは意図的。helper 名を裸で書くと git は PATH から
-`git-credential-<name>` を探すが、このイメージの PATH は `${NPM_CONFIG_PREFIX}/bin` が
-`/usr/local/bin` より先に来るため、同名を置かれると乗っ取られる（shim と同じ罠）。
-
-`/etc/gitconfig` に打ち消しを書く案は不成立（実測）。git は system → global の順に読むので、
-空値で捨てた後に global の helper が積み直される。system より後に読まれる設定ファイルは
-イメージから固定できない。
-
-### トークンが無いときは連鎖ごと止める
-
-helper が「答えない」だけでは足りない。**helper の失敗は黙ってフォールスルーする** — 出力なしで
-`exit 0` でも、`exit 1` でも、username だけ返しても、git は次の helper や askpass へ進み、そこで
-成功してしまう（実測）。
-
-`/run/secrets/GH_TOKEN` が不在・空・読めない場合、helper は stdout へ `quit=1` を出す。git は
-helper の連鎖を打ち切ってその場で失敗する。
+helper が `quit=1` を返し、git は連鎖を打ち切ってその場で失敗する。
 
 ```
 git-credential-gh-token: GH_TOKEN not available: /run/secrets/GH_TOKEN
 fatal: credential helper '/usr/local/bin/git-credential-gh-token' told us to quit
 ```
 
-端末プロンプトにも落ちないので、対話シェルで人間がホスト側の資格情報を打ち込んで迂回すること
-も、エージェントがプロンプトの前で無限に待つこともない。
-
-「読めない」の扱いに注意が要る。`password=$(cat "$f")` の形だと `cat` の失敗が拾えず、空の
-password を返して成立してしまう。shim と同じく、読み取り結果を変数に受けてから判定している。
-
-### `GIT_ASKPASS` は残してある
-
-`GIT_ASKPASS=/usr/local/bin/git-askpass`（`git-askpass` の実体は runtime-base、`ENV` の設定は
-devcontainer-base）はそのまま。github.com は helper で確定するのでここへは来ないが、
-github.com 以外のホストと、prod の entrypoint 経路で使う。
-
-### prod でも効く
-
-環境変数による設定は repo local（`.git/config`）より後に適用されるので、打ち消しは checkout
-済みコードが仕込んだ `credential.helper` にも及ぶ。信頼しないコードが `credential.helper` を
-仕込み、次回の entrypoint 自身の `fetch` で呼ばせて `GH_TOKEN` を受け取る経路が、github.com に
-ついては閉じる。「なぜ `/src` を使い捨てるのか」で挙げている `.git/config` 持続の一種である。
-
-トークン破棄（entrypoint の手順 10）の後は、helper が `quit=1` を返すようになる。`exec` 後に
-走る信頼しないコードから github.com への認証付き操作ができないことが、`unset GIT_ASKPASS` だけ
-だった頃より強く担保される。
+端末プロンプトにも落ちない。対話シェルで人間がホスト側の資格情報を打ち込んで迂回することも、
+エージェントがプロンプトの前で無限に待つこともない。
 
 ### 何が失われるか
 
@@ -318,23 +271,21 @@ github.com 以外のホストと、prod の entrypoint 経路で使う。
 - 影響するのは認証が要る https 操作だけ。public repo の clone は 401 が返らないため、credential
   の解決そのものが起きない
 - ssh remote（`git@github.com:owner/repo.git`）は影響しない
-- github.com 以外のホストは影響しない
+- github.com 以外のホストは影響しない。打ち消しは URL 限定で、`GIT_ASKPASS` も残してある
 
 意図して外すなら、利用側で `GIT_CONFIG_COUNT` を設定し直す。
 
 ### 設定が黙って外れることへの備え
 
 `GIT_CONFIG_COUNT` は git が持つ**唯一のカウンタ**である。イメージがスロット 0 と 1 を占有して
-いるため、同じ仕組みで設定を足したい利用側と衝突する。利用側が `GIT_CONFIG_COUNT` を自分で
-設定すると、イメージの 2 スロットは**黙って**消える。消えても認証は（ホスト側の資格情報で）
-通るので、失敗としては現れない。
+いるため、利用側が自分で `GIT_CONFIG_COUNT` を設定すると、イメージの 2 スロットは**黙って**
+消える。消えても認証は（ホスト側の資格情報で）通るので、失敗としては現れない。
 
-`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認する（`karakuri-context` から
-呼ばれる）。`git config --get-urlmatch credential.helper https://github.com` の結果と、イメージが
-固定した `GIT_CONFIG_COUNT` 系が生きているかどうかを、想定どおりのときも含めて常に1行で報告する。
+**利用側で使いたい場合は、イメージが置いている 5 つを引き継いだうえで、自分の設定を 2 番以降に
+足すこと。**
 
-利用側で `GIT_CONFIG_COUNT` を使いたい場合は、イメージが置いている 5 つを引き継いだうえで、
-自分の設定を 2 番以降に足すこと。
+`/usr/local/bin/git-auth-check` が対話シェルの起動ごとに実効値を確認し、想定どおりのときも
+含めて常に 1 行で報告する（`karakuri-context` から呼ばれる）。
 
 ---
 
@@ -705,6 +656,9 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 `KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
 関数の一覧と推奨 alias はファイル末尾のコメントにある。
 
+この `source` で `templates/host/shims`（上記の `_dotenvx`）も `PATH` の末尾へ自動で加わる。
+別途 `PATH` へ足す手順は要らない — **導入手順の行数はここで増えない。**
+
 Windows(Git Bash) では `~/.bash_profile` に書く。無ければ作り、直接
 `source ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh` を書くか、
 `~/.bashrc` にまとめる習慣があるなら `~/.bash_profile` から `~/.bashrc` を source する
@@ -783,6 +737,69 @@ vault の同期は broker が取得のたびに 1 回行うので、`bw sync` �
 （`BROKER_BW_SYNC=0` で無効化できる）。鍵束をどう Bitwarden 側に置くか — Secure Note の
 項目名の付け方、共有分と個人分の分け方 — は
 [`templates/host/broker-bitwarden.sh`](./templates/host/broker-bitwarden.sh) の冒頭にある。
+
+### ホストで実行するコマンドへ鍵を渡す（`karakuri-run`）
+
+Electron・ネイティブ拡張を持つプロジェクトなど、ホストでしかビルドできないプロジェクト向けの
+入口。dev container も prod も経由しない。
+
+```sh
+karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]
+```
+
+`-b` は必須で、`karakuri-dev-inject` / `karakuri-dock` の `-p` のような既定の供給元へは落ちない
+（この関数は compose project を持たないため）。`-e` は `dev`（既定）か `prod`。`--` を終端子とし、
+それ以降は一切解釈せず逐語で実行する。
+
+broker の項目名は既存の dev 注入・prod 起動と同じ規約で組み立つので、鍵の置き場を増やす必要は
+ない — `dev` は共有 → 全プロジェクト共通の個人 → プロジェクト個人の3項目、`prod` は共有 →
+プロジェクトの2項目。
+
+```sh
+karakuri-run -b acme -- dotenvx run -f .env -- pnpm build
+karakuri-run -b acme -e prod -- dotenvx run --strict -f .env.prod -- pnpm build
+```
+
+**`-e prod` の限界。** `prod-run.sh` が持つ隔離（tmpfs のコンテナで走り、workspace を mount
+しない）はホストでのビルドでは構造的に取れない。`-e prod` を選ぶと、本番の私鍵がホストの
+ビルド木全体に入り、その木で走る全ての依存・postinstall・ビルドツールの子プロセスから読める。
+既定を `dev` にし、`prod` を明示的に打たせるのはこの代償を意識させるためである。
+
+### CI から `_dotenvx` を解決する
+
+利用側の `package.json` を `_dotenvx` へ揃えると、その `package.json` のスクリプトは CI からも
+呼ばれる。CI の runner には karakuri も shim も無いので、`_dotenvx` を名前解決させるには
+shim のディレクトリを `PATH` へ足す。鍵は環境変数（secrets）で渡せば、そのまま通る
+（`_dotenvx` は鍵の出どころを問わない）。
+
+```sh
+# タグ指定の浅い clone で shim のディレクトリだけ取り、PATH へ足す
+git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git "$RUNNER_TEMP/karakuri"
+export PATH="$RUNNER_TEMP/karakuri/images/runtime-base/templates/host/shims:$PATH"
+```
+
+Windows runner でも同じレシピが成立する。パスは runner のテンポラリディレクトリ
+（`$RUNNER_TEMP` 等）を使い、POSIX 固定のパスは書かない。`_dotenvx.cmd` の同梱が前提になる
+（上記「ホストにも同名の shim がある」参照）。
+
+**npm の `bin` として配る形は採らない。** そうすればラッパーを手書きせずに済むが、関門が
+`node_modules`、すなわち workspace の内側へ降りる。`node_modules/.bin` は PATH 先頭なので、
+守るべき相手（dev container 内のエージェント等）が書ける場所へ私鍵の関門を移すことになる。
+
+**移行時に CI が赤くなりうる。** `_dotenvx` へ揃えると、鍵が供給されていない CI ジョブは
+「鍵が無い」として明示的に落ちる。それまでは dotenvx が rc=0 で暗号文を値として注入していた
+ため成功に見えていただけである。落ちたら既存の鍵未供給が顕在化したものであって、この経路が
+壊したのではない。
+
+**限界。** 手で export した古い鍵での実行は、shim からは CI の正当な供給と区別できないため
+通る。閉じる手段は shim の側には無い（利用側の穴を検査するのは別チケットの範囲）。
+
+**利用側が受け入れのために必要な作業。**
+
+- `package.json` の dotenvx 呼び出しを `_dotenvx` へ揃える
+- ホスト実行の入口を `karakuri-run` 経由にする
+- ワークツリーに置いていた dotenvx の私鍵ファイルを消す
+- CI に shim ディレクトリの `PATH` を足す（上記レシピ）
 
 ### compose ファイルを置く
 

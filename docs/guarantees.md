@@ -248,6 +248,12 @@
 - digest の検査は全ファイルを名前順に掃引し、**最初の問題で打ち切らない**。打ち切ると後ろのファイルの貼り忘れが永久に見えないためである。一致・不一致・未挿入をそれぞれ区別して報告する
 - ヘルプは下位スクリプトを一切呼ばず、公開している関数の名前と環境変数の現在値を出す。「未設定」と「空文字を設定」を区別して見せ、**broker の項目名は決して出さない**
 - 以上のすべてが bash で成り立ち、zsh が入っている環境では zsh でも同一に成り立つ（zsh が無い環境では zsh 側の検査が skip される）
+- `karakuri-run` は broker の項目キーの明示指定を必須とし、省略・区切りを含む値・共通名を項目キーにする指定・終端子より前の位置引数を、いずれも供給層を一度も起動せずに非ゼロで拒否する（テスト: "否定対照: 項目キーの省略は供給層を起動する前に拒否される"）（起源: `0014-host-secret-run`）
+- 終端子より後ろは一切解釈されず、逐語でコマンドとして渡る。空白を含む引数は1引数のまま保たれる（起源: `0014-host-secret-run`）
+- broker の項目の並びは `-e` で選び、既定は `dev`。`dev` は全プロジェクト共通の個人項目を挟む3項目、`prod` は挟まない2項目で、いずれも既存の dev 注入・prod 起動と同じ並びである。`-e` に `dev` / `prod` 以外を渡すと broker を一度も起動せずに非ゼロで終わる（テスト: "否定対照: 未知の -e は broker を起動する前に拒否される"）（起源: `0014-host-secret-run`）
+- broker の差し替え点は既存の2関数のままである。利用者が同名の関数を再定義すると、`karakuri-run` もそちらの結果を使う（起源: `0014-host-secret-run`）
+- 共通名を項目キーにする指定は `-e` の値によらず拒否される（起源: `0014-host-secret-run`）
+- source すると shim のディレクトリが PATH の**末尾**へ加わる。既存の PATH の先頭は変わらず、何度 source しても重複しない（テスト: "何度 source しても shim のディレクトリが PATH に重複しない"）（起源: `0014-host-secret-run`）
 
 ### 14. `images/runtime-base/templates/tests/dock.test.sh` — `images/runtime-base/templates/host/dock.sh`
 
@@ -350,6 +356,27 @@
 - daemon は管理対象外の帯のアドレスを一切渡さず、飛ばしたアドレスを名指しする。常に存在するアドレスも名指しで飛ばし、理由を述べる。いずれの場合も 0 で終わる
 - daemon は1つが失敗しても残りを処理し続け、失敗したアドレスを名指ししたうえで 0 で終わる。設定ファイルが存在しないときは何も呼ばず、1バイトも出さずに 0 で終わる。起動のたびのエラー行を読み飛ばす習慣を作らないための沈黙である
 
+### 19. `images/runtime-base/templates/tests/host-run.test.sh` — `images/runtime-base/templates/host/host-run.sh`
+
+起源: `0014-host-secret-run`
+
+- 供給層は broker を1回だけ呼び、呼び出しの前に environ にあった dotenvx の私鍵変数を、名前が衝突しないものも含めてすべて削除する。子プロセスへ渡る私鍵は broker が返したものだけである（テスト: "否定対照: サフィックスが衝突しない既存の私鍵は子プロセスへ届かない"）
+- broker のパスが未設定・broker が非ゼロ終了・broker の出力が空・実行するコマンドが未指定のいずれでも、コマンドを一度も起動せずに非ゼロで終わる（テスト: "否定対照: broker が非ゼロで終わるとコマンドを一度も起動しない"）
+- 取り込めない行があったときは、その行の内容を出力へ一切反射させず、行番号だけを報告して非ゼロで終わる（テスト: "通し: 取り込めない行は行番号だけが報告され、内容は出ない"）
+- 引数はシェルを経由せず逐語で渡り、空白を含む引数は1引数のまま保たれる
+
+### 20. `images/runtime-base/templates/tests/host-shim.test.sh` — `images/runtime-base/templates/host/shims/_dotenvx`
+
+起源: `0014-host-secret-run`
+
+Windows 用のラッパーの検査だけは cmd.exe を要するため、この出典ファイルではなく `.github/workflows/ci.yml` の Windows ジョブが持つ。
+
+- shim は私鍵変数が environ にあるときだけ実体を起動する。無いときは実体を一度も起動せずに非ゼロで終わり、鍵の無い実行が成功として素通りすることがない（テスト: "否定対照: 鍵が無いときは実体を起動しない"）
+- shim は鍵の出どころを問わない。供給層を経ずに環境変数で鍵を渡した実行も通る（CI がこの形で通る）（テスト: "通し: 環境変数だけで渡した鍵でも実体が起動する"）
+- shim が起動する実体は PATH 解決で選ばれる。プロジェクトが自前で用意した版がある環境では、その版が鍵付きで動く
+- 鍵の値は stdout にも stderr にも現れない（テスト: "通し: 鍵の値が出力に出ていない"）
+- Windows 用のラッパーは、同じ判定を同じ終了コードで返す。鍵が無いときに 0 を返さない（テスト: "否定対照: 鍵が無いとき cmd ラッパーが非ゼロを返す"。cmd.exe から実行する Windows のジョブで検査する）
+
 ### 21. `.github/scripts/tests/pin-lag.test.sh` — `.github/scripts/pin-lag.sh`
 
 起源: `0015-pin-refresh-and-monitor-tiers`
@@ -436,10 +463,11 @@
 
 **D. ホストと利用側リポジトリへ配布されるテンプレート**
 - `host/karakuri.sh` — シェルへ source する関数集
-- `host/dock.sh`、`host/prod-run.sh`、`host/dev-inject.sh`
+- `host/dock.sh`、`host/prod-run.sh`、`host/dev-inject.sh`、`host/host-run.sh`
 - `host/broker-bitwarden.sh`、`host/broker-macos-keychain.sh`、`host/broker-macos-keychain-set.sh`
 - `host/loopback-setup.sh` と `host/loopback/` の daemon・plist
 - `host/compose.prod.yaml`
+- `host/shims/`（`_dotenvx` と Windows 用ラッパー）
 - `project/env-guard.conf`、`project/env-guard.yml`
 
 **E. `devcontainer-base` イメージと `examples/` の雛形3本**

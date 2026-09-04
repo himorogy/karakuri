@@ -71,9 +71,17 @@ exit "${FAKE_DEV_INJECT_EXIT_CODE:-0}"
 FAKE_DEV_INJECT
 chmod +x "$FAKE_BIN_DIR/dev-inject.sh"
 
+cat >"$FAKE_BIN_DIR/host-run.sh" <<'FAKE_HOST_RUN'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"${FAKE_ARGV_FILE:?}"
+env >"${FAKE_ENV_FILE:?}"
+exit "${FAKE_HOST_RUN_EXIT_CODE:-0}"
+FAKE_HOST_RUN
+chmod +x "$FAKE_BIN_DIR/host-run.sh"
+
 # broker は「実行可能な何かがそこにある」ことだけが要る（karakuri.sh は
-# パスを組み立てて prod-run.sh / dev-inject.sh へ渡すだけで、自分では
-# 呼ばない）。
+# パスを組み立てて prod-run.sh / dev-inject.sh / host-run.sh へ渡すだけで、
+# 自分では呼ばない）。
 cat >"$FAKE_BIN_DIR/broker-bitwarden.sh" <<'FAKE_BROKER'
 #!/usr/bin/env bash
 echo "fake broker should not be executed by karakuri.sh" >&2
@@ -751,6 +759,119 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	run_case karakuri-dev-inject -p dotfiles --bogus
 	assert_rc_nonzero "[$s] an unknown argument fails"
 	assert_stderr_has "Usage:" "[$s] an unknown argument prints usage"
+
+	# --- karakuri-run ---------------------------------------------------------------
+	echo "[$s] karakuri-run requires -b, passed before starting host-run.sh"
+	reset_env
+	run_case karakuri-run -- echo hi
+	assert_rc_nonzero "[$s] 否定対照: 項目キーの省略は供給層を起動する前に拒否される (rc)"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] 否定対照: 項目キーの省略は供給層を起動する前に拒否される (host-run.sh not invoked)"
+
+	echo "[$s] karakuri-run rejects a -b value containing '/'"
+	reset_env
+	run_case karakuri-run -b acme/app -- echo hi
+	assert_rc_nonzero "[$s] a -b value with '/' fails"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] host-run.sh is not invoked for a malformed -b value"
+
+	echo "[$s] karakuri-run rejects _common as the broker key regardless of -e"
+	reset_env
+	run_case karakuri-run -b _common -- echo hi
+	assert_rc_nonzero "[$s] -b _common fails under the default -e (dev)"
+	assert_stderr_has "_common" "[$s] the error names _common (dev)"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] host-run.sh is not invoked when -b is _common (dev)"
+
+	reset_env
+	run_case karakuri-run -e prod -b _common -- echo hi
+	assert_rc_nonzero "[$s] -b _common fails under -e prod too"
+	assert_stderr_has "_common" "[$s] the error names _common (prod)"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] host-run.sh is not invoked when -b is _common (prod)"
+
+	echo "[$s] karakuri-run rejects a positional argument before '--'"
+	reset_env
+	run_case karakuri-run bogus -b acme -- echo hi
+	assert_rc_nonzero "[$s] a positional argument before '--' fails"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] host-run.sh is not invoked for a positional argument before '--'"
+
+	echo "[$s] 否定対照: 未知の -e は broker を起動する前に拒否される"
+	reset_env
+	run_case karakuri-run -b acme -e staging -- echo hi
+	assert_rc_nonzero "[$s] 否定対照: 未知の -e は broker を起動する前に拒否される (rc)"
+	assert_stderr_has "karakuri-run: unknown -e" "[$s] the error is karakuri-run's own -e validation, not the broker's"
+	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] 否定対照: 未知の -e は broker を起動する前に拒否される (host-run.sh not invoked)"
+
+	echo "[$s] karakuri-run passes the command after '--' verbatim, unshifted and unshelled"
+	reset_env
+	run_case karakuri-run -b acme -- echo "hello world" --looks-like-an-option
+
+	assert_rc_zero "[$s] karakuri-run succeeds on the happy path"
+	assert_argv_has "echo" "[$s] the command name reaches host-run.sh"
+	assert_argv_has "hello world" "[$s] an argument with embedded spaces stays a single argument"
+	assert_argv_has "--looks-like-an-option" "[$s] an argument that looks like an option after '--' is not interpreted by karakuri-run"
+
+	echo "[$s] karakuri-run defaults to -e dev: shared -> common -> personal (3 items)"
+	reset_env
+	run_case karakuri-run -b acme -- echo hi
+	assert_env_has "BROKER_BW_ITEM=env/acme/shared/dev,env/_common/dev,env/acme/dev" \
+		"[$s] the default (-e dev) item order matches the existing dev-inject convention"
+	assert_env_has "HOST_BROKER=$FAKE_BIN_DIR/broker-bitwarden.sh" \
+		"[$s] the broker next to karakuri.sh is passed as HOST_BROKER"
+
+	echo "[$s] karakuri-run -e prod: shared -> project (2 items, no common item)"
+	reset_env
+	run_case karakuri-run -e prod -b acme -- echo hi
+	assert_env_has "BROKER_BW_ITEM=env/acme/shared/prod,env/acme/prod" \
+		"[$s] the -e prod item order matches the existing prod-launch convention"
+
+	# 差し替え点であることの確認: 同名の関数を後から定義すると、そちらが使われる。
+	echo "[$s] karakuri-run's broker resolution is replaceable, same as the other functions"
+	reset_env
+	local out err
+	out="$(mktemp)"
+	err="$(mktemp)"
+	# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
+	if PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \
+		"$SHELL_UNDER_TEST" -c '. "$KARAKURI_SH" || exit 90
+karakuri-broker-env() { printf "OTHER_BROKER_REF=%s/%s\n" "$1" "$2"; }
+karakuri-broker-command() { printf "/opt/other-broker\n"; }
+karakuri-run -b acme -- echo hi' karakuri-test >"$out" 2>"$err"; then
+		ok "[$s] a replaced broker implementation still runs under karakuri-run"
+	else
+		ng "[$s] a replaced broker implementation still runs under karakuri-run (stderr: $(cat "$err"))"
+	fi
+	rm -f "$out" "$err"
+
+	assert_env_has "OTHER_BROKER_REF=dev/acme" "[$s] the replaced karakuri-broker-env decides karakuri-run's broker environment"
+	assert_env_has "HOST_BROKER=/opt/other-broker" "[$s] the replaced karakuri-broker-command decides karakuri-run's broker path"
+
+	# --- shims ディレクトリの PATH 追加 ----------------------------------------------
+	echo "[$s] sourcing karakuri.sh appends the shims directory to PATH, without duplicating it"
+	reset_env
+	local shims_dir="$FAKE_BIN_DIR/shims"
+	local path_out
+	# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
+	path_out="$(PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \
+		"$SHELL_UNDER_TEST" -c '. "$KARAKURI_SH" || exit 90; printf "%s" "$PATH"')"
+
+	case ":${path_out}:" in
+	*":${shims_dir}:"*) ok "[$s] the shims directory is on PATH after sourcing" ;;
+	*) ng "[$s] the shims directory is not on PATH after sourcing (PATH: $path_out)" ;;
+	esac
+
+	case "$path_out" in
+	"$FAKE_BIN_DIR:"*) ok "[$s] the existing PATH prefix is unchanged (the shims directory is appended, not prepended)" ;;
+	*) ng "[$s] the existing PATH prefix changed (PATH: $path_out)" ;;
+	esac
+
+	local dedup_path shims_count
+	# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
+	dedup_path="$(PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \
+		"$SHELL_UNDER_TEST" -c '. "$KARAKURI_SH" || exit 90; . "$KARAKURI_SH" || exit 90; printf "%s" "$PATH"')"
+	shims_count="$(printf '%s' "$dedup_path" | tr ':' '\n' | grep -cxF "$shims_dir")"
+	if [ "$shims_count" -eq 1 ]; then
+		ok "[$s] 何度 source しても shim のディレクトリが PATH に重複しない"
+	else
+		ng "[$s] 何度 source しても shim のディレクトリが PATH に重複しない (count: $shims_count, PATH: $dedup_path)"
+	fi
 
 	# --- karakuri-dock: オーケストレーション ---------------------------------------
 	# 起動 → 未注入なら注入 → port forwarding → 対話シェル、の順に呼ぶことを
@@ -1550,7 +1671,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] karakuri-help does not call prod-run.sh / dev-inject.sh / broker"
 
 	for fn in karakuri-port-forward karakuri-loopback karakuri-dev-inject \
-		karakuri-dock karakuri-prod-run \
+		karakuri-dock karakuri-run karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image karakuri-help; do
 		assert_stdout_has "$fn" "[$s] karakuri-help output mentions $fn"
@@ -1601,7 +1722,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	echo "[$s] every documented function is defined"
 	reset_env
 	for fn in karakuri-port-forward karakuri-loopback karakuri-dev-inject \
-		karakuri-dock karakuri-prod-run \
+		karakuri-dock karakuri-run karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image \
 		karakuri-broker-command karakuri-broker-env karakuri-help; do

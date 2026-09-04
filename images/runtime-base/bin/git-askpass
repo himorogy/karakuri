@@ -8,11 +8,10 @@
 # entrypoint を通らないので破棄もされない (dev の git 認証はこれが本線)。
 #
 # git がここへ到達するのは credential helper が 1 本も資格情報を返さなかった
-# 場合だけである。helper が生きているとそちらが先に確定し、この askpass は
-# 呼ばれない。runtime-base の Dockerfile が GIT_CONFIG_COUNT 系で github.com の
-# helper を打ち消しているのはそのためで、打ち消しが外れると以下の「トークンが
-# 無ければ非ゼロ終了」も発火しなくなる
-# (docs/prod-secret-isolation-design.md §4.6)。
+# 場合だけである。github.com は自前の helper が先に確定するので、ここへは来ない
+# (固定の仕組みは images/runtime-base/Dockerfile の ENV GIT_CONFIG_COUNT の
+# 直上)。逆にその固定が外れると、以下の「トークンが無ければ非ゼロ終了」も
+# 発火しなくなる (docs/prod-secret-isolation-design.md §4.6)。
 #
 # GH_TOKEN が /run/secrets に無いことをここでは許容する。public リポジトリ
 # の fetch はトークンなしでも動くべきで、entrypoint 側で GH_TOKEN の存在を
