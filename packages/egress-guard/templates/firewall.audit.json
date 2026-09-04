@@ -1,5 +1,5 @@
 {
-	"version": 1,
+	"version": 2,
 	"profile": ["anthropic", "anthropic-updates", "npm", "github"],
 	"mode": "audit",
 	"allowDomains": [],

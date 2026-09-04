@@ -53,8 +53,12 @@
 起源: `0007-ledger-egress-guard`
 
 - `--check-config` は設定を検証して終了し、規則には一切触れない。受理時は 0 で終了し、読んだ設定のパスと妥当である旨を出す
-- `version` は必須で整数 `1` のみ。未知フィールド・未知 `mode`・JSON でない入力・オブジェクトでない入力はすべて非ゼロで拒否する
-- `allowDomains` のワイルドカードは全形（`*` / `*.com` / `*.co.*` / `example.*` / `*.example.com`）で拒否し、メッセージに代わりに書くべきものを含める。DNS がゾーンの子孫を列挙できない以上、受理は「受理したが履行しない」方針になるため（テスト: "the wildcard rejection explains what to write instead"）
+- 未知フィールド・未知 `mode`・JSON でない入力・オブジェクトでない入力はすべて非ゼロで拒否する
+- `version` は必須であり、値は `1` と `2` を受理する。それ以外の値・非整数・省略はいずれも拒否する。実現層のフィールドを書けるのは version 2 の設定だけである（テスト: "version 2 is accepted" / "config rejected: an omitted version" / "a realisation layer field is refused in a version 1 config"）
+- version 2 の設定で `layer` を省略すると L7 を選んだことになる。L3 は明示して初めて選ばれる（テスト: "an omitted realisation layer means L7"）
+- version 2 の `allowDomains` は先頭ドットの値を受理し、それは「そのドメイン自身とすべてのサブドメイン」を意味する。`*` を含む値は version にかかわらず拒否し、メッセージは代わりに書くべき先頭ドットの形を含む（テスト: "a leading dot domain is accepted in version 2" / "the wildcard rejection points at the leading dot form"）
+- `layer` に `l3` を選んだ設定に先頭ドットの値が含まれていれば拒否する。L3 はサブドメインを列挙できず、受理すれば apex だけが通ってサブドメインは黙って落ちるため（テスト: "a leading dot domain is refused under L3"）
+- `--print-proxy-acl` の出力は 1 行 1 ドメインのプレーンテキストで、profile 由来と `allowDomains` をマージ・ソート・重複除去し、包含関係にある行は広いほうだけを残す。ネットワークにも netfilter にも触れる外部コマンドを起動しない（テスト: "the proxy ACL subsumes narrower entries" / "the proxy ACL runs no network or netfilter command"）
 - `allowDomains` に受理されるのは ASCII のホスト構文だけで、空文字・空白・シェルメタ文字・コマンド置換・改行・連続ドット・先頭や末尾のハイフン・単一ラベル・IP リテラルはいずれも拒否する
 - `allowCidrs` は全経路・RFC1918・loopback・link-local・CGNAT を拒否し、**それらを内包する上位ネットも同じく拒否する**。prefix の欠落、範囲外の prefix、範囲外のオクテット、ゼロ埋め八進、規則の断片を追記した文字列も拒否する
 - `allowHostPorts` と `sshdPort` は 1〜65535 の十進整数のみ受理する。`0` は「無効」の綴りではないので拒否する（テスト: "config rejected: sshdPort 0"）

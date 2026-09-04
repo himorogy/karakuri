@@ -71,7 +71,7 @@ readonly -a DNS_PROBES=("8.8.8.8" "1.1.1.1" "9.9.9.9")
 # not in the allowlist is used, so a project that allows one of these still
 # passes verification.
 readonly -a EGRESS_PROBES=("example.com" "example.net" "example.org")
-readonly SUPPORTED_SCHEMA_VERSION=1
+readonly -a SUPPORTED_SCHEMA_VERSIONS=(1 2)
 readonly LOG_LIMIT="5/min"
 readonly LOG_BURST="10"
 readonly MAX_CONFIG_BYTES=65536
@@ -298,6 +298,14 @@ die() {
 CONFIG_FILE=""
 RESOLV_CONF="$DEFAULT_RESOLV_CONF"
 MODE="enforce"
+# The realisation layer: "l7" or "l3". This initial value is what a run with
+# no config file at all gets, and it has to agree with what an omitted
+# `layer` means in a version 2 config: the default is L7, L3 only when asked
+# for. read_config overwrites it for every config it actually reads - "l3"
+# for a version 1 config (see the version check below), the config's own
+# choice for version 2. Read by the allowDomains loop in read_config, which
+# is the only place this value changes what a config may say today.
+LAYER="l7"
 APPLY_PHASE=0
 IPV6_CONTROL=0
 AUDIT_RECORDER=1
@@ -479,6 +487,18 @@ validate_domain() {
 	[[ "$d" =~ ^[a-zA-Z0-9.-]+$ ]] || return 1
 	[[ "$d" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]] || return 1
 	return 0
+}
+
+# version 2 only: a single leading dot means the domain and every subdomain
+# beneath it, so the dot is stripped before the rest of the string is judged
+# by the same hostname rule as validate_domain.
+validate_domain_v2() {
+	local d="$1"
+	if [ "${d:0:1}" = "." ]; then
+		validate_domain "${d:1}"
+		return $?
+	fi
+	validate_domain "$d"
 }
 
 validate_cidr() {
@@ -684,7 +704,7 @@ read_config() {
 	local key
 	while read -r key; do
 		case "$key" in
-		version | profile | mode | allowDomains | allowCidrs | allowHostPorts | sshdPort) ;;
+		version | layer | profile | mode | allowDomains | allowCidrs | allowHostPorts | sshdPort) ;;
 		*) die "unknown field in $CONFIG_FILE: $key" ;;
 		esac
 	done < <(jq -r 'keys[]' "$CONFIG_FILE")
@@ -692,6 +712,7 @@ read_config() {
 	jq -e '
 		((.version | type) == "number")
 		and ((.version | floor) == .version)
+		and ((.layer == null) or ((.layer | type) == "string"))
 		and ((.profile // [])
 			| if type == "string" then . != ""
 				elif type == "array" then all(.[]; (type == "string") and (. != ""))
@@ -707,8 +728,27 @@ read_config() {
 
 	local version
 	version="$(jq -r '.version' "$CONFIG_FILE")"
-	[ "$version" = "$SUPPORTED_SCHEMA_VERSION" ] ||
-		die "unsupported schema version: $version (expected $SUPPORTED_SCHEMA_VERSION)"
+	case "$version" in
+	1 | 2) ;;
+	*) die "unsupported schema version: $version (supported: $(join_comma "${SUPPORTED_SCHEMA_VERSIONS[@]}"))" ;;
+	esac
+
+	# `layer` is new in version 2 and reaches back no further: a version 1
+	# config is what this script has always run as, and letting the field
+	# change that meaning would make the version number stop describing the
+	# schema it names.
+	if [ "$(jq 'has("layer")' "$CONFIG_FILE")" = "true" ] && [ "$version" != "2" ]; then
+		die "the layer field is only accepted when version is 2 (found version $version)"
+	fi
+	if [ "$version" = "2" ]; then
+		LAYER="$(jq -r '.layer // "l7"' "$CONFIG_FILE")"
+		case "$LAYER" in
+		l7 | l3) ;;
+		*) die "unknown layer: $LAYER (expected l7 or l3)" ;;
+		esac
+	else
+		LAYER="l3"
+	fi
 
 	# A bare string is read as a one element list, so the two spellings of
 	# "select this one bundle" cannot drift apart. An absent field and an empty
@@ -726,18 +766,40 @@ read_config() {
 	MODE="$(jq -r '.mode // "enforce"' "$CONFIG_FILE")"
 
 	while read -r entry; do
-		[ -n "$entry" ] || continue
+		# An empty array entry is not "nothing to check" the way an empty
+		# CONFIG_FILE path is: it came from a value the author wrote inside
+		# allowDomains, and skipping it silently would accept a config the
+		# ledger says is rejected.
+		[ -n "$entry" ] || die "rejected allowDomains entry: an empty string is not a valid host name"
 		# Worth its own message: "rejected: *.example.com" on its own reads like a
 		# syntax complaint, and the author needs to know what to write instead.
+		# `*.example.com` is conventionally read as excluding the apex, so giving
+		# it apex-including meaning would make the entry reach further than what
+		# was written - the leading dot form says that explicitly instead.
 		if [[ "$entry" == *"*"* ]]; then
-			die "rejected allowDomains entry: $entry - wildcards are not supported. DNS cannot enumerate the subdomains of a zone, so a wildcard cannot be expanded into addresses. List the host names you need instead; run in audit mode and read ipset $SET_V4_AUDIT to find out which ones those are."
+			die "rejected allowDomains entry: $entry - wildcards are not supported. Write a leading dot instead: .example.com matches the domain and every subdomain beneath it. Run in audit mode and read ipset $SET_V4_AUDIT to find out which hosts you actually need."
 		fi
-		validate_domain "$entry" || die "rejected allowDomains entry: $entry"
+		if [ "$version" = "2" ]; then
+			validate_domain_v2 "$entry" || die "rejected allowDomains entry: $entry"
+			# The l3 layer builds the allowlist from resolved A records, one host
+			# at a time, and has no way to enumerate a zone's subdomains - the
+			# same limit the wildcard rejection above exists for. Accepting the
+			# leading dot form here would let the apex through and drop every
+			# subdomain without saying so.
+			if [ "${entry:0:1}" = "." ] && [ "$LAYER" = "l3" ]; then
+				die "rejected allowDomains entry: $entry - a leading dot cannot be honoured under the l3 layer, which has no way to enumerate a zone's subdomains. List the subdomains individually, or select l7 (the default)."
+			fi
+		else
+			validate_domain "$entry" || die "rejected allowDomains entry: $entry"
+		fi
 		CFG_DOMAINS+=("$entry")
 	done < <(jq -r '(.allowDomains // [])[]' "$CONFIG_FILE")
 
 	while read -r entry; do
-		[ -n "$entry" ] || continue
+		# Same reasoning as the allowDomains loop above: an empty array entry
+		# came from a value the author wrote, and skipping it silently would
+		# accept a config the CIDR validator would otherwise never see.
+		[ -n "$entry" ] || die "rejected allowCidrs entry: an empty string is not a valid CIDR"
 		validate_cidr "$entry" ||
 			die "rejected allowCidrs entry: $entry (too broad, private, or malformed)"
 		CFG_CIDRS+=("$entry")
@@ -1572,12 +1634,81 @@ print_allowlist() {
 	return 0
 }
 
+# subsume_domains, entries on stdin one per line -> the surviving entries
+#
+# A leading dot entry (.example.com) and a plain one it already covers
+# (example.com, a.example.com) cannot both sit in one Squid dstdomain ACL:
+# Squid warns and drops one of the two, so whichever it picks silently stops
+# being enforced. Only the leading dot entry is kept in that case, since it is
+# the one that still means what the narrower entry meant.
+subsume_domains() {
+	local -a all=() zones=() plain=()
+	local line
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		all+=("$line")
+	done
+
+	local d
+	for d in "${all[@]:-}"; do
+		[ -n "$d" ] || continue
+		if [ "${d:0:1}" = "." ]; then
+			zones+=("${d:1}")
+		else
+			plain+=("$d")
+		fi
+	done
+
+	local zone other covered
+	for zone in "${zones[@]:-}"; do
+		[ -n "$zone" ] || continue
+		covered=0
+		for other in "${zones[@]:-}"; do
+			if [ -z "$other" ] || [ "$other" = "$zone" ]; then
+				continue
+			fi
+			if [ "$zone" = "$other" ] || [[ "$zone" == *".$other" ]]; then
+				covered=1
+				break
+			fi
+		done
+		[ "$covered" = "1" ] || printf '.%s\n' "$zone"
+	done
+
+	local p
+	for p in "${plain[@]:-}"; do
+		[ -n "$p" ] || continue
+		covered=0
+		for zone in "${zones[@]:-}"; do
+			[ -n "$zone" ] || continue
+			if [ "$p" = "$zone" ] || [[ "$p" == *".$zone" ]]; then
+				covered=1
+				break
+			fi
+		done
+		[ "$covered" = "1" ] || printf '%s\n' "$p"
+	done
+}
+
+# Writes the domain ACL a proxy sidecar would load: one hostname per line,
+# nothing else. Building it here rather than at image build time keeps the
+# transform under the same test suite as the schema it reads.
+#
+# Like print_allowlist, this resolves and fetches nothing, so it runs from
+# inside a container whose egress is already closed, unprivileged.
+print_proxy_acl() {
+	printf '%s\n' "${PROFILE_DOMAINS[@]:-}" "${CFG_DOMAINS[@]:-}" |
+		LC_ALL=C sort -u |
+		subsume_domains |
+		LC_ALL=C sort -u
+}
+
 # --- entry point -------------------------------------------------------------
 
 usage() {
 	cat <<EOF
-Usage: $SCRIPT_NAME [--check-config] [--print-allowlist] [--config <path>]
-                                [--resolv-conf <path>]
+Usage: $SCRIPT_NAME [--check-config] [--print-allowlist] [--print-proxy-acl]
+                                [--config <path>] [--resolv-conf <path>]
 
   (no arguments)      apply the firewall policy (requires root). The policy is
                       read from $PROD_CONFIG and
@@ -1587,6 +1718,9 @@ Usage: $SCRIPT_NAME [--check-config] [--print-allowlist] [--config <path>]
   --print-allowlist   print the policy that an apply would install and exit.
                       Resolves nothing and fetches nothing, so it works from
                       inside a container whose egress is already closed.
+  --print-proxy-acl   print the domain ACL a proxy sidecar would load, one
+                      hostname per line, and exit. Resolves and fetches
+                      nothing, same as --print-allowlist.
   --config <path>     read this file instead of the fixed one. Combined with
                       --check-config this validates the copy in the repo before
                       an image rebuild installs it.
@@ -1608,7 +1742,7 @@ EOF
 }
 
 main() {
-	local check_only=0 print_only=0 config_from_option=0
+	local check_only=0 print_only=0 print_acl_only=0 config_from_option=0
 
 	# Belt and braces for the sudoers rule above: even if it is written without
 	# the empty argument list, the options stay out of reach of the unprivileged
@@ -1625,6 +1759,10 @@ main() {
 			;;
 		--print-allowlist)
 			print_only=1
+			shift
+			;;
+		--print-proxy-acl)
+			print_acl_only=1
 			shift
 			;;
 		--config)
@@ -1675,6 +1813,13 @@ main() {
 		# asked for it, and mixing the two would make it parse-hostile.
 		read_config >&2
 		print_allowlist
+		exit 0
+	fi
+
+	if [ "$print_acl_only" = "1" ]; then
+		[ -z "$CONFIG_FILE" ] || [ -f "$CONFIG_FILE" ] || die "no such file: $CONFIG_FILE"
+		read_config >&2
+		print_proxy_acl
 		exit 0
 	fi
 

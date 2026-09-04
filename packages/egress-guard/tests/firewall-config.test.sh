@@ -244,22 +244,73 @@ check_config "full" accept '{
 check_config "audit mode" accept '{"version":1,"mode":"audit"}'
 check_config "not JSON" reject 'not json at all'
 check_config "not an object" reject '[1,2,3]'
-check_config "missing version" reject '{"mode":"enforce"}'
-check_config "unknown version" reject '{"version":2}'
+# `version` stays required: a typo that drops the field must not be read as
+# "version 1", since that is also the spelling that means L3 - and version 2
+# read as version 1 is a config that silently loses the layer it asked for.
+check_config "an omitted version" reject '{"mode":"enforce"}'
+check_config "version 2 is accepted" accept '{"version":2}'
+check_config "unknown version" reject '{"version":3}'
 check_config "string version" reject '{"version":"1"}'
+check_config "a non-integer version" reject '{"version":1.5}'
 check_config "unknown field" reject '{"version":1,"allowEverything":true}'
 check_config "unknown profile" reject '{"version":1,"profile":"wide-open"}'
 check_config "unknown mode" reject '{"version":1,"mode":"off"}'
 check_config "bare wildcard domain" reject '{"version":1,"allowDomains":["*"]}'
 check_config "TLD wildcard" reject '{"version":1,"allowDomains":["*.com"]}'
 check_config "subdomain wildcard" reject '{"version":1,"allowDomains":["*.example.com"]}'
+# The wildcard rejection does not loosen in version 2: the leading dot form
+# below is how the same intent is written there.
+check_config "subdomain wildcard in version 2" reject '{"version":2,"allowDomains":["*.example.com"]}'
 check_config "shell metacharacters" reject '{"version":1,"allowDomains":["a.com; id"]}'
 check_config "default route CIDR" reject '{"version":1,"allowCidrs":["0.0.0.0/0"]}'
 check_config "RFC1918 CIDR" reject '{"version":1,"allowCidrs":["192.168.0.0/16"]}'
 check_config "tailscale CGNAT CIDR" reject '{"version":1,"allowCidrs":["100.64.0.0/10"]}'
 check_config "short prefix CIDR" reject '{"version":1,"allowCidrs":["1.0.0.0/4"]}'
+# The ledger promises an empty string is rejected, not silently dropped as
+# though the entry were never written. allowCidrs has no version branch, so
+# unlike allowDomains there is only the one path to cover.
+check_config "an empty cidr" reject '{"version":1,"allowCidrs":[""]}'
+# Contrast: whitespace is not emptiness, and was already rejected on its own
+# (invalid CIDR syntax) before this fix.
+check_config "a whitespace-only cidr" reject '{"version":1,"allowCidrs":["  "]}'
 check_config "non-array allowDomains" reject '{"version":1,"allowDomains":"example.com"}'
 check_config "non-string domain" reject '{"version":1,"allowDomains":[1]}'
+# The ledger promises an empty string is rejected, not silently dropped as
+# though the entry were never written. Both validation paths - v1's
+# validate_domain and v2's validate_domain_v2 - have to see the same thing.
+check_config "an empty domain" reject '{"version":1,"allowDomains":[""]}'
+check_config "an empty domain in version 2" reject '{"version":2,"allowDomains":[""]}'
+# Contrast: whitespace is not emptiness, and was already rejected on its own
+# (invalid hostname syntax) before this fix.
+check_config "a whitespace-only domain" reject '{"version":1,"allowDomains":["  "]}'
+
+# --- realisation layer (version 2) -------------------------------------------
+#
+# L7 is the default a project gets without asking for anything, and L3 has to
+# be named explicitly. The leading dot form is only meaningful under L7: L3
+# builds the allowlist from resolved A records one host at a time and has no
+# way to enumerate a zone's subdomains.
+
+echo "realisation layer"
+check_config "an explicit l7 layer" accept '{"version":2,"layer":"l7"}'
+check_config "an explicit l3 layer" accept '{"version":2,"layer":"l3"}'
+check_config "an unknown layer" reject '{"version":2,"layer":"l4"}'
+check_config "a non-string layer" reject '{"version":2,"layer":7}'
+check_config "a realisation layer field is refused in a version 1 config" reject '{"version":1,"layer":"l7"}'
+
+check_config "a leading dot domain is accepted in version 2" accept '{"version":2,"layer":"l7","allowDomains":[".example.com"]}'
+check_config "an omitted realisation layer means L7" accept '{"version":2,"allowDomains":[".example.com"]}'
+check_config "a leading dot domain is refused under L3" reject '{"version":2,"layer":"l3","allowDomains":[".example.com"]}'
+# The contrast: the same host without the leading dot is a plain domain, and
+# L3 has never had trouble with those.
+check_config "a plain domain is accepted under L3" accept '{"version":2,"layer":"l3","allowDomains":["example.com"]}'
+# The leading dot form does not exist before version 2: a version 1 config
+# meets it as a malformed hostname, not as the l3 specific rejection above.
+check_config "a leading dot domain is refused in version 1" reject '{"version":1,"allowDomains":[".example.com"]}'
+check_config "a bare dot is refused" reject '{"version":2,"allowDomains":["."]}'
+check_config "a doubled leading dot is refused" reject '{"version":2,"allowDomains":["..example.com"]}'
+check_config "a leading dot on a single label is refused" reject '{"version":2,"allowDomains":[".com"]}'
+
 check_config "out of range port" reject '{"version":1,"allowHostPorts":[70000]}'
 check_config "non-integer port" reject '{"version":1,"allowHostPorts":[5432.5]}'
 
@@ -310,14 +361,16 @@ else
 fi
 
 # "rejected allowDomains entry: *.example.com" on its own reads like a syntax
-# complaint. The author needs to be told what to write instead.
+# complaint. The author needs to be told what to write instead - and now that
+# a wildcard's apex inclusive meaning has a real spelling, the message has to
+# point at it by name.
 printf '%s' '{"version":1,"allowDomains":["*.example.com"]}' >"$TMPDIR_TEST/firewall.json"
 rc=0
 out="$(bash "$FIREWALL_SH" --check-config --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "wildcards are not supported"; then
-	ok "the wildcard rejection explains what to write instead"
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "leading dot"; then
+	ok "the wildcard rejection points at the leading dot form"
 else
-	ng "the wildcard rejection explains what to write instead (rc=$rc, out=$out)"
+	ng "the wildcard rejection points at the leading dot form (rc=$rc, out=$out)"
 fi
 
 # --- base profile bundles ----------------------------------------------------
@@ -624,6 +677,99 @@ if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "not accepted through sudo"; 
 	ok "--print-allowlist is refused when invoked through sudo"
 else
 	ng "--print-allowlist is refused when invoked through sudo (rc=$rc)"
+fi
+
+# --- --print-proxy-acl --------------------------------------------------------
+#
+# The output is meant to become a Squid (or equivalent) dstdomain ACL, one
+# hostname per line and nothing else - no source annotation, no format the
+# implementation would have to agree on.
+
+echo "--print-proxy-acl"
+
+acl_for() { # <json> -> the ACL on stdout, progress lines discarded
+	local file="$TMPDIR_TEST/firewall.json"
+	printf '%s' "$1" >"$file"
+	bash "$FIREWALL_SH" --print-proxy-acl --config "$file" 2>/dev/null
+}
+
+# A leading dot entry covers a plain apex and a plain subdomain of the same
+# zone, so both are dropped - Squid cannot hold both forms for one name
+# without warning and silently dropping one of them.
+ACL_SUBSUMED="$(acl_for '{"version":2,"allowDomains":[".example.com","a.example.com","example.com","other.example.net"]}')"
+if [ "$ACL_SUBSUMED" = ".example.com
+other.example.net" ]; then
+	ok "the proxy ACL subsumes narrower entries"
+else
+	ng "the proxy ACL subsumes narrower entries (got: $ACL_SUBSUMED)"
+fi
+
+# The contrast: with no leading dot entry, nothing subsumes anything and every
+# host keeps its own line.
+ACL_UNSUBSUMED="$(acl_for '{"version":2,"allowDomains":["a.example.com","example.com","other.example.net"]}')"
+if [ "$ACL_UNSUBSUMED" = "a.example.com
+example.com
+other.example.net" ]; then
+	ok "the proxy ACL keeps entries when none of them subsume another"
+else
+	ng "the proxy ACL keeps entries when none of them subsume another (got: $ACL_UNSUBSUMED)"
+fi
+
+# Profile bundles and allowDomains are merged, sorted and deduplicated - same
+# rule as --print-allowlist, and the same reason: which source a domain came
+# from is not something the reader of the ACL can act on.
+ACL_MERGED="$(acl_for '{"version":2,"profile":["npm"],"allowDomains":["registry.npmjs.org","alpha.example.com"]}')"
+if [ "$ACL_MERGED" = "alpha.example.com
+registry.npmjs.org" ]; then
+	ok "the proxy ACL merges profile domains and allowDomains, sorted and deduplicated"
+else
+	ng "the proxy ACL merges profile domains and allowDomains, sorted and deduplicated (got: $ACL_MERGED)"
+fi
+
+# No entry it produces may depend on a command that touches the network or
+# netfilter: the whole point is that this runs from inside a container whose
+# egress is already closed, unprivileged. Stand-ins for those commands record
+# whether they were ever invoked; a real dig/curl/iptables would otherwise
+# still work in this sandboxed test run and hide a regression.
+ACL_NOEXEC_BIN="$TMPDIR_TEST/acl-noexec-bin"
+ACL_NOEXEC_MARKER="$TMPDIR_TEST/acl-noexec-marker"
+mkdir -p "$ACL_NOEXEC_BIN"
+rm -f "$ACL_NOEXEC_MARKER"
+for cmd in dig curl ip iptables ip6tables ipset aggregate getent; do
+	cat >"$ACL_NOEXEC_BIN/$cmd" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "$cmd" >>"$ACL_NOEXEC_MARKER"
+exit 1
+EOF
+	chmod +x "$ACL_NOEXEC_BIN/$cmd"
+done
+
+printf '%s' '{"version":2,"profile":["github"],"allowDomains":[".example.com","a.example.com"]}' >"$TMPDIR_TEST/firewall.json"
+rc=0
+out="$(PATH="$ACL_NOEXEC_BIN:$PATH" bash "$FIREWALL_SH" --print-proxy-acl --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -f "$ACL_NOEXEC_MARKER" ]; then
+	ok "the proxy ACL runs no network or netfilter command"
+else
+	ng "the proxy ACL runs no network or netfilter command (rc=$rc, invoked=$([ -f "$ACL_NOEXEC_MARKER" ] && tr '\n' ' ' <"$ACL_NOEXEC_MARKER"))"
+fi
+
+# A listing is never produced from a file an apply would refuse, same as
+# --print-allowlist.
+rc=0
+printf '%s' '{"version":1,"allowCidrs":["0.0.0.0/0"]}' >"$TMPDIR_TEST/firewall.json"
+out="$(bash "$FIREWALL_SH" --print-proxy-acl --config "$TMPDIR_TEST/firewall.json" 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "rejected allowCidrs entry"; then
+	ok "--print-proxy-acl refuses a configuration an apply would refuse"
+else
+	ng "--print-proxy-acl refuses a configuration an apply would refuse (rc=$rc)"
+fi
+
+rc=0
+out="$(SUDO_USER=node SUDO_UID=1000 bash "$FIREWALL_SH" --print-proxy-acl 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "not accepted through sudo"; then
+	ok "--print-proxy-acl is refused when invoked through sudo"
+else
+	ng "--print-proxy-acl is refused when invoked through sudo (rc=$rc)"
 fi
 
 # --- anchor domain -----------------------------------------------------------
