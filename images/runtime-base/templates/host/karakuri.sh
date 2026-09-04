@@ -60,6 +60,8 @@
 #   karakuri-dock -p <compose-project> [-b <broker-key>] [-H <ssh-host>] [-s <service>] [-w <workspace>] [up]
 #                                                    dev container を使える状態にしてから入る
 #                                                    （起動 → 未注入なら注入 → port forwarding → 対話シェル）
+#   karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]
+#                                                    ホストで実行するコマンドへ鍵を渡す
 #   karakuri-prod-run <org/repo> <sha> <task> [args...]
 #   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
 #   karakuri-prod-base <org/repo> <sha>             対話作業の土台を起動
@@ -96,6 +98,13 @@
 # 使い、添字を直接書かない（zsh の配列は既定で 1 始まりで、bash と食い違う）。
 # 文字列を語に割る必要がある箇所は、パラメータ展開の分割挙動が両者で違う
 # （zsh は既定で分割しない）ため、`eval` による配列代入で揃える。
+#
+# --- broker の差し替え候補（未実装のメモ） --------------------------------------
+# プロンプト回数を減らす案が2つある。どちらも未実装で、差し替え点は既存の
+# karakuri-broker-command のままである。
+#
+#   - macOS Keychain を Bitwarden の前段キャッシュにする
+#   - 秘密を自プロセスのメモリだけで保持する常駐 agent
 
 # --- このファイル自身の場所を覚える -------------------------------------------
 # prod-run.sh / dev-inject.sh / broker はこのファイルの隣に置かれている
@@ -113,6 +122,20 @@ if [ -z "${KARAKURI_TOOL_DIR:-}" ]; then
 	fi
 	KARAKURI_TOOL_DIR="$(cd "$(dirname "$_karakuri_self")" 2>/dev/null && pwd)"
 	unset _karakuri_self
+fi
+
+# --- shims ディレクトリを PATH へ追加 -------------------------------------------
+# host/shims/_dotenvx を確実に解決させるため、末尾へ append する。前置きしない
+# 理由: _dotenvx は衝突しない名前なので前置きに利得が無く、利用者のコマンドを
+# 覆うリスクだけが増える。複数回 source されても重複しないよう、既に PATH に
+# 含まれていれば足さない。
+if [ -n "${KARAKURI_TOOL_DIR:-}" ]; then
+	_karakuri_shims_dir="${KARAKURI_TOOL_DIR}/shims"
+	case ":${PATH}:" in
+	*":${_karakuri_shims_dir}:"*) ;;
+	*) PATH="${PATH}:${_karakuri_shims_dir}" ;;
+	esac
+	unset _karakuri_shims_dir
 fi
 
 # --- 内部ヘルパー ---------------------------------------------------------------
@@ -715,6 +738,94 @@ karakuri-dock() {
 	"$dock" "${dock_argv[@]}"
 }
 
+# --- host ------------------------------------------------------------------------
+
+# karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...] — ホストで
+# 実行するコマンドへ broker の鍵を渡す。dev container や prod のような
+# コンテナ経由の受け渡しを持たない、ホストでしかビルドできないプロジェクト
+# 向け。
+#
+# `-b` は必須で、`karakuri-dev-inject` / `karakuri-dock` の `-p` のような
+# 既定の供給元へは落ちない。この関数は compose プロジェクトを持たないため。
+#
+# `-e` は既定 `dev`。broker の項目名の組み立ては既存の
+# `karakuri-broker-command` / `karakuri-broker-env` をそのまま使うので、
+# 項目の並び（dev は共有 → 全プロジェクト共通の個人 → プロジェクト個人の
+# 3項目、prod は共有 → プロジェクトの2項目）もそちらの規約がそのまま出る。
+#
+# `--` を終端子とし、それ以降は一切解釈せず逐語で実体（host-run.sh）へ渡す。
+karakuri-run() {
+	local usage="Usage: karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]"
+	local broker_key="" env_kind="dev"
+	local -a cmd_argv
+	cmd_argv=()
+
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		-b)
+			if [ "$#" -lt 2 ]; then
+				echo "karakuri-run: -b requires a value" >&2
+				echo "$usage" >&2
+				return 1
+			fi
+			broker_key="$2"
+			shift 2
+			;;
+		-e)
+			if [ "$#" -lt 2 ]; then
+				echo "karakuri-run: -e requires a value" >&2
+				echo "$usage" >&2
+				return 1
+			fi
+			env_kind="$2"
+			shift 2
+			;;
+		--)
+			shift
+			cmd_argv=("$@")
+			break
+			;;
+		-h | --help)
+			echo "$usage" >&2
+			return 0
+			;;
+		*)
+			echo "karakuri-run: unexpected argument before '--': $1 (pass the command after '--')" >&2
+			echo "$usage" >&2
+			return 1
+			;;
+		esac
+	done
+
+	if [ -z "$broker_key" ]; then
+		echo "$usage" >&2
+		return 1
+	fi
+	_karakuri_plain_name "broker key" "$broker_key" || return 1
+	if [ "$broker_key" = "_common" ]; then
+		echo "karakuri-run: broker key '_common' is reserved — env/_common/dev already holds the personal secrets shared by every project, so using it as a project-specific key would read the same item twice" >&2
+		return 1
+	fi
+
+	case "$env_kind" in
+	dev | prod) ;;
+	*)
+		echo "karakuri-run: unknown -e '${env_kind}' (expected 'dev' or 'prod')" >&2
+		return 1
+		;;
+	esac
+
+	local host_run broker
+	host_run="$(_karakuri_tool host-run.sh)" || return 1
+	broker="$(karakuri-broker-command "$env_kind" "$broker_key")" || return 1
+
+	local -a _karakuri_env
+	_karakuri_env=()
+	_karakuri_broker_env_into "$env_kind" "$broker_key" || return 1
+
+	env "${_karakuri_env[@]}" "HOST_BROKER=${broker}" "$host_run" "${cmd_argv[@]}"
+}
+
 # --- compose ファイルの解決 --------------------------------------------------------
 # compose ファイルはプロジェクトごとに 1 枚持つ。置き場所ごとホスト上の git
 # repo にして、どの dev container にも mount しない。理由はファイルの中身に
@@ -1297,6 +1408,8 @@ karakuri.sh が提供する関数:
   karakuri-dock -p <compose-project> [-b <broker-key>] [-H <ssh-host>] [-s <service>] [-w <workspace>] [up]
       dev container を使える状態にしてから入る（起動 → 未注入なら注入 → port forwarding → 対話シェル。up で入る手前で止まる）
       ssh の ProxyCommand には dock.sh の絶対パスが要る（同じファイルの --stdio モード）
+  karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]
+      ホストで実行するコマンドへ broker の鍵を渡す（既定は dev。項目の並びは既存の dev 注入・prod 起動と同一）
   karakuri-prod-run <org/repo> <sha> <task> [task-args...]
       install を挟んでタスクランナー経由で prod のタスクを実行する
   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
