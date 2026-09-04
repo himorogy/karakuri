@@ -46,6 +46,13 @@ services:
       - NET_ADMIN
       - NET_RAW
 
+    # firewall.json が実現層 l7（既定）を選んでいる前提。init-project-firewall.sh
+    # は egress-proxy の名前解決を要求するため、先に立っていないと postStartCommand
+    # が失敗する。l3 を明示した設定では不要だが、置いたままでも害はない
+    # （proxy 宛の環境変数を読まないツールは今までどおり直接つながろうとして拒否される）。
+    depends_on:
+      - egress-proxy
+
     # containerEnv の置き換え。**devcontainer.json の containerEnv は Compose 構成では
     # 効かない。** 環境変数の置き場はここが既定で、イメージの ENV に置くのは利用側が
     # 変える前提が無いものだけ (docs/conventions.md「環境変数の置き場」)。
@@ -55,6 +62,21 @@ services:
     # ある。ここで上書きすると認証がホスト側の資格情報へ落ちるので書かない。
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
+
+      # egress-proxy への配線。大文字・小文字の両方が要る — curl と apt は小文字しか
+      # 読まない。サービス名はユーザー定義ネットワーク上でだけ Docker の埋め込み
+      # リゾルバが解決する。
+      http_proxy: "http://egress-proxy:3128"
+      https_proxy: "http://egress-proxy:3128"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      HTTPS_PROXY: "http://egress-proxy:3128"
+
+      # loopback 宛の内部通信（エディタ拡張の hook 通知など）まで proxy へ回さない。
+      no_proxy: "localhost,127.0.0.1"
+      NO_PROXY: "localhost,127.0.0.1"
+
+      # Node の fetch (undici) は既定で proxy 環境変数を読まない。opt-in が要る。
+      NODE_USE_ENV_PROXY: "1"
 
       # 明示しないと .claude.json が /home/node/.claude.json（下の named volume の外）
       # に置かれ、コンテナを作り直すたびに失われる。設定すると .claude.json を含む
@@ -136,10 +158,48 @@ services:
       - <your-project>-claude-config:/home/node/.claude
       - <your-project>-codex-config:/home/node/.codex
 
+      # egress-proxy の access log。ro — 書ける状態にすると、侵害された
+      # エージェントが自分の通信記録を消せる。egress-proxy 側は rw で
+      # 同じ named volume をマウントする。
+      - <your-project>-proxy-log:/var/log/egress-proxy:ro
+
     # base イメージの CMD は node なので、そのままだと即終了する。
     command: sleep infinity
+
+  # L7 egress proxy sidecar（packages/egress-guard/templates/proxy/ が実体、
+  # 据え方は packages/egress-guard/README.md の実現層の節）。firewall.json が
+  # 実現層 l7（既定）を選んでいる限り必須 — init-project-firewall.sh は
+  # このサービス名を DNS で解決できることを前提に最終テーブルを組む。
+  egress-proxy:
+    build:
+      # dev と同じディレクトリ。Dockerfile が firewall.json を COPY するため。
+      context: .
+      dockerfile: proxy/Dockerfile
+      pull: true
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+    # 起動時から proxy（uid 13）で動かす。root から降格させようとすると
+    # cap_drop: [ALL] の下で失敗して落ちる（templates/proxy/Dockerfile 参照）。
+    user: "13:13"
+
+    read_only: true
+    tmpfs:
+      - /var/spool/squid:uid=13,gid=13
+      - /run:uid=13,gid=13
+
+    # access log だけは名前付きボリューム。egress-proxy 側は rw、dev 側は
+    # 上の volumes で ro としてマウントする。tmpfs だとコンテナをまたいで
+    # 共有できない。
+    volumes:
+      - <your-project>-proxy-log:/var/log/squid
+
+    # ports: は置かない。ホストへ公開しない。dev からはユーザー定義ネットワーク
+    # 上のサービス名 (egress-proxy:3128) で到達する。
 
 volumes:
   <your-project>-history:
   <your-project>-claude-config:
   <your-project>-codex-config:
+  <your-project>-proxy-log:

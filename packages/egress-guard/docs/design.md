@@ -671,9 +671,9 @@ CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホ�
 
 **基底プロファイルへ入れるかどうかは別の判断です。** ここでは観測事実として記録するに留めます（何を許可するかの判断基準は [`measuring-egress.md`](./measuring-egress.md)）。
 
-#### 実装候補: Squid（明示型 `CONNECT`、`ssl_bump` なし）
+#### 実装: Squid（明示型 `CONNECT`、`ssl_bump` なし）
 
-**PoC を通りました（2026-08-19、PASS=16 FAIL=0）。** 記録は [`verification-record.md`](./verification-record.md) §6.24、環境は [`../poc/l7-proxy/`](../poc/l7-proxy/)。**ただし実装として確定したわけではありません。** L3 側との統合（縮小後の iptables との組み合わせ）と、L3 での対照実験（同じ日に「L3 だと落ちる」ことを示す）が残っています。
+**PoC（[`../poc/l7-proxy/`](../poc/l7-proxy/)、記録は [`verification-record.md`](./verification-record.md) §6.24）を経て本実装に採用しました。** 雛形は `templates/proxy/`（`Dockerfile` と `squid.conf`）、L3 側との統合（最終テーブルの分岐）は `init-project-firewall.sh` に入っています。
 
 採る理由:
 
@@ -690,7 +690,7 @@ CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホ�
 
 **正直なマイナス点:**
 
-* **Docker Official Image が存在しません。** 自前ビルドと digest でのピン留めが要ります。§2.21 で Feature 化を却下した理由（サプライチェーン面が増える）と同じ問題が、ここでは避けられない形で現れます
+* **Docker Official Image が存在しません。** 自前ビルドが要ります。§2.21 で Feature 化を却下した理由（サプライチェーン面が増える）と同じ問題が、ここでは避けられない形で現れます。digest でのピン留めはしません — このリポジトリは規制対応でない限り digest 固定をしない方針で、`templates/proxy/Dockerfile` のベースイメージもその方針に揃えています
 * **CVE の実績が良くありません。** GitHub Security Advisories は 41 件（うち critical 12）です。**大半は FTP gateway・ICP・cache digest といった本構成で使わない機能ですが、バイナリには入っています。** 「残るリスク」の「敵が選んだ入力を食う常駐パーサ」が、この選択で最大化します
 * Squid は本来キャッシュのため、`cache deny all` で「キャッシュしない」を明示する必要があります
 
@@ -728,7 +728,7 @@ CONNECT davidanson.gallery.vsassets.io:443      ← "cdn" が付かない別ホ�
 
 **決定:** L7 proxy を既定としつつ、現行の L3（ipset ベースの allowlist）方式も**選べる形で残す**。`firewall.json` に実現層を明示するフィールドを置き、**省略時は L7**。`l3` を選んだ場合は、残る制限を適用ログに明示する。
 
-**[`spec.md`](./spec.md) §10.1 は当初「実現層の交代はこれ一本」と書いていました。交代ではなく併存に改めます。**
+**[`spec.md`](./spec.md) §10.1 は当初「実現層の交代はこれ一本」と書いていました。交代ではなく併存に改めます。** 実装は `init-project-firewall.sh` の `layer` 分岐として入っており、以下は決定の記録であると同時に、その分岐の現在の形の記述です。
 
 #### なぜ
 
@@ -760,7 +760,7 @@ sidecar は devcontainer ごとに 1 つ立ちます。**worktree を複数開�
 
 **スクリプトは 1 本のままにします。** 分岐は「最終テーブルを allowlist で組むか、proxy 宛のみに縮小するか」の 1 箇所に閉じます。
 
-共通のまま残るもの: 設定のバリデーション（I5）、配置検査（I1）、panic テーブル（I2）、DNS 固定（I4）、IPv6 の全拒否、遮断先の記録、冪等性。**実現層の違いが触るのは最終テーブルの中身だけです。**
+共通のまま残るもの: 設定のバリデーション（I5）、配置検査（I1）、panic テーブル（I2）、DNS 固定（I4）、IPv6 の全拒否、冪等性。**遮断先の記録はここに含まれません。** `l3` では ipset `egress-audit-v4` に記録しますが、`l7` ではこの ipset 自体を作らず、観測面は proxy 自身のアクセスログに移ります（[`spec.md`](./spec.md) §10.1「mode との組み合わせ」）。53 番への試行を記録する DNS 側のルール（記録用の ipset への追加）も同じ理由で `l7` には無く、割り当てリゾルバ以外への 53 番を拒否したこと自体は `fw-dns-drop:` の `LOG` ルールとして `l7` でも残ります。**実現層の違いが触るのは最終テーブルの中身と、この記録の置き場です。**
 
 #### 不変条件
 

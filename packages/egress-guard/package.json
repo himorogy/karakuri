@@ -1,6 +1,6 @@
 {
 	"name": "@himorogy/egress-guard",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "Allowlist-based egress firewall bootstrap for development containers",
 	"keywords": [
 		"egress",

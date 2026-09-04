@@ -200,6 +200,7 @@ case "$name" in
 	example.net) echo "198.51.100.2" ;;
 	example.org) echo "198.51.100.3" ;;
 	host.docker.internal) ;;
+	egress-proxy) echo "172.20.0.5" ;;
 	private.example.com)
 		# A zone that answers with addresses inside FORBIDDEN_CIDRS. Only the
 		# public one may reach the allowlist.
@@ -1568,6 +1569,198 @@ assert_contains "the listing names the selected bundles" "$out" '^profile: npm, 
 assert_contains "the listing merges the configured domain in" "$out" '^  registry\.example\.com$'
 assert_contains "the listing warns that the meta ranges are not in it" "$out" \
 	'GitHub meta API'
+
+# l7's counterpart: the note above describes apply-time behaviour
+# (add_github_meta_ranges) that only runs under l3 (see "layer branching"
+# below), so printing it under l7 would be a false claim about what apply
+# will do.
+FW_STATE="$WORK/state"
+mkdir -p "$FW_STATE"
+printf '%s' printonlyl7 >"$FW_STATE/run"
+rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
+: >"$WORK/log.printonlyl7"
+printf '%s' '{"version":2,"layer":"l7","profile":["npm","github"],"allowDomains":["registry.example.com"]}' 	>"$WORK/print-l7.json"
+rc=0
+outl7="$(env "FW_LOG=$WORK/log.printonlyl7" "FW_STATE=$FW_STATE" "PATH=$BIN:$PATH" 	bash "$FIREWALL_SH" --print-allowlist --config "$WORK/print-l7.json" 2>/dev/null)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "--print-allowlist exits 0 under layer l7"
+else
+	ng "--print-allowlist exits 0 under layer l7 (rc=$rc)"
+fi
+assert_absent "the L7 listing does not claim meta ranges are added at apply time" "$outl7" 	'are also allowed at apply time'
+assert_contains "the L7 listing explains GitHub is reached through the proxy instead" "$outl7" 	'does not add GitHub meta API ranges'
+
+# --- realisation layer branching ----------------------------------------------
+#
+# Everything above this line ran under `"version":1`, which is l3 - so none of
+# it exercises the branch at all. That is deliberate: it is what proves the l3
+# path itself did not move.
+
+echo "layer branching"
+healthy_net_stubs
+
+# Same fields as the "enforce mode" config at the top of this file, just
+# spelled with an explicit layer. If l3 really is unchanged, choosing it this
+# way and choosing it by omitting version 2 altogether must produce the same
+# table.
+run_firewall l3explicit '{"version":2,"layer":"l3","profile":["anthropic","npm","github"],"allowDomains":["registry.example.com"],"allowCidrs":["203.0.113.0/24"],"allowHostPorts":[5432]}'
+if [ "$(cat "$WORK/rc.l3explicit")" = "0" ]; then
+	ok "an explicit layer l3 config exits 0"
+else
+	ng "an explicit layer l3 config exits 0 (got $(cat "$WORK/rc.l3explicit"))"
+	sed 's/^/    /' "$WORK/out.l3explicit" >&2
+fi
+if [ "$(v4_table enforce)" = "$(v4_table l3explicit)" ]; then
+	ok "the L3 final table is unchanged"
+	ok "a version 1 config produces the L3 final table"
+else
+	ng "the L3 final table is unchanged"
+	ng "a version 1 config produces the L3 final table"
+fi
+assert_contains "choosing L3 reports what it cannot express" "$(cat "$WORK/out.l3explicit")" \
+	'cannot express'
+
+# allowCidrs uses a range distinct from the addresses the dig stub hands back
+# for an unlisted domain (203.0.113.0/24, see healthy_net_stubs), so a domain
+# address reaching the set and a CIDR reaching the set cannot be mistaken for
+# each other below.
+run_firewall l7enforce '{"version":2,"layer":"l7","profile":["anthropic","npm"],"allowCidrs":["198.51.100.0/24"],"allowHostPorts":[5432]}'
+if [ "$(cat "$WORK/rc.l7enforce")" = "0" ]; then
+	ok "an explicit layer l7 config exits 0"
+else
+	ng "an explicit layer l7 config exits 0 (got $(cat "$WORK/rc.l7enforce"))"
+	sed 's/^/    /' "$WORK/out.l7enforce" >&2
+fi
+assert_absent "choosing L3 reports what it cannot express is not reported under L7" \
+	"$(cat "$WORK/out.l7enforce")" 'cannot express'
+T7="$(v4_table l7enforce)"
+assert_well_formed_table "every rule in the L7 final table is a single well-formed line" "$T7"
+assert_contains "L7 OUTPUT policy is DROP" "$T7" '^:OUTPUT DROP'
+assert_contains "the L7 final table accepts the proxy" "$T7" \
+	'-A OUTPUT -d 172\.20\.0\.5/32 -p tcp --dport 3128 -j ACCEPT'
+assert_contains "the L7 final table still allows the configured host port" "$T7" \
+	'-A OUTPUT -d 172\.17\.0\.1/32 -p tcp --dport 5432 -j ACCEPT'
+assert_absent "the L7 final table has no recorder" "$T7" 'SET --add-set'
+assert_contains "unmatched L7 egress is still rejected" "$T7" \
+	'^-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited'
+assert_before "L7 DNS pinning precedes the OUTPUT ESTABLISHED accept" "$T7" \
+	'^-A OUTPUT -p udp --dport 53 -j DROP' '^-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT'
+assert_before "the L7 allowCidrs/allowHostPorts accept precedes the proxy accept" "$T7" \
+	'-A OUTPUT -d 172\.17\.0\.1/32 -p tcp --dport 5432 -j ACCEPT' \
+	'-A OUTPUT -d 172\.20\.0\.5/32 -p tcp --dport 3128 -j ACCEPT'
+assert_before "the L7 proxy accept precedes the final REJECT" "$T7" \
+	'-A OUTPUT -d 172\.20\.0\.5/32 -p tcp --dport 3128 -j ACCEPT' '^-A OUTPUT -j REJECT'
+
+# DNS pinning is one of the things the ticket declares unchanged by layer;
+# these mirror the L3 assertions above (T4) rather than just being implied by
+# the ordering check.
+assert_contains "the L7 final table accepts the assigned resolver on udp/53" "$T7" \
+	'-d 192\.168\.65\.7/32 -p udp --dport 53 -j ACCEPT'
+assert_contains "the L7 final table accepts the assigned resolver on tcp/53" "$T7" \
+	'-d 192\.168\.65\.7/32 -p tcp --dport 53 -j ACCEPT'
+assert_contains "the L7 final table drops other udp/53" "$T7" '-A OUTPUT -p udp --dport 53 -j DROP'
+assert_contains "the L7 final table drops other tcp/53" "$T7" '-A OUTPUT -p tcp --dport 53 -j DROP'
+
+LOG_L7="$WORK/log.l7enforce"
+# 203.0.113.7 is what the dig stub answers both configured domains with
+# (api.anthropic.com and registry.npmjs.org fall through to its default
+# case) - it must never reach the staging set under l7.
+assert_absent "the L7 final table carries no domain allowlist" "$(cat "$LOG_L7")" \
+	'^ipset add -exist egress-allow-v4-stg 203\.0\.113\.7$'
+assert_contains "allowCidrs still reaches the L7 final table" "$(cat "$LOG_L7")" \
+	'^ipset add -exist egress-allow-v4-stg 198\.51\.100\.0/24$'
+assert_absent "the L7 audit set is never created" "$(cat "$LOG_L7")" \
+	'^ipset create -exist egress-audit-v4'
+
+run_firewall l7audit '{"version":2,"layer":"l7","mode":"audit","profile":["anthropic","npm"],"allowCidrs":["198.51.100.0/24"],"allowHostPorts":[5432]}'
+if [ "$(cat "$WORK/rc.l7audit")" = "0" ]; then
+	ok "an explicit layer l7 audit config exits 0"
+else
+	ng "an explicit layer l7 audit config exits 0 (got $(cat "$WORK/rc.l7audit"))"
+	sed 's/^/    /' "$WORK/out.l7audit" >&2
+fi
+if [ "$(v4_table l7enforce)" = "$(v4_table l7audit)" ]; then
+	ok "the L7 final table is identical in audit and enforce"
+else
+	ng "the L7 final table is identical in audit and enforce"
+fi
+assert_contains "L7 audit does not put OUTPUT on ACCEPT" "$(v4_table l7audit)" '^:OUTPUT DROP'
+assert_absent "the L7 audit table has no recorder either" "$(v4_table l7audit)" 'SET --add-set'
+
+if [ "$(v4_table_n enforce 1)" = "$(v4_table_n l7enforce 1)" ]; then
+	ok "the bootstrap table is identical across realisation layers"
+else
+	ng "the bootstrap table is identical across realisation layers"
+fi
+
+# IPv6 has no allowlist and no layer-specific branch in emit_filter_v6 at
+# all, so an l7 run's IPv6 table should be byte identical to an l3 run's.
+if [ "$(v6_table enforce)" = "$(v6_table l7enforce)" ]; then
+	ok "the IPv6 table is identical across realisation layers"
+else
+	ng "the IPv6 table is identical across realisation layers"
+fi
+
+# Idempotency: same shape as the "idempotency" section above (run enforce
+# twice, compare), just against an l7 config instead of a version 1 one.
+run_firewall l7second '{"version":2,"layer":"l7","profile":["anthropic","npm"],"allowCidrs":["198.51.100.0/24"],"allowHostPorts":[5432]}'
+if [ "$(cat "$WORK/rc.l7second")" = "0" ]; then
+	ok "a second consecutive L7 run exits 0"
+else
+	ng "a second consecutive L7 run exits 0 (got $(cat "$WORK/rc.l7second"))"
+	sed 's/^/    /' "$WORK/out.l7second" >&2
+fi
+if [ "$(v4_table l7enforce)" = "$(v4_table l7second)" ]; then
+	ok "the second L7 run produces an identical IPv4 table"
+else
+	ng "the second L7 run produces an identical IPv4 table"
+fi
+if [ "$(v6_table l7enforce)" = "$(v6_table l7second)" ]; then
+	ok "the second L7 run produces an identical IPv6 table"
+else
+	ng "the second L7 run produces an identical IPv6 table"
+fi
+
+# Reuses the "panic on a failed rebuild" scenario (same dig/curl failure, same
+# lone anchor bundle, no sshdPort) with an l7 config, so the only thing that
+# can differ between the two panic tables is the layer.
+make_stub dig 'exit 9'
+make_stub curl 'exit 7'
+run_firewall l7panic '{"version":2,"layer":"l7","profile":["anthropic"]}'
+healthy_net_stubs
+assert_is_panic_table "an L7 config that cannot resolve its anchor still falls back to the panic table" \
+	"$(v4_table l7panic)"
+if [ "$(v4_table panic)" = "$(v4_table l7panic)" ]; then
+	ok "the panic table is identical across realisation layers"
+else
+	ng "the panic table is identical across realisation layers"
+fi
+
+# The github bundle is the one thing that puts addresses into $SET_V4 without
+# the configuration author having written them down (allowCidrs is the
+# author's own choice; these are a side effect of selecting the bundle). If
+# they reached the live set under l7, the allowCidrs match in the final
+# table would let all of GitHub's ranges through on every port, bypassing
+# the proxy entirely.
+run_firewall l7github '{"version":2,"layer":"l7","profile":["github"]}'
+if [ "$(cat "$WORK/rc.l7github")" = "0" ]; then
+	ok "an L7 config with the github bundle exits 0"
+else
+	ng "an L7 config with the github bundle exits 0 (got $(cat "$WORK/rc.l7github"))"
+	sed 's/^/    /' "$WORK/out.l7github" >&2
+fi
+assert_absent "the L7 layer does not fetch the GitHub meta ranges" "$(cat "$WORK/log.l7github")" \
+	'^ipset add -exist egress-allow-v4 140\.82\.112\.0/20$'
+
+run_firewall l3github '{"version":2,"layer":"l3","profile":["github"]}'
+if [ "$(cat "$WORK/rc.l3github")" = "0" ]; then
+	ok "an L3 config with the github bundle exits 0"
+else
+	ng "an L3 config with the github bundle exits 0 (got $(cat "$WORK/rc.l3github"))"
+	sed 's/^/    /' "$WORK/out.l3github" >&2
+fi
+assert_contains "the L3 layer still fetches the GitHub meta ranges" "$(cat "$WORK/log.l3github")" \
+	'^ipset add -exist egress-allow-v4 140\.82\.112\.0/20$'
 
 # --- result ------------------------------------------------------------------
 
