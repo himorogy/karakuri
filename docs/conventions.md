@@ -30,3 +30,35 @@ README（公開面の使い方）が機能を説明する節は、次の3要素�
 - **個々のスクリプト** — その1行がそう書かれている理由だけ。経路全体の解説は持たない
 - **README** — 機能節の3要素だけ。詳細は正本を指す
 - **台帳とテストが固定している事実は、散文で持たない。** 正本にも書かない
+
+## 環境変数の置き場
+
+devcontainer の環境変数は compose の `environment:` に置く。イメージの `ENV` に置くのは
+**利用側が変える前提が無いもの**だけである。判定は「固定する必然性があるか」ではなく
+「利用側が変えるか」で行う。
+
+前提として、コンテナは devcontainer ツール（CLI か VS Code 拡張）で作る。素の
+`docker compose up` は `features`・`postCreateCommand`・`postStartCommand` を飛ばし、
+egress-guard が適用されないコンテナを作るため支援しない。この前提の下では、イメージの `ENV` も
+compose の `environment:` も等しく SSH セッションへ届く（機構は
+`images/devcontainer-base/PORT-FORWARDING.md`「前提: コンテナは devcontainer ツールで作る」が正本）。
+
+イメージの `ENV` に置くもの:
+
+- `LANG` / `LC_ALL` / `TZ` / `PNPM_HOME` / `NPM_CONFIG_PREFIX` / `PATH` / `SHELL` —
+  イメージの構造とロケール
+- `GIT_ASKPASS` と `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `VALUE_0` / `KEY_1` / `VALUE_1` —
+  変えられると認証がホスト側の資格情報へ落ちる。生死は `git-auth-check` が対話シェルの起動ごとに
+  報告する
+- `CRIT_NO_UPDATE_CHECK` — 起動の決定性と egress の予測可能性のための設計判断
+
+compose の `environment:` に置くもの:
+
+- `NODE_OPTIONS` — マシンのメモリ次第
+- `CLAUDE_CONFIG_DIR` — 未設定だと `.claude.json` が `~/.claude` の**外**（`~/.claude.json`）に
+  置かれ、`~/.claude` だけを named volume にしている構成ではコンテナの作り直しで失われる。
+  既定値と同じパスに見えるが同じではない
+- `CRIT_PORT` — 値はプロジェクトが決める。同時に開く別プロジェクトと衝突したらずらす
+- `CRIT_PUBLIC_URL` と `CRIT_ALLOW_UNAUTHENTICATED_NETWORK` — 後者は機能の有効化ではなく
+  **承認**である。crit は「広告 URL が非空」と「listen が非 loopback」の両方を同じフラグで
+  解除するため、イメージに焼くと後者の拒否まで消える。承認はそれを必要とする判断と同じ場所に置く

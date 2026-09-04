@@ -252,8 +252,9 @@ RUN chown root:root /usr/local/bin/prod-entrypoint.sh /usr/local/bin/secrets-ing
 # 外れることだけは避けたいので、git-auth-check が対話シェルの起動時に生死を
 # 確認する。
 #
-# sshd 経由のセッションには Dockerfile の ENV が届かない。devcontainer-base が
-# /etc/environment へ同じ内容を転記する (値の原本はここ)。
+# sshd 経由のセッションには Dockerfile の ENV がそのままでは届かない。devcontainer は
+# devcontainer ツールで作る前提で、ツールがコンテナの env 全量を /etc/environment へ写す
+# (devcontainer-base の PORT-FORWARDING.md)。prod container は sshd を持たないため対象外。
 ENV GIT_CONFIG_COUNT=2 \
     GIT_CONFIG_KEY_0=credential.https://github.com.helper \
     GIT_CONFIG_VALUE_0="" \

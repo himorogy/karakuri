@@ -32,9 +32,31 @@ services:
       - NET_ADMIN
       - NET_RAW
 
+    # 環境変数の置き場はここが既定。イメージの ENV に置くのは利用側が変える前提が
+    # 無いものだけ（docs/conventions.md「環境変数の置き場」）。
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
+
+      # 明示しないと .claude.json が /home/node/.claude.json（下の named volume の外）
+      # に置かれ、コンテナを作り直すたびに失われる。設定すると .claude.json を含む
+      # 全部がこのパスの下に入る。既定値と同じに見えるが同じではない。
       CLAUDE_CONFIG_DIR: /home/node/.claude
+
+      # crit の既定はランダムポート。ホスト側 ~/.ssh/config の LocalForward を静的に
+      # 書けるよう固定する。同時に開く別プロジェクトと衝突したらここをずらす
+      # （base の PORT-FORWARDING.md「crit のポート」）。
+      CRIT_PORT: "4588"
+
+      # crit は Host ヘッダを検査し、localhost と loopback IP 以外を 403 で拒む。
+      # karakuri.test で開くには広告 URL でホスト名を 1 つ与える。広告 URL は bind を
+      # 変えないため listen は 127.0.0.1 のまま。ポートは CRIT_PORT と揃える。
+      #
+      # CRIT_ALLOW_UNAUTHENTICATED_NETWORK は機能の有効化ではなく承認である。新しい
+      # crit は広告 URL の指定だけでネットワーク露出とみなして起動を拒否する。base に
+      # 焼くと listen が非 loopback のときの拒否まで消えるため、承認を必要とする判断
+      # （ホスト名で開く）と同じ場所に置く。
+      CRIT_PUBLIC_URL: http://karakuri.test:4588
+      CRIT_ALLOW_UNAUTHENTICATED_NETWORK: "1"
 
     # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
     # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと

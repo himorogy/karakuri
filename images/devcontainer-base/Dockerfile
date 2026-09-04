@@ -59,8 +59,6 @@ ARG USERNAME=node
 # 書き込みなど root 権限が要る作業のために切り替える。
 USER root
 
-ENV DEVCONTAINER=true
-
 # --- OS パッケージ (devcontainer 固有) -----------------------------------------
 # vim-tiny は git commit / rebase -i がエディタ不在で失敗しないための最小保険。
 # 実際に使うエディタ (micro 等) は個人フックが入れて EDITOR を上書きする。
@@ -126,48 +124,32 @@ COPY --from=crit-builder /out/crit /usr/local/bin/crit
 # compose の ports: publish は egress-guard の INPUT DROP でそもそも届かない
 # (PORT-FORWARDING.md)。旧来の 0.0.0.0 上書きは publish 前提の名残であり廃止した。
 #
-# CRIT_PORT: crit の既定はランダムポート。ホスト側 ~/.ssh/config の LocalForward
-# を静的に書けるよう、イメージが既定値を固定する。プロジェクト側の上書き方法は
-# PORT-FORWARDING.md (compose の environment: では SSH セッションに届かない)。
+# CRIT_PORT と CRIT_PUBLIC_URL はここに置かない。どちらも利用側が変える値なので
+# 置き場は compose の environment: であり、雛形が値を持つ (PORT-FORWARDING.md
+# 「crit のポート」、docs/conventions.md「環境変数の置き場」)。
 #
-# 更新チェックは起動の決定性と egress の予測可能性のために無効化する。
+# 更新チェックは起動の決定性と egress の予測可能性のために無効化する。利用側が
+# 変える前提が無いのでここに置く。
 #
 # GIT_ASKPASS: git の認証を /run/secrets/GH_TOKEN から取る (注入されていなければ、
 # 認証が要る操作が非ゼロ終了して顕在化する)。スクリプト本体は runtime-base が焼く。
-ENV CRIT_PORT=4588 \
-    CRIT_NO_UPDATE_CHECK=1 \
+ENV CRIT_NO_UPDATE_CHECK=1 \
     GIT_ASKPASS=/usr/local/bin/git-askpass
 
-# Dockerfile の ENV は docker exec 経由のシェル (VS Code 含む) にしか届かない。
-# sshd はクライアント側の environ を引き継がず、セッションの環境は PAM (pam_env)
-# が /etc/environment から組み立てる。SSH セッションにも同じ値を届けるため、
-# ENV と /etc/environment の両方に書く (値の原本は上の ENV。ここは転記)。
-#
 # GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / GIT_CONFIG_VALUE_0 / GIT_CONFIG_KEY_1 /
 # GIT_CONFIG_VALUE_1 は runtime-base が焼く。スロット 0 で github.com の
 # credential helper を一旦すべて捨て、スロット 1 で自前の helper
 # (/usr/local/bin/git-credential-gh-token) を積み直すためのもので、VS Code の
 # Dev Containers 拡張が global gitconfig へ helper を書き込み、さらに統合
 # ターミナルの environ へ GIT_ASKPASS を注入して上書きしてくる以上、dev で最も
-# 効かせたい 5 つである。ここへ転記しないと SSH セッションだけ上書きが外れ、
-# その経路の git だけがホスト側の資格情報で通る。
-# 値の原本は runtime-base 側なので、名前が変わったら空を転記して黙って穴が開く。
-# それを避けるため、転記の前に存在を確かめて落とす (VALUE_0 は空が正常値なので
-# 対象にできない。KEY_0 が在れば VALUE_0 も在るという前提を取る。VALUE_1 は
-# 自前 helper の絶対パスで非空が正常値のため、KEY_1 と併せて確認対象にする)。
+# 効かせたい 5 つである。
+#
+# 値の原本は runtime-base 側なので、名前が変わればこの層は黙って穴が開く。それを
+# 避けるため、ビルド時に存在を確かめて落とす (VALUE_0 は空が正常値なので対象に
+# できない。KEY_0 が在れば VALUE_0 も在るという前提を取る。VALUE_1 は自前 helper の
+# 絶対パスで非空が正常値のため、KEY_1 と併せて確認対象にする)。
 RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ] \
     && [ -n "${GIT_CONFIG_KEY_1}" ] && [ -n "${GIT_CONFIG_VALUE_1}" ]
-
-RUN printf '%s\n' \
-      "CRIT_PORT=\"${CRIT_PORT}\"" \
-      "CRIT_NO_UPDATE_CHECK=\"${CRIT_NO_UPDATE_CHECK}\"" \
-      "GIT_ASKPASS=\"${GIT_ASKPASS}\"" \
-      "GIT_CONFIG_COUNT=\"${GIT_CONFIG_COUNT}\"" \
-      "GIT_CONFIG_KEY_0=\"${GIT_CONFIG_KEY_0}\"" \
-      "GIT_CONFIG_VALUE_0=\"${GIT_CONFIG_VALUE_0}\"" \
-      "GIT_CONFIG_KEY_1=\"${GIT_CONFIG_KEY_1}\"" \
-      "GIT_CONFIG_VALUE_1=\"${GIT_CONFIG_VALUE_1}\"" \
-    >> /etc/environment
 
 RUN crit --version
 

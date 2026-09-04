@@ -38,14 +38,36 @@ services:
 
     # containerEnv の置き換え。**devcontainer.json の containerEnv は Compose 構成では
     # 効かない。** 環境変数はここに書く。
+    # 環境変数の置き場はここが既定。イメージの ENV に置くのは利用側が変える前提が無い
+    # ものだけ (docs/conventions.md「環境変数の置き場」)。GIT_ASKPASS と、github.com の
+    # credential helper を自前のものへ固定する GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 /
+    # VALUE_0 / KEY_1 / VALUE_1 はイメージ側にある。ここで上書きすると認証がホスト側の
+    # 資格情報へ落ちるので書かない。
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
+
+      # 明示しないと .claude.json が /home/node/.claude.json（下の named volume の外）
+      # に置かれ、コンテナを作り直すたびに失われる。設定すると .claude.json を含む
+      # 全部がこのパスの下に入る。既定値と同じに見えるが同じではない。
       CLAUDE_CONFIG_DIR: /home/node/.claude
-      # CRIT_PORT (既定 4588)、GIT_ASKPASS、github.com の credential helper を自前のものへ
-      # 固定する GIT_CONFIG_COUNT / GIT_CONFIG_KEY_0 / VALUE_0 / KEY_1 / VALUE_1 は base が ENV と
-      # /etc/environment の両方で設定済み。ここには書かない — compose の environment: は
-      # docker exec 経由のシェルにしか届かず、SSH セッションには効かないため、上書きすると
-      # 経路によって値が食い違う (base の PORT-FORWARDING.md 参照)。
+
+      # crit の既定はランダムポート。ホスト側 ~/.ssh/config の LocalForward を静的に
+      # 書けるよう固定する。同時に開く別プロジェクトと衝突したらここをずらす
+      # （base の PORT-FORWARDING.md「crit のポート」）。
+      CRIT_PORT: "4588"
+
+      # crit を <your-project>.test のようなホスト名で開くなら、次の 2 つを足す。
+      # crit は Host ヘッダを検査し、localhost と loopback IP 以外を 403 で拒むため、
+      # 広告 URL でホスト名を 1 つ与える。広告 URL は bind を変えないので listen は
+      # 127.0.0.1 のまま。ポートは CRIT_PORT と揃える。
+      #
+      # CRIT_ALLOW_UNAUTHENTICATED_NETWORK は機能の有効化ではなく承認である。新しい
+      # crit は広告 URL の指定だけでネットワーク露出とみなして起動を拒否する。base に
+      # 焼くと listen が非 loopback のときの拒否まで消えるため、承認を必要とする判断
+      # と同じ場所に置く。**到達経路が loopback だけでない構成では有効化しないこと。**
+      #
+      # CRIT_PUBLIC_URL: http://<your-project>.test:4588
+      # CRIT_ALLOW_UNAUTHENTICATED_NETWORK: "1"
 
     # /run/secrets の置き場。tmpfs でないと、注入した鍵がコンテナの writable layer
     # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと

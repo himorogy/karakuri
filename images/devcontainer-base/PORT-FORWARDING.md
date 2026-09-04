@@ -4,6 +4,16 @@
 
 本書は base イメージが提供する機構の説明です。ホスト名の割り当て・ポート一覧・`~/.ssh/config` の具体的な転送行はプロジェクトごとに決まるため、各プロジェクトの `.devcontainer/README.md` 側に置いてください（末尾「プロジェクト側で定めること」参照）。
 
+## 前提: コンテナは devcontainer ツールで作る
+
+コンテナは devcontainer CLI（`devcontainer up`）か VS Code の Dev Containers 拡張で作ってください。**素の `docker compose up` は支援しません。**
+
+`devcontainer.json` は `features`・`postCreateCommand`・`postStartCommand` を持ち、`waitFor` を `postStartCommand` に置いています。`docker compose` を直接叩くとこの 3 つがどれも走らないため、**egress-guard が適用されないコンテナ**ができます。環境変数が一部届かないという程度の話ではありません。
+
+環境変数の届き方もこの前提に乗っています。sshd はセッションの環境を自分の environ から引き継がないため、`docker exec` が sshd へ渡した値は、それがイメージの `ENV` であれ compose の `environment:` であれ SSH セッションには届きません（実測は `images/runtime-base/verification-record.md`）。届くのは PAM（pam_env）が `/etc/environment` から読んだものだけです。devcontainer ツールはコンテナ作成時にコンテナの env 全量を `/etc/environment` へ写す（`patchEtcEnvironment`）ので、**この前提を守る限り、イメージの `ENV` も compose の `environment:` も等しく SSH セッションへ届きます。**
+
+写し込みは作成時 1 回だけで、マーカー（`/var/devcontainer/.patchEtcEnvironmentMarker`）が二重実行を防ぎます。`/var` は tmpfs ではないためマーカーはコンテナの停止・起動をまたいで残り、`/etc/environment` が起動のたびに伸びることはありません（2026-09-03 に実測）。
+
 ## なぜ `docker-compose.yaml` に `ports:` を書かないのか
 
 egress-guard が INPUT を DROP しており、許可されるのは以下の 3 つだけです。
@@ -301,28 +311,20 @@ VS Code を使いながら転送だけ SSH に一本化することもできま�
 
 ## crit のポート
 
-crit CLI 自体のデフォルトは**ランダムポート**です。base イメージが既定値を固定しています。
+crit CLI 自体のデフォルトは**ランダムポート**です。ホスト側の `LocalForward` を静的に書けるよう、雛形の `docker-compose.yaml` が値を固定しています。
 
+```yaml
+    environment:
+      CRIT_PORT: "4588"
 ```
-CRIT_PORT=4588
-```
 
-ポートが固定されているのは、ホスト側の `LocalForward` を静的に書けるようにするためです。
+`4588` は雛形が置いている値であって base が決めた仕様ではありません。同時に開く別プロジェクトと衝突したら、この行をずらしてください。イメージの `ENV` に置かないのは、利用側が変える前提がある値だからです（`docs/conventions.md`「環境変数の置き場」）。
 
-一時的にずらしたい場合は起動時に指定します。
+一時的にずらすだけなら起動時に指定できます。
 
 ```sh
 crit -p 4590
 ```
-
-プロジェクトとして恒久的にずらす場合は、プロジェクトの Dockerfile で **ENV と `/etc/environment` の両方**を上書きします。
-
-```dockerfile
-ENV CRIT_PORT=4590
-RUN sed -i 's/^CRIT_PORT=.*/CRIT_PORT="4590"/' /etc/environment
-```
-
-両方が要るのは経路によって環境の出どころが違うためです。docker exec 経由のシェル（VS Code 含む）はコンテナの ENV を引き継ぎますが、SSH セッションは sshd が environ を引き継がず、PAM（pam_env）が `/etc/environment` から環境を組み立てます。**compose の `environment:` は SSH セッションに届かない**ので、そこで上書きしてはいけません（経路によって値が食い違います）。
 
 なお、指定したポートが既に使われている場合、crit は `address already in use` で**起動に失敗します**。黙ってランダムポートへ退避することはないため、衝突は必ず顕在化します。
 
@@ -339,6 +341,24 @@ Vite / Astro の dev サーバは、未知の Host ヘッダを持つリクエ�
 ```
 
 `.test` は RFC 6761 で予約された TLD で公開 DNS に登録できないため、ワイルドカードで許可しても外部から悪用できません。**サービスを新規に追加する場合はこの設定も必要です。**
+
+### crit も同じ検査を持つ
+
+crit は Host ヘッダが `localhost` か loopback IP のときだけ通します。`<your-project>.test:4588` で開くと `403 Forbidden` になります。ワイルドカードの許可リストは無く、通すには広告 URL でホスト名を 1 つ与えます。置き場は compose の `environment:` です。
+
+```yaml
+    environment:
+      CRIT_PUBLIC_URL: http://<your-project>.test:4588
+      CRIT_ALLOW_UNAUTHENTICATED_NETWORK: "1"
+```
+
+ホスト名は `~/.ssh/config` の `LocalForward` で使う実名に、ポートは `CRIT_PORT` に揃えてください。広告 URL は bind を変えないため、listen は `127.0.0.1` のままです。
+
+`CRIT_ALLOW_UNAUTHENTICATED_NETWORK` は**機能の有効化ではなく承認**です。crit はネットワーク認証を持たず、ポートに到達できる者はリポジトリのファイルを読め、エージェントを起動しうるコメントを書けます。そのため crit は「広告 URL が非空」「listen が非 loopback」のどちらかに当たると、明示の承認が無い限り起動を拒否します。この 2 条件は同じフラグで解除されるので、**base イメージには焼きません**——焼くと `CRIT_HOST` を非 loopback にしたときの拒否まで一緒に消え、最後の関門が失われます。承認は、それを必要とする判断と同じ場所に置いてください。
+
+`ports:` を書かず egress-guard が INPUT を DROP し、listen が loopback のままの構成なら、この 2 行で到達経路は増えません。**その 3 つが崩れている構成では有効化しないでください。**
+
+雛形（`examples/docker-compose.yaml`）にはコメントアウトした状態で置いてあります。
 
 ## よく出るエラー
 
@@ -370,4 +390,5 @@ macOS で loopback エイリアスが張られていません。`karakuri-loopba
 - ポート一覧（どのサービスが何番か、環境変数の原本はどこか）
 - `~/.ssh/config` の具体的な `LocalForward` 行
 - サービス URL・クッキーの `Domain` とホスト名の整合（`localhost` でログインが通らない等の注意）
-- `CRIT_PORT` を base の既定 4588 からずらすかどうか
+- `CRIT_PORT` を雛形の 4588 からずらすかどうか
+- crit を `<your-project>.test` で開くなら `CRIT_PUBLIC_URL` と `CRIT_ALLOW_UNAUTHENTICATED_NETWORK`（「crit も同じ検査を持つ」）
