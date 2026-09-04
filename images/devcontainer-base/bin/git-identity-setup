@@ -1,0 +1,79 @@
+#!/bin/sh
+# /usr/local/bin/git-identity-setup
+#
+# postCreateCommand から呼ばれる。github.com への認証を /run/secrets/GH_TOKEN
+# だけに固定してある (images/runtime-base/Dockerfile の ENV GIT_CONFIG_COUNT
+# 直上) のと同じ考え方を identity にも適用し、push するアカウントと commit
+# する identity をずらさない。
+#
+# 取得 (fetch_account_json) と組み立て (apply_identity) を分けてあるのは、
+# ネットワークを使わずに組み立て側だけを固定するため
+# (images/devcontainer-base/tests/git-identity.test.sh)。
+# GIT_IDENTITY_SETUP_FETCH_CMD はそのテストが fetch_account_json を差し替える
+# ためのフックで、本番では未設定のまま gh api user を使う。
+set -eu
+
+warn() {
+  printf 'git-identity-setup: %s\n' "$1" >&2
+}
+
+fetch_account_json() {
+  if [ -n "${GIT_IDENTITY_SETUP_FETCH_CMD:-}" ]; then
+    "$GIT_IDENTITY_SETUP_FETCH_CMD"
+  else
+    gh api user
+  fi
+}
+
+apply_identity() {
+  json="$1"
+
+  # 3 回に分けて jq を呼ぶと、jq 自身の非ゼロ終了 (JSON でない入力への
+  # parse error 等) が抽出のどこか 1 本で set -e に拾われ、warn を経ずに
+  # 生のエラーメッセージのまま落ちる。1 回にまとめて失敗を一箇所で拾う。
+  #
+  # 区切りに @tsv は使わない。@tsv は値の中の \ / タブ / 改行をエスケープ
+  # するが、位置で取り出す側 (cut/sed) はそれを復元しないため、表示名に
+  # \ を含むアカウント (よくある) で user.name が壊れる。jq の複数出力を
+  # 行として受ければ区切りの再現は要らず、行番号で取るので空フィールドも
+  # 潰れない (IFS 経由の read を避けた理由と同じ)。
+  parsed=$(printf '%s' "$json" | jq -r '(.login // ""), (.id // ""), (.name // "")' 2>/dev/null) || {
+    warn "アカウント情報を読めないため identity は変更しない"
+    exit 0
+  }
+
+  login=$(printf '%s\n' "$parsed" | sed -n 1p)
+  id=$(printf '%s\n' "$parsed" | sed -n 2p)
+  name=$(printf '%s\n' "$parsed" | sed -n 3p)
+
+  if [ -z "$login" ] || [ -z "$id" ]; then
+    warn "アカウント情報から login/id を読めないため identity は変更しない"
+    exit 0
+  fi
+
+  [ -n "$name" ] || name="$login"
+  email="${id}+${login}@users.noreply.github.com"
+
+  cur_name=$(git config --global user.name 2>/dev/null) || cur_name=""
+  cur_email=$(git config --global user.email 2>/dev/null) || cur_email=""
+
+  if { [ -n "$cur_name" ] && [ "$cur_name" != "$name" ]; } ||
+    { [ -n "$cur_email" ] && [ "$cur_email" != "$email" ]; }; then
+    warn "既存の identity (name=$cur_name email=$cur_email) をトークンのアカウント (name=$name email=$email) へ上書きする"
+  fi
+
+  git config --global user.name "$name"
+  git config --global user.email "$email"
+}
+
+account_json=$(fetch_account_json 2>/dev/null) || {
+  warn "アカウント情報を取得できないため identity は変更しない"
+  exit 0
+}
+
+if [ -z "$account_json" ]; then
+  warn "アカウント情報を取得できないため identity は変更しない"
+  exit 0
+fi
+
+apply_identity "$account_json"
