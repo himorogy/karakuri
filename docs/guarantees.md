@@ -394,6 +394,27 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `advisory` は深刻度とは別に照会の可否を返す。照会に乗らない対象（node / crit / golang builder / egress-guard）では、遅れの有無にかかわらず `not-checked` を返す
 - **否定対照:** `checked-none`（照会して該当なし）・`not-checked`（照会に乗らない）・`check-failed`（照会に失敗）・`checked-alert`（該当あり）は互いに異なる値である（テスト: "否定対照: not-checked / checked-none / check-failed / checked-alert は互いに異なる値"）
 
+### 22. `images/devcontainer-base/tests/git-identity.test.sh` — `images/devcontainer-base/bin/git-identity-setup`
+
+起源: `0018-git-identity-derive`
+
+- トークンからアカウント情報を取得できるとき、コンテナ内の git の author 名と author メール
+  アドレスが、そのアカウントの表示名（未設定ならログイン名）と、公開設定に依存しない転送用
+  アドレスになる（テスト: "アカウント情報から name と noreply email が設定される" /
+  "表示名が未設定のときはログイン名へ落ちる" / "表示名の \ がそのまま author 名になる"）
+- 設定されるメールアドレスにアカウントの登録メールアドレスは使われない。取得したアカウント情報に
+  登録アドレスが含まれていても、それが author メールアドレスとして現れることはない
+  （テスト: "登録メールアドレスは author に現れない"）
+- 既に author 名かメールアドレスが設定されており、それがトークンのアカウントから導いた値と
+  異なる場合、両方の値を示す警告を出したうえでトークン側の値へ書き換える
+  （テスト: "既存の identity と食い違うときは警告して上書きする"）
+- トークンが無い、またはアカウント情報を取得できない場合、identity を一切変更せず、理由を
+  1 行出して成功として終わる。起動を壊さない（テスト: "取得に失敗しても identity を触らず 0 で終わる" /
+  "アカウント情報を取得できない (403 相当) ときも identity を触らず 0 で終わる" /
+  "取得が成功しても中身がアカウント情報でないときは identity を触らず 0 で終わる"）
+- アカウント情報の取得と、そこから値を組み立てて設定する処理が分かれており、取得を差し替えた
+  状態で導出結果を検査できる（テスト: "取得部を差し替えた状態で導出結果が固定される"）
+
 ## Unverified Promises
 
 ### C-2a — `未検証の約束 (テスト困難: CI の runtime-base ワークフローが、push 済みイメージを両アーキで smoke test する)`
