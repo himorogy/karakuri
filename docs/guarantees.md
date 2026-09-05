@@ -258,6 +258,7 @@
 - broker の差し替え点は既存の2関数のままである。利用者が同名の関数を再定義すると、`karakuri-run` もそちらの結果を使う（起源: `0014-host-secret-run`）
 - 共通名を項目キーにする指定は `-e` の値によらず拒否される（起源: `0014-host-secret-run`）
 - source すると shim のディレクトリが PATH の**末尾**へ加わる。既存の PATH の先頭は変わらず、何度 source しても重複しない（テスト: "何度 source しても shim のディレクトリが PATH に重複しない"）（起源: `0014-host-secret-run`）
+- 下位スクリプトが見つかったのに実行できない場合、置き場所ではなく mode を問題として報告し、対象のパスと直すコマンドを示す。実行できないものを解決結果として返して呼び出し側を落とすことはなく、この振る舞いは bash と zsh で変わらない（テスト: "the error does not blame the placement when the file was found"）（起源: `0014a-host-template-file-modes`）
 
 ### 14. `images/runtime-base/templates/tests/dock.test.sh` — `images/runtime-base/templates/host/dock.sh`
 
@@ -418,6 +419,13 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
   "取得が成功しても中身がアカウント情報でないときは identity を触らず 0 で終わる"）
 - アカウント情報の取得と、そこから値を組み立てて設定する処理が分かれており、取得を差し替えた
   状態で導出結果を検査できる（テスト: "取得部を差し替えた状態で導出結果が固定される"）
+
+### 23. `images/runtime-base/tests/host-file-modes.test.sh` — 配布テンプレートの file mode
+
+起源: `0014a-host-template-file-modes`
+
+- ホストへ配るテンプレート一式のうち、実行して使うスクリプトは、clone した先でそのまま実行できる。受け取った側が mode を直す手順を要求されることはない
+- 逆に、読み込んで使うファイル（source される関数集・compose・plist・Windows 用ラッパー）は実行可能にならない。PATH 上の `shims/` から誤って起動される経路を作らない
 
 ## Unverified Promises
 
