@@ -56,6 +56,18 @@ run_setup() {
         sh "$SETUP_SRC"
 }
 
+# run_once <tmpdir> <fetch> <tokenfile> <markerfile> -> --once 付きで実行する。
+# トークンの版 (stat) を実 /run/secrets/GH_TOKEN ではなく <tokenfile> から、
+# 導出済みマーカーを <markerfile> から読み書きさせる。
+run_once() {
+    local dir="$1" fetch="$2" tokenfile="$3" marker="$4"
+    GIT_CONFIG_GLOBAL="$dir/global.gitconfig" \
+        GIT_IDENTITY_SETUP_FETCH_CMD="$fetch" \
+        GIT_IDENTITY_SETUP_TOKEN_PATH="$tokenfile" \
+        GIT_IDENTITY_SETUP_MARKER_PATH="$marker" \
+        sh "$SETUP_SRC" --once
+}
+
 # --- 1. アカウント情報から name と noreply email が設定される --------------------
 t="$(mktemp -d)"
 : >"$t/global.gitconfig"
@@ -129,13 +141,14 @@ else
 fi
 rm -rf "$t"
 
-# 否定対照: 既存値が導出値と一致していれば警告は出ない。
+# 否定対照: 既存値が導出値と一致していれば警告は出ない (報告の1行は出る)。
 t="$(mktemp -d)"
 git config --file "$t/global.gitconfig" user.name "The Octocat"
 git config --file "$t/global.gitconfig" user.email "583231+octocat@users.noreply.github.com"
 fetch="$(make_fetch "$t" '{"login":"octocat","id":583231,"name":"The Octocat","email":null}')"
 out="$(run_setup "$t" "$fetch" 2>&1)"
-if [ -z "$out" ]; then
+if ! printf '%s\n' "$out" | grep -q "overwriting existing identity" &&
+    [ "$(printf '%s\n' "$out" | grep -c .)" -eq 1 ]; then
     ok "否定対照: 既存値が導出値と一致していれば警告しない"
 else
     ng "否定対照: 既存値が導出値と一致していれば警告しない (out=$out)"
@@ -214,6 +227,149 @@ if [ "$first" = "$second" ] && printf '%s\n' "$first" | grep -q "Hubot"; then
     ok "取得部を差し替えた状態で導出結果が固定される"
 else
     ng "取得部を差し替えた状態で導出結果が固定される (first=$first second=$second)"
+fi
+rm -rf "$t"
+
+# --- 6. 実行のたびに実効の identity が1行で報告される ------------------------------
+t="$(mktemp -d)"
+: >"$t/global.gitconfig"
+fetch="$(make_fetch "$t" '{"login":"octocat","id":583231,"name":"The Octocat","email":null}')"
+out="$(run_setup "$t" "$fetch" 2>&1)"
+if printf '%s\n' "$out" | grep -q "user.name=The Octocat" &&
+    printf '%s\n' "$out" | grep -q "user.email=583231+octocat@users.noreply.github.com"; then
+    ok "設定済みの値がそのまま報告に出る"
+else
+    ng "設定済みの値がそのまま報告に出る (out=$out)"
+fi
+rm -rf "$t"
+
+t="$(mktemp -d)"
+: >"$t/global.gitconfig"
+fetch="$(make_fetch "$t" '' 1)"
+out="$(run_setup "$t" "$fetch" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "is not set"; then
+    ok "未設定のときは未設定と分かる1行が出る"
+else
+    ng "未設定のときは未設定と分かる1行が出る (rc=$rc out=$out)"
+fi
+rm -rf "$t"
+
+t="$(mktemp -d)"
+git config --file "$t/global.gitconfig" user.name "Untouched"
+git config --file "$t/global.gitconfig" user.email "untouched@example.com"
+fetch="$(make_fetch "$t" '' 1)"
+out="$(run_setup "$t" "$fetch" 2>&1)"
+if printf '%s\n' "$out" | grep -q "user.name=Untouched"; then
+    ok "否定対照: 導出が失敗しても報告は黙らない"
+else
+    ng "否定対照: 導出が失敗しても報告は黙らない (out=$out)"
+fi
+rm -rf "$t"
+
+# --- 7. 片方だけ設定済みの状態から両方が設定される (台帳には載らない仕様) --------
+#     利用者が手で片方だけ入れた状態を含むと第1文が誤って広くなるため裁可で
+#     台帳から落とした。仕様としては正しいのでテストは残す。理由は
+#     tickets/done/0018a-git-identity-after-inject.md を参照。
+t="$(mktemp -d)"
+git config --file "$t/global.gitconfig" user.name "Only Name Set"
+fetch="$(make_fetch "$t" '{"login":"octocat","id":583231,"name":"The Octocat","email":null}')"
+run_setup "$t" "$fetch" >/dev/null 2>&1
+name="$(git config --file "$t/global.gitconfig" user.name 2>/dev/null || true)"
+email="$(git config --file "$t/global.gitconfig" user.email 2>/dev/null || true)"
+if [ "$name" = "The Octocat" ] && [ "$email" = "583231+octocat@users.noreply.github.com" ]; then
+    ok "片方だけ設定済みの状態から両方が設定される"
+else
+    ng "片方だけ設定済みの状態から両方が設定される (name=$name email=$email)"
+fi
+rm -rf "$t"
+
+# --- 8. --once: トークンの版が変わらない限り再取得しない、変われば追随する --------
+t="$(mktemp -d)"
+: >"$t/global.gitconfig"
+counter="$t/fetch-count"
+: >"$counter"
+tokenfile="$t/token"
+marker="$t/marker"
+printf 'tokenA' >"$tokenfile"
+touch -m -d '2020-01-01 00:00:00' "$tokenfile"
+
+# fetch-a.sh は呼び出しのたびに $counter へ1行足してから account を返す。
+{
+    printf '#!/bin/sh\n'
+    printf 'printf x >> "%s"\n' "$counter"
+    printf "cat <<'JSON'\n%s\nJSON\n" '{"login":"octocat","id":583231,"name":"The Octocat","email":null}'
+} >"$t/fetch-a.sh"
+chmod +x "$t/fetch-a.sh"
+
+run_once "$t" "$t/fetch-a.sh" "$tokenfile" "$marker" >/dev/null 2>&1
+count_before="$(wc -c <"$counter" | tr -d ' ')"
+out="$(run_once "$t" "$t/fetch-a.sh" "$tokenfile" "$marker" 2>&1)"
+count="$(wc -c <"$counter" | tr -d ' ')"
+name="$(git config --file "$t/global.gitconfig" user.name 2>/dev/null || true)"
+if [ "$count" -eq 1 ] && [ "$name" = "The Octocat" ]; then
+    ok "否定対照: 同じトークンのままなら identity は変わらない"
+else
+    ng "否定対照: 同じトークンのままなら identity は変わらない (fetch呼び出し回数=$count name=$name)"
+fi
+
+# 短絡 (2 回目で $counter が増えていない) が実際に起きたことを自分で確かめたうえで、報告が黙らないことを見る。
+if [ "$count" -eq "$count_before" ] && printf '%s\n' "$out" | grep -q "user.name=The Octocat"; then
+    ok "取得を省略する起動でも報告は出る"
+else
+    ng "取得を省略する起動でも報告は出る (count_before=$count_before count=$count out=$out)"
+fi
+
+# トークンを差し替える (内容と mtime の両方を変え、版を確実に変える)。
+printf 'tokenB' >"$tokenfile"
+touch -m -d '2020-01-02 00:00:00' "$tokenfile"
+fetch_b="$(make_fetch "$t" '{"login":"hubot","id":1,"name":"Hubot","email":null}')"
+run_once "$t" "$fetch_b" "$tokenfile" "$marker" >/dev/null 2>&1
+name="$(git config --file "$t/global.gitconfig" user.name 2>/dev/null || true)"
+email="$(git config --file "$t/global.gitconfig" user.email 2>/dev/null || true)"
+if [ "$name" = "Hubot" ] && [ "$email" = "1+hubot@users.noreply.github.com" ]; then
+    ok "トークンが差し替わると identity が追随する"
+else
+    ng "トークンが差し替わると identity が追随する (name=$name email=$email)"
+fi
+rm -rf "$t"
+
+# --- 9. 導出が失敗しても 0 で終わる -----------------------------------------------
+t="$(mktemp -d)"
+: >"$t/global.gitconfig"
+fetch="$(make_fetch "$t" '' 1)"
+run_setup "$t" "$fetch" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    ok "導出が失敗しても 0 で終わる"
+else
+    ng "導出が失敗しても 0 で終わる (rc=$rc)"
+fi
+rm -rf "$t"
+
+# --- 10. 取得を有界時間で打ち切る (台帳には載らない要求) --------------------------
+#     応答しない fetch を短いタイムアウトで打ち切り、identity に触れず 0 で
+#     終わることだけを見る。台帳に載らない理由は tickets/done を参照。
+t="$(mktemp -d)"
+git config --file "$t/global.gitconfig" user.name "Untouched"
+git config --file "$t/global.gitconfig" user.email "untouched@example.com"
+{
+    printf '#!/bin/sh\n'
+    printf 'sleep 30\n'
+} >"$t/fetch-hang.sh"
+chmod +x "$t/fetch-hang.sh"
+start=$(date +%s)
+GIT_CONFIG_GLOBAL="$t/global.gitconfig" \
+    GIT_IDENTITY_SETUP_FETCH_CMD="$t/fetch-hang.sh" \
+    GIT_IDENTITY_SETUP_FETCH_TIMEOUT=1 \
+    sh "$SETUP_SRC" >/dev/null 2>&1
+rc=$?
+elapsed=$(($(date +%s) - start))
+name="$(git config --file "$t/global.gitconfig" user.name 2>/dev/null || true)"
+if [ "$rc" -eq 0 ] && [ "$elapsed" -lt 30 ] && [ "$name" = "Untouched" ]; then
+    ok "応答しない取得は有界時間で打ち切られ、identity に触れず 0 で終わる"
+else
+    ng "応答しない取得は有界時間で打ち切られ、identity に触れず 0 で終わる (rc=$rc elapsed=$elapsed name=$name)"
 fi
 rm -rf "$t"
 

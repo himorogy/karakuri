@@ -1,28 +1,61 @@
 #!/bin/sh
 # /usr/local/bin/git-identity-setup
 #
-# postCreateCommand から呼ばれる。github.com への認証を /run/secrets/GH_TOKEN
-# だけに固定してある (images/runtime-base/Dockerfile の ENV GIT_CONFIG_COUNT
-# 直上) のと同じ考え方を identity にも適用し、push するアカウントと commit
-# する identity をずらさない。
+# 対話シェルの起動時に /etc/bash.bashrc / /etc/zsh/zshrc から `--once` 付きで
+# 呼ばれる。github.com への認証を /run/secrets/GH_TOKEN だけに固定してある
+# (images/runtime-base/Dockerfile の ENV GIT_CONFIG_COUNT 直上) のと同じ
+# 考え方を identity にも適用し、push するアカウントと commit する identity
+# をずらさない。
+#
+# `--once` を渡すと、トークンの版 (下記) が前回と変わっていなければ取得を
+# 省略する。引数なしの直接起動は版を見ずに毎回取得し直す
+# (images/devcontainer-base/tests/git-identity.test.sh の 1〜5 節は
+# この形の起動を前提にしている)。
 #
 # 取得 (fetch_account_json) と組み立て (apply_identity) を分けてあるのは、
-# ネットワークを使わずに組み立て側だけを固定するため
-# (images/devcontainer-base/tests/git-identity.test.sh)。
+# ネットワークを使わずに組み立て側だけを固定するため。
 # GIT_IDENTITY_SETUP_FETCH_CMD はそのテストが fetch_account_json を差し替える
 # ためのフックで、本番では未設定のまま gh api user を使う。
+# GIT_IDENTITY_SETUP_TOKEN_PATH と GIT_IDENTITY_SETUP_MARKER_PATH も同じ理由
+# (テストが /run に触れずに版の判定を検証できるようにする) で差し替え可能に
+# してある。GIT_IDENTITY_SETUP_FETCH_TIMEOUT はテストが打ち切りの時間を
+# 短くして待たずに検証できるようにするための差し替え口。
 set -eu
+
+TOKEN_PATH="${GIT_IDENTITY_SETUP_TOKEN_PATH:-/run/secrets/GH_TOKEN}"
+MARKER_PATH="${GIT_IDENTITY_SETUP_MARKER_PATH:-/run/git-identity-setup.marker}"
+FETCH_TIMEOUT="${GIT_IDENTITY_SETUP_FETCH_TIMEOUT:-5}"
 
 warn() {
   printf 'git-identity-setup: %s\n' "$1" >&2
 }
 
+# 実効の identity を1行で報告する。対話シェルの起動を止めないため、
+# report_identity 自体は何を経て抜けても trap 経由で必ず呼ばれる。
+report_identity() {
+  name=$(git config --global user.name 2>/dev/null) || name=""
+  email=$(git config --global user.email 2>/dev/null) || email=""
+  if [ -n "$name" ] && [ -n "$email" ]; then
+    printf 'git-identity-setup: user.name=%s user.email=%s\n' "$name" "$email"
+  else
+    printf 'git-identity-setup: user.name / user.email is not set\n'
+  fi
+}
+trap report_identity EXIT
+
 fetch_account_json() {
   if [ -n "${GIT_IDENTITY_SETUP_FETCH_CMD:-}" ]; then
-    "$GIT_IDENTITY_SETUP_FETCH_CMD"
+    timeout "$FETCH_TIMEOUT" "$GIT_IDENTITY_SETUP_FETCH_CMD"
   else
-    gh api user
+    timeout "$FETCH_TIMEOUT" gh api user
   fi
+}
+
+# トークンファイルの inode と mtime を版として使う。値そのものを見ないので、
+# 同じ内容を書き直しても secrets-ingest.sh が書き直すたびに版が変わる
+# (差し替えの検出には十分、同一トークンの再投入は1回余計に取得するだけ)。
+token_version() {
+  stat -c '%i:%Y' "$TOKEN_PATH" 2>/dev/null
 }
 
 apply_identity() {
@@ -38,7 +71,7 @@ apply_identity() {
   # 行として受ければ区切りの再現は要らず、行番号で取るので空フィールドも
   # 潰れない (IFS 経由の read を避けた理由と同じ)。
   parsed=$(printf '%s' "$json" | jq -r '(.login // ""), (.id // ""), (.name // "")' 2>/dev/null) || {
-    warn "アカウント情報を読めないため identity は変更しない"
+    warn "cannot read account information; leaving identity unchanged"
     exit 0
   }
 
@@ -47,7 +80,7 @@ apply_identity() {
   name=$(printf '%s\n' "$parsed" | sed -n 3p)
 
   if [ -z "$login" ] || [ -z "$id" ]; then
-    warn "アカウント情報から login/id を読めないため identity は変更しない"
+    warn "cannot read login/id from account information; leaving identity unchanged"
     exit 0
   fi
 
@@ -59,20 +92,38 @@ apply_identity() {
 
   if { [ -n "$cur_name" ] && [ "$cur_name" != "$name" ]; } ||
     { [ -n "$cur_email" ] && [ "$cur_email" != "$email" ]; }; then
-    warn "既存の identity (name=$cur_name email=$cur_email) をトークンのアカウント (name=$name email=$email) へ上書きする"
+    warn "overwriting existing identity (name=$cur_name email=$cur_email) with the token account (name=$name email=$email)"
   fi
 
   git config --global user.name "$name"
   git config --global user.email "$email"
+
+  if [ -n "$token_version_now" ]; then
+    mkdir -p "$(dirname "$MARKER_PATH")" 2>/dev/null || true
+    printf '%s' "$token_version_now" > "$MARKER_PATH" 2>/dev/null || true
+  fi
 }
 
+token_version_now=$(token_version) || token_version_now=""
+
+case "${1:-}" in
+--once)
+  if [ -n "$token_version_now" ] && [ -f "$MARKER_PATH" ]; then
+    marker_version=$(cat "$MARKER_PATH" 2>/dev/null) || marker_version=""
+    if [ "$marker_version" = "$token_version_now" ]; then
+      exit 0
+    fi
+  fi
+  ;;
+esac
+
 account_json=$(fetch_account_json 2>/dev/null) || {
-  warn "アカウント情報を取得できないため identity は変更しない"
+  warn "cannot fetch account information; leaving identity unchanged"
   exit 0
 }
 
 if [ -z "$account_json" ]; then
-  warn "アカウント情報を取得できないため identity は変更しない"
+  warn "cannot fetch account information; leaving identity unchanged"
   exit 0
 fi
 
