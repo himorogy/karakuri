@@ -155,20 +155,25 @@ RUN crit --version
 
 # --- git identity ---------------------------------------------------------------
 # commit 者情報 (user.name / user.email) を GH_TOKEN のアカウントから導出する。
-# examples/devcontainer.json の postCreateCommand がコマンド名で呼ぶ
-# (init-project-firewall.sh と同じ、イメージへ焼いて雛形からは呼ぶだけの形)。
-# 狙いと導出の中身は bin/git-identity-setup 自身のコメントと README を参照。
+# /run/secrets/GH_TOKEN への注入は postCreateCommand より後 (dev-inject が
+# 起動済みのコンテナへ docker exec する経路) にしか起きないため、下の
+# bash.bashrc / zshrc への追記 (対話シェルの起動時、karakuri-context より後)
+# から呼ぶ。狙いと導出の中身は bin/git-identity-setup 自身のコメントと
+# README を参照。
 COPY bin/git-identity-setup /usr/local/bin/git-identity-setup
 RUN chown root:root /usr/local/bin/git-identity-setup \
     && chmod 0755 /usr/local/bin/git-identity-setup
 
 # --- シェル履歴の永続化 --------------------------------------------------------
+# git-identity-setup --once もここで /etc/bash.bashrc へ足す。runtime-base が
+# 焼いた karakuri-context の source 行 (この行より前の層) より後になる。
 RUN mkdir -p /commandhistory \
     && touch /commandhistory/.bash_history \
     && chown -R ${USERNAME}:${USERNAME} /commandhistory \
     && printf '%s\n' \
          "export PROMPT_COMMAND='history -a'" \
          "export HISTFILE=/commandhistory/.bash_history" \
+         "git-identity-setup --once" \
        >> /etc/bash.bashrc
 
 # --- zsh 最小設定 --------------------------------------------------------------
@@ -182,6 +187,9 @@ RUN mkdir -p /commandhistory \
 # `case $- in *i*)` は zsh でも効き、/run/secrets の列挙は glob ではなく
 # `ls -A` で行うため zsh の nomatch 既定でも落ちない)、bash 用に書き分ける
 # 必要はない (設計書 §4.3 rev.6)。
+#
+# git-identity-setup --once は karakuri-context の source より後に置く
+# (理由は「--- git identity ---」節)。
 RUN printf '%s\n' \
       'autoload -Uz compinit && compinit' \
       'HISTFILE=/commandhistory/.zsh_history' \
@@ -189,6 +197,7 @@ RUN printf '%s\n' \
       'SAVEHIST=10000' \
       'setopt SHARE_HISTORY APPEND_HISTORY' \
       '. /usr/local/bin/karakuri-context' \
+      'git-identity-setup --once' \
     >> /etc/zsh/zshrc
 
 # --- ディレクトリ --------------------------------------------------------------

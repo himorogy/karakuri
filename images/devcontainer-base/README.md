@@ -73,7 +73,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
   「git の認証（github.com）」。**利用側が変える前提のある環境変数はイメージに焼かず、
   プロジェクトの `docker-compose.yaml` に置く**（`docs/conventions.md`「環境変数の置き場」、
   到達の機構は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
-- `/usr/local/bin/git-identity-setup`（`bin/git-identity-setup` 由来）。`postCreateCommand` から
+- `/usr/local/bin/git-identity-setup`（`bin/git-identity-setup` 由来）。対話シェルの起動時に
   呼ばれ、`GH_TOKEN` のアカウントから git の commit 者情報を導出する。詳細は「git identity」節
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
@@ -106,13 +106,12 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
 ```
 
 雛形に post-create.sh は無い。コンテナ作成時のセットアップは Claude Code の
-Feature（版が lock に固定される）・個人フック（`/personal/setup.sh`、層 C）・base へ焼き込んだ
-コマンド（`postCreateCommand` が呼ぶ `git-identity-setup`）の 3 つで、プロジェクト共通の
-スクリプトファイルを置く必然が無いため。git の認証は base の `GIT_ASKPASS` 焼き込みが、
-commit 者情報は同じく base へ焼き込んだ `git-identity-setup` が担うので、
-`gh auth setup-git` のようなセットアップは要らない（2.2.0 以降は要らないだけでなく、
-github.com については base が自前の credential helper へ固定するため効かない）。必要になった
-プロジェクトだけ自前で足す。
+Feature（版が lock に固定される）と個人フック（`/personal/setup.sh`、層 C）の 2 つで、
+プロジェクト共通のスクリプトファイルを置く必然が無いため。git の認証は base の
+`GIT_ASKPASS` 焼き込みが、commit 者情報は base へ焼き込んだ `git-identity-setup`
+（対話シェルの起動時に走る）が担うので、`gh auth setup-git` のようなセットアップは要らない
+（2.2.0 以降は要らないだけでなく、github.com については base が自前の credential helper へ
+固定するため効かない）。必要になったプロジェクトだけ自前で足す。
 
 ### git identity（commit 者情報の導出）
 
@@ -122,13 +121,22 @@ gitconfig を暗黙にコピーしており、その分だけ動いて見えて�
 経路を切ってある（CLI 起動やコンテナの作り直しではそもそもこの経路を通らないため、動いている
 ときだけ穴に気づけない状態を残さない）。放置すると commit が `Author identity unknown` で止まる。
 
-**どう動くか。** `postCreateCommand` が呼ぶ `git-identity-setup`（`/usr/local/bin` へ焼き込み
-済み）が `GH_TOKEN` のアカウント（`gh api user`）から `user.name`（表示名。未設定ならログイン名）
-と `user.email`（`<id>+<login>@users.noreply.github.com`。登録メールアドレスは使わない）を導出し、
-コンテナの `~/.gitconfig` に設定する。既存の値と食い違えば警告したうえで上書きする——github.com の
-認証をトークン側へ固定するのと同じ考えで、push するアカウントと commit する identity をずらさない
-ため。トークンが無い・アカウント情報を取得できない場合は identity に触れず、理由を 1 行出して
-0 で終わる。導出の順序と、取得に失敗したときの扱いは `bin/git-identity-setup` の冒頭コメントにある。
+**どう動くか。** `git-identity-setup`（`/usr/local/bin` へ焼き込み済み）は、`/run/secrets/GH_TOKEN`
+の注入が済んで初めて成功しうる。注入はホスト側から起動済みのコンテナへ行われ、`postCreateCommand`
+より後にしか起きないため、devcontainer-base は `/etc/bash.bashrc` / `/etc/zsh/zshrc` に足す行から
+`--once` 付きで呼ぶ（対話シェルの起動のたび）。取得先は `api.github.com` なので、`firewall.json`
+の `profile` に `github` を含めておくこと（karakuri 自身の既定はこれを含む）。`GH_TOKEN` の
+アカウント（`gh api user`）から `user.name`
+（表示名。未設定ならログイン名）と `user.email`（`<id>+<login>@users.noreply.github.com`。登録
+メールアドレスは使わない）を導出し、コンテナの `~/.gitconfig` に設定する。既存の値と食い違えば
+警告したうえで上書きする——github.com の認証をトークン側へ固定するのと同じ考えで、push する
+アカウントと commit する identity をずらさない。同じトークンのままシェルを開き直しても導出は
+1 回しか走らず、トークンが差し替わると次のシェル起動で追随する（`GH_TOKEN` 注入前は導出が
+毎回失敗するため、シェルを開くたびに毎回試みる）。実行のたびに、設定されている
+`user.name` / `user.email` を 1 行で報告する（未設定ならそれと分かる 1 行）。トークンが無い・
+アカウント情報を取得できない場合は identity に触れず、理由を 1 行出して 0 で終わる。導出の順序、
+取得に失敗したときの扱い、追随の判定に使う版の作り方は `bin/git-identity-setup` の冒頭コメントに
+ある。
 
 **保証。** [`docs/guarantees.md`](../../docs/guarantees.md) の
 `images/devcontainer-base/tests/git-identity.test.sh` の節。

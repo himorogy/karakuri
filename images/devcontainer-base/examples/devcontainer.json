@@ -50,9 +50,10 @@
 				"git.terminalAuthentication": false,
 
 				// ホストの gitconfig を暗黙にコピーする既定 (true) を切る。
-				// user.name / user.email は git-identity-setup（postCreateCommand）が
-				// GH_TOKEN のアカウントから導出するので、暗黙のコピーを残すと経路が
-				// 二重になり、VS Code 経由の起動でだけ動く状態に戻る。
+				// user.name / user.email は対話シェルの起動時に走る
+				// git-identity-setup が GH_TOKEN のアカウントから導出するので、
+				// 暗黙のコピーを残すと経路が二重になり、VS Code 経由の起動でだけ
+				// 動く状態に戻る。
 				"dev.containers.copyGitConfig": false
 
 				// --- ポート転送を SSH の経路へ一本化する場合 ---------------------
@@ -103,11 +104,7 @@
 	// インストール系に合う。firewall 前の実行だが、フック本体はホスト側 ro で
 	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルと同じく
 	// 開発者本人だけ。信頼水準は変わらない。
-	//
-	// git-identity-setup（base 焼き込み）も同じ理由でここに置く。gh api user を
-	// 叩くのでネットワークが要り、firewall 適用後（postStartCommand）では宛先が
-	// 許可されていない可能性がある。個人フックの後に続ける。
-	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi && git-identity-setup",
+	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。
