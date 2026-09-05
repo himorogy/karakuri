@@ -24,6 +24,11 @@ bash "$SCRIPT_DIR/hook.test.sh"
 # 次に書けば戻るので、検査として置いている。
 bash "$SCRIPT_DIR/shipped-symbols.test.sh"
 
+# ホストへ配る templates/host のスクリプトが、実行できる mode で記録されて
+# いることの検査。実行ビットが落ちた配布物は、利用側が最初のコマンドで
+# 止まるため、着手すらできない。
+bash "$SCRIPT_DIR/host-file-modes.test.sh"
+
 # example/ の compose と配布テンプレートの compose が一致することの検査。
 # 二枚が別々に存在するのは意図的だが、片方だけを直せてしまう。
 bash "$SCRIPT_DIR/template-sync.test.sh"
