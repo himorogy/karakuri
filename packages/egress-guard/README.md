@@ -35,7 +35,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 - **悪性コンテンツの流入防止** — allowlist に GitHub や npm がある時点で任意のコンテンツは入ります
 - **完全な exfil 防止** — 許可済みドメインへの GET クエリ経由など、低帯域の漏洩経路は残ります
 - **DNS トンネリングの遮断** — 許可したリゾルバが再帰問い合わせをするため、L3/L4 では原理的に不可能です
-- **L7 制御（メソッド別・パス別）** — 将来 proxy に移行しても扱いません。移行先の proxy は TLS を終端しないためです（[`docs/design.md`](./docs/design.md) §2.23）
+- **L7 制御（メソッド別・パス別）** — `layer: "l7"` の proxy も TLS を終端しないため扱いません（[`docs/design.md`](./docs/design.md) §2.23）
 
 **想定している敵はコンテナ内で動くエージェント自身**です。前提と、各非目標を受容した理由は [`docs/design.md`](./docs/design.md) §1・§3。
 
@@ -66,7 +66,7 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 ## DNS リゾルバ
 
-コンテナに割り当てられたリゾルバ（`/etc/resolv.conf` の `nameserver` 行）を読み取り、**そのアドレス宛の 53 番だけを許可**します。それ以外の 53 番宛はすべて DROP し、遮断先を `egress-audit-v4` に記録します。
+コンテナに割り当てられたリゾルバ（`/etc/resolv.conf` の `nameserver` 行）を読み取り、**そのアドレス宛の 53 番だけを許可**します。それ以外の 53 番宛はすべて DROP します。**`layer: "l3"` ではこの遮断先を `egress-audit-v4` に記録します。** 既定の `layer: "l7"` ではこの ipset を作らず、拒否したことの記録は `fw-dns-drop:` の `LOG` ルールに留まります（[実現層](#実現層layer)）。
 
 `nameserver` に IPv4 アドレスが 1 つも無い場合は、固定を緩めるのではなく **exit≠0 で停止します**。
 
@@ -104,7 +104,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #    バージョンは必ず固定する。このスクリプトは root 所有の /usr/local/bin に置かれ、
 #    4 のパスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の
 #    更新がそのままコンテナ内 root でのコード実行になる。
-RUN npm install -g @himorogy/egress-guard@0.2.0 \
+RUN npm install -g @himorogy/egress-guard@0.3.0 \
   && cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
         /usr/local/bin/init-project-firewall.sh \
   && chown root:root /usr/local/bin/init-project-firewall.sh \
@@ -294,6 +294,34 @@ version 2 の設定は `layer` でファイアウォールの実現層を選べ�
 
 保証: `docs/guarantees.md` の `tests/firewall-config.test.sh` に対応する節を参照。
 
+## L7 sidecar を用意する
+
+**`layer` の既定 `l7` を使うには、`egress-proxy` という名前の sidecar コンテナが要ります。** 立っていないと `init-project-firewall.sh` は最終テーブルを組む段で `egress-proxy` の名前解決に失敗し、非ゼロで終了して panic テーブル（loopback のみ許可）に落ちます。`l3` を明示した設定ではこの sidecar は不要です。
+
+雛形は `templates/proxy/`（`Dockerfile` と `squid.conf`）です。`templates/*.json` と同じ扱いで、プロジェクトの `.devcontainer/proxy/` へコピーしてください。完全な compose の書き方は `images/devcontainer-base/examples/docker-compose.yaml` の `egress-proxy` service を参照してください。`dev` 側に足すのは次の3つです。
+
+- `depends_on: [egress-proxy]` — 名前解決の前提を満たす起動順
+- `HTTP_PROXY` / `HTTPS_PROXY`（大文字・小文字の両方。`curl` と `apt` は小文字しか読まない）、`no_proxy` / `NO_PROXY`（`localhost,127.0.0.1`。loopback 宛の内部通信まで proxy へ回さないため）、`NODE_USE_ENV_PROXY=1`（Node の `fetch` は既定で proxy 環境変数を読まない）
+- proxy のログを読むための named volume（[proxy のログを読む](#proxy-のログを読む)）
+
+**ACL と `mode` はイメージのビルド時に焼き込まれます。** `templates/proxy/Dockerfile` が `firewall.json` を読んで `--print-proxy-acl` の出力と `mode` をイメージに入れるため、`allowDomains` や `mode` を変えたら sidecar 側も再ビルドが要ります（`dev` と同じ操作で両方に反映されます）。実行中のコンテナに ACL を差し替える経路はありません。
+
+**git を ssh で使っている場合、proxy 環境変数は効きません。** `ssh_config` に `HTTP_PROXY` を読む記述はないためです。`ProxyCommand` で `CONNECT` に載せるか、`url.https://github.com/.insteadOf` で https 経由へ書き換えてください（このリポジトリ自身は https + トークンで認証しているため、この機構は入れていません）。
+
+保証: `docs/guarantees.md` の `tests/firewall-rules.test.sh` に対応する節を参照。
+
+## proxy のログを読む
+
+allowlist を通り抜けた宛先も、`mode: "audit"` で通した宛先も、`egress-proxy` の access log に名前で残ります（`enforce` / `audit` のどちらでも）。`dev` からは読み取り専用でしか見えません — 書ける状態にすると、侵害されたエージェントが自分の通信記録を消せるためです。
+
+```sh
+tail -f /var/log/egress-proxy/access.log
+```
+
+ホスト側から見るなら `docker compose logs egress-proxy` でも代わりになります。
+
+保証: `docs/guarantees.md` の `tests/firewall-rules.test.sh` に対応する節を参照。
+
 ## 基底プロファイル（`profile`）
 
 パッケージ側が保守しているドメインの束です。**必要なものだけを明示的に選びます。**
@@ -311,7 +339,7 @@ version 2 の設定は `layer` でファイアウォールの実現層を選べ�
 
 - **`profile` を省略すると基底プロファイルは空です。** 既定で開くものはありません
 - 配列で選びます。文字列 1 つでも書けます（`"profile": "github"`）
-- `github` を選んだときだけ、GitHub meta API から取得した CIDR が追加されます
+- `layer: "l3"` を選んだ設定では、`github` を選んだときだけ GitHub meta API から取得した CIDR が追加されます。既定の `l7` ではこの取得を行いません — GitHub へは proxy 側の ACL を通じて名前のまま到達します（[実現層](#実現層layer)）
 - **`anthropic-updates` は Claude Code の自動アップデート配信元です。バージョンを固定したいなら選ばないでください**（遮断しても Claude Code は動き、更新だけが失敗します）
 - **`openai` は ChatGPT サブスクリプション経路で実測したものです。** API キー経路（`api.openai.com`）は含みません。必要なら `allowDomains` に書いてください
 
@@ -369,25 +397,27 @@ init-project-firewall.sh --print-allowlist
 
 # モードと運用
 
+**この節は `layer: "l3"` の記録機構（ipset `egress-audit-v4`）を説明しています。** 既定の `l7` では、記録の場所が `egress-proxy` のログに変わります。詳細は[proxy のログを読む](#proxy-のログを読む)。
+
 ## enforce（既定）
 
-allowlist 外の外向き通信を REJECT します。遮断された宛先は ipset `egress-audit-v4` に記録されるため、何が弾かれたかを後から確認できます。
+allowlist 外の外向き通信を REJECT します。`l3` では、遮断された宛先が ipset `egress-audit-v4` に記録されるため、何が弾かれたかを後から確認できます。
 
 ## audit
 
-新規プロジェクトの立ち上げ用です。allowlist 外の IPv4 外向き通信を**遮断せず**、遮断されるはずだった宛先を ipset `egress-audit-v4` に記録します。（`fw-audit:` プレフィックスの `LOG` ルールも入りますが、**多くの環境では出力されません**。運用の前提にしないでください。理由は [`docs/measuring-egress.md`](./docs/measuring-egress.md)）
+新規プロジェクトの立ち上げ用です。allowlist 外の外向き通信を**遮断せず**、遮断されるはずだった宛先を記録します。`l3` では ipset `egress-audit-v4` へ、`l7` では `egress-proxy` のログへ、名前で記録されます（`l3` の IPv4 側は `fw-audit:` プレフィックスの `LOG` ルールも入りますが、**多くの環境では出力されません**。運用の前提にしないでください。理由は [`docs/measuring-egress.md`](./docs/measuring-egress.md)）。
 
 ```json
 { "version": 1, "mode": "audit" }
 ```
 
-数日運用して `egress-audit-v4` から必要な宛先を収集し、`firewall.json` に転記してから `enforce` に切り替える、という流れを想定しています。静的 allowlist の「事前に全部知らないと使えない」問題への緩和策です。**記録は `enforce` でも行われますが、収集は `audit` で行ってください**（理由は [`docs/measuring-egress.md`](./docs/measuring-egress.md)）。
+数日運用して記録から必要な宛先を収集し、`firewall.json` に転記してから `enforce` に切り替える、という流れを想定しています。静的 allowlist の「事前に全部知らないと使えない」問題への緩和策です。**記録は `enforce` でも行われますが、収集は `audit` で行ってください**（理由は [`docs/measuring-egress.md`](./docs/measuring-egress.md)）。
 
-**audit でも遮断されるものが 3 つあります** — DNS 固定・IPv6・INPUT です。緩むのは IPv4 の外向き通信だけで、一覧と各項目の理由は [`docs/spec.md`](./docs/spec.md) §6.2。
+**audit でも遮断されるものが 3 つあります** — DNS 固定・IPv6・INPUT です。緩むのは IPv4 の外向き通信だけで、一覧と各項目の理由は [`docs/spec.md`](./docs/spec.md) §6.2。`l7` では、この3つに加えて、proxy を経由しない直接接続も audit のままブロックされます — 緩むのは「proxy が allowlist に無い宛先を通す」ことだけです。
 
 IPv6 の試行はログ（`fw-drop6:`）に残ります。**silent DROP ではなく `icmp6-adm-prohibited` で即断します**（AAAA を持つ許可先への接続が、IPv4 へフォールバックするまで待たされないため）。
 
-## 遮断された宛先を調べる
+## 遮断された宛先を調べる（`l3`）
 
 allowlist を通らなかった宛先 IP は ipset `egress-audit-v4` に溜まります（`enforce` / `audit` の両モード）。読むには root が要ります。
 
@@ -396,6 +426,8 @@ docker exec -u root <container> ipset list egress-audit-v4
 ```
 
 **読み方・IP から名前を戻す手順・何を allowlist に足して何を足さないかは [`docs/measuring-egress.md`](./docs/measuring-egress.md) に集約してあります。** `timeout` の残量から新旧を判断する方法、CDN 上では名前を特定しきれないこと、その場合の決着のつけ方まで、まとめてそちらにあります。
+
+`layer: "l7"`（既定）では、この ipset は作られません。宛先は[proxy のログを読む](#proxy-のログを読む)を参照してください。
 
 ## 再適用
 
@@ -473,11 +505,11 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 
 1. `firewall.json` を `mode: "audit"` にして**再ビルドする**（再接続では反映されません）
 2. 問題の操作を一通り行う
-3. `egress-audit-v4` に溜まった宛先を読み、名前に戻す
+3. 遮断先を読み、名前に戻す。**`layer: "l3"`** では `egress-audit-v4` に溜まった宛先を読みます。既定の **`layer: "l7"`** では [proxy のログを読む](#proxy-のログを読む)にある `egress-proxy` の access log を読みます（すでに名前で記録されているので、戻す作業は不要です）
 4. 必要なものを `allowDomains` / `allowCidrs` に足し、`enforce` に戻して再ビルドする
 5. 同じ操作が通ることを確かめる
 
-**3 と 4 の具体的な手順は [`docs/measuring-egress.md`](./docs/measuring-egress.md) にあります。** IP から名前を戻す順序、CDN では名前を特定しきれないこと、記録を汚染しない読み方、何を足して何を足さないか。**そのまま踏むと嵌まる箇所がいくつもあるので、先に読んでください。**
+**3 と 4 の具体的な手順（`layer: "l3"` の場合）は [`docs/measuring-egress.md`](./docs/measuring-egress.md) にあります。** IP から名前を戻す順序、CDN では名前を特定しきれないこと、記録を汚染しない読み方、何を足して何を足さないか。**そのまま踏むと嵌まる箇所がいくつもあるので、先に読んでください。**
 
 ---
 
@@ -495,6 +527,14 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 [firewall] ERROR: rejected allowDomains entry: *.example.com - wildcards are not supported.
 Write a leading dot instead: .example.com matches the domain and every subdomain beneath it.
 Run in audit mode and read ipset egress-audit-v4 to find out which hosts you actually need.
+```
+
+**最後の 1 行は `layer: "l3"` のときの文面です。** 既定の `layer: "l7"` では代わりに次のように出ます。
+
+```
+[firewall] ERROR: rejected allowDomains entry: *.example.com - wildcards are not supported.
+Write a leading dot instead: .example.com matches the domain and every subdomain beneath it.
+Run in audit mode and read the proxy sidecar's log to find out which hosts you actually need.
 ```
 
 `*.example.com` は一般に apex を含まない記法として使われています。apex を含む意味をこの綴りに与えると書いた内容より広く効くという形のずれが生まれるため、`*` を使った記法自体は version を問わず拒否します。
@@ -577,15 +617,15 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 ```sh
 pnpm lint          # biome
 pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
-pnpm test          # 設定 187 件 + ルール 220 件
+pnpm test          # 設定 230 件 + ルール 280 件
 ```
 
-- `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 187 件**
-- `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 220 件**
+- `tests/firewall-config.test.sh` — `firewall.json` のスキーマ検証と各バリデータ。**設定の 230 件**
+- `tests/firewall-rules.test.sh` — `iptables` / `ipset` / `dig` / `curl` などを記録型スタブに差し替え、生成されるフィルタテーブルとコマンド順序を検証します（root 不要）。**ルールの 280 件**
 
 **`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
 
-> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `210 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**220 件のうち 10 件**が何も検査できないためです。**設定側の 187 件は影響を受けません**（`187 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
+> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `270 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**280 件のうち 10 件**が何も検査できないためです。**設定側の 230 件は影響を受けません**（`230 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/verification-record.md`](./docs/verification-record.md) §3。
 
 > **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
 

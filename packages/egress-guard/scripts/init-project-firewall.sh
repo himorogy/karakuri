@@ -218,6 +218,12 @@ bundle_domains() {
 # has to permit both or a local database on the host stays unreachable.
 readonly HOST_INTERNAL_NAME="host.docker.internal"
 
+# The L7 sidecar's Compose service name (see the compose example this package
+# ships) and the port squid.conf binds. Only resolvable through the Docker
+# embedded resolver, the same way HOST_INTERNAL_NAME is.
+readonly PROXY_HOST="egress-proxy"
+readonly PROXY_PORT=3128
+
 # Ranges a host address may fall in. Anything else means the name was answered
 # by something other than Docker, and opening a port there would be a hole to an
 # arbitrary destination rather than to the host.
@@ -341,6 +347,10 @@ declare -a CFG_HOST_PORTS=()
 SSHD_PORT=""
 HOST_GATEWAY=""
 declare -a HOST_TARGETS=()
+
+# The resolved address of PROXY_HOST. Empty when the layer is l3, or when l7
+# resolution has not run yet.
+PROXY_TARGET=""
 
 # --- fail closed -------------------------------------------------------------
 
@@ -750,6 +760,14 @@ read_config() {
 		LAYER="l3"
 	fi
 
+	# Read before the domain loop below needs it, and reported here rather than
+	# only implied by a later rejection: the two things l3 cannot express
+	# (a leading dot, a host whose address moves) are worth knowing about before
+	# either is hit, not just when one is.
+	if [ "$LAYER" = "l3" ]; then
+		warn "layer l3 cannot express a leading dot domain (matches the domain and every subdomain) or a host whose address changes over time; both need layer l7 (the default)"
+	fi
+
 	# A bare string is read as a one element list, so the two spellings of
 	# "select this one bundle" cannot drift apart. An absent field and an empty
 	# array both come out empty, which is the same thing under this schema: no
@@ -777,7 +795,15 @@ read_config() {
 		# it apex-including meaning would make the entry reach further than what
 		# was written - the leading dot form says that explicitly instead.
 		if [[ "$entry" == *"*"* ]]; then
-			die "rejected allowDomains entry: $entry - wildcards are not supported. Write a leading dot instead: .example.com matches the domain and every subdomain beneath it. Run in audit mode and read ipset $SET_V4_AUDIT to find out which hosts you actually need."
+			# Where to go looking for the hosts actually needed differs by layer:
+			# l3 records blocked destinations in an ipset; l7 realises audit as a
+			# proxy behaviour instead (design.md §2.24) and leaves that record in
+			# the proxy's own log.
+			if [ "$LAYER" = "l7" ]; then
+				die "rejected allowDomains entry: $entry - wildcards are not supported. Write a leading dot instead: .example.com matches the domain and every subdomain beneath it. Run in audit mode and read the proxy sidecar's log to find out which hosts you actually need."
+			else
+				die "rejected allowDomains entry: $entry - wildcards are not supported. Write a leading dot instead: .example.com matches the domain and every subdomain beneath it. Run in audit mode and read ipset $SET_V4_AUDIT to find out which hosts you actually need."
+			fi
 		fi
 		if [ "$version" = "2" ]; then
 			validate_domain_v2 "$entry" || die "rejected allowDomains entry: $entry"
@@ -954,6 +980,19 @@ prepare_allowset() {
 	ipset destroy "$SET_V4_STAGING" 2>/dev/null || true
 	ipset create "$SET_V4_STAGING" hash:net family inet maxelem 262144
 
+	# Blocked-destination observation moves to the proxy's own log for names
+	# (see squid.conf) - this ipset is what the domain and CIDR recorder
+	# writes to, and under l7 the final table never references it, so it
+	# would just be dead state. This does not carry over to the DNS side:
+	# attempts at unassigned resolvers are still refused and still logged via
+	# the fw-dns-drop: LOG rule (emit_dns_pinning), just not added to a set -
+	# the proxy never sees port 53 traffic, so there is nowhere for that
+	# particular record to move to.
+	if [ "$LAYER" = "l7" ]; then
+		AUDIT_RECORDER=0
+		return 0
+	fi
+
 	# Deliberately NOT recreated: the point is to accumulate across runs. Entries
 	# expire on their own through the set's timeout.
 	if ! ipset create -exist "$SET_V4_AUDIT" hash:ip family inet \
@@ -1001,7 +1040,10 @@ add_domain() {
 			rejected=1
 			continue
 		fi
-		allowset_add "$ip"
+		# L7 realises name based policy through the proxy ACL (print_proxy_acl),
+		# not this ipset - resolving still proves the name is alive, which is
+		# what the anchor check below needs.
+		[ "$LAYER" = "l7" ] || allowset_add "$ip"
 		added=1
 	done < <(resolve_domain "$name")
 
@@ -1013,7 +1055,11 @@ add_domain() {
 		fi
 		return 1
 	fi
-	info "allowed $name"
+	if [ "$LAYER" = "l7" ]; then
+		info "$name resolves (name based policy for it lives in the proxy ACL)"
+	else
+		info "allowed $name"
+	fi
 	return 0
 }
 
@@ -1207,7 +1253,18 @@ emit_bootstrap_v4() {
 	printf '%s\n' "COMMIT"
 }
 
+# The only branch point between the two realisation layers (design.md §2.24).
+# Everything else - validation, bootstrap, panic, DNS pinning, IPv6 - is
+# shared and does not look at LAYER at all.
 emit_filter_v4() {
+	if [ "$LAYER" = "l7" ]; then
+		emit_filter_v4_l7
+	else
+		emit_filter_v4_l3
+	fi
+}
+
+emit_filter_v4_l3() {
 	local out_policy="DROP"
 	[ "$MODE" = "audit" ] && out_policy="ACCEPT"
 
@@ -1265,6 +1322,60 @@ emit_filter_v4() {
 		log_line OUTPUT "fw-drop: "
 		printf '%s\n' "-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited"
 	fi
+
+	printf '%s\n' "COMMIT"
+}
+
+# L7's final table: proxy destination, DNS pinning, loopback, allowCidrs and
+# allowHostPorts. Domain names are not this table's business any more - the
+# proxy ACL (print_proxy_acl) carries them, and build_allowlist does not add
+# their resolved addresses to $SET_V4 under this layer, so the match-set rule
+# below can only ever match a configured CIDR.
+#
+# `mode` does not reach this function. L7 realises audit as a proxy
+# behaviour (allow-and-record by name, see squid.conf) rather than an
+# iptables state - OUTPUT never becomes ACCEPT here, in either mode, so a
+# connection that skips the proxy is refused regardless of `mode`. No
+# recorder either: prepare_allowset does not create $SET_V4_AUDIT for this
+# layer, so there is nothing for a SET rule to add to.
+emit_filter_v4_l7() {
+	printf '%s\n' "*filter"
+	printf '%s\n' ":INPUT DROP [0:0]"
+	printf '%s\n' ":FORWARD DROP [0:0]"
+	printf '%s\n' ":OUTPUT DROP [0:0]"
+
+	printf '%s\n' "-A INPUT -i lo -j ACCEPT"
+	printf '%s\n' "-A OUTPUT -o lo -j ACCEPT"
+
+	emit_dns_pinning "$AUDIT_RECORDER"
+
+	printf '%s\n' "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+	printf '%s\n' "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+
+	if [ -n "$SSHD_PORT" ]; then
+		printf '%s\n' "-A INPUT -p tcp --dport $SSHD_PORT -m conntrack --ctstate NEW -j ACCEPT"
+	fi
+
+	if [ "${#CFG_HOST_PORTS[@]}" -gt 0 ] && [ "${#HOST_TARGETS[@]}" -gt 0 ]; then
+		local target port
+		for target in "${HOST_TARGETS[@]}"; do
+			for port in "${CFG_HOST_PORTS[@]}"; do
+				printf '%s\n' "-A OUTPUT -d $target/32 -p tcp --dport $port -j ACCEPT"
+			done
+		done
+	fi
+
+	# allowCidrs are addresses, not names, so they stay a direct iptables
+	# accept under L7 the same as under L3 - proxy only mediates name based
+	# policy, and does not replace an address the author wrote down directly.
+	printf '%s\n' "-A OUTPUT -m set --match-set $SET_V4 dst -j ACCEPT"
+
+	if [ -n "$PROXY_TARGET" ]; then
+		printf '%s\n' "-A OUTPUT -d $PROXY_TARGET/32 -p tcp --dport $PROXY_PORT -j ACCEPT"
+	fi
+
+	log_line OUTPUT "fw-drop: "
+	printf '%s\n' "-A OUTPUT -j REJECT --reject-with icmp-admin-prohibited"
 
 	printf '%s\n' "COMMIT"
 }
@@ -1385,6 +1496,33 @@ resolve_host_targets() {
 
 	[ "${#HOST_TARGETS[@]}" -gt 0 ] ||
 		die "allowHostPorts is set but neither the default gateway nor $HOST_INTERNAL_NAME could be resolved"
+}
+
+# The L7 final table's one required destination. Runs under the bootstrap
+# policy, after the network is closed, the same as resolve_host_targets:
+# PROXY_HOST is a Compose service name and only resolves through the Docker
+# embedded resolver.
+#
+# Unlike allowHostPorts, this is not optional under L7 - without it the final
+# table would have no way out at all, which is a worse failure than the panic
+# table this falls back to.
+resolve_proxy_target() {
+	PROXY_TARGET=""
+	[ "$LAYER" = "l7" ] || return 0
+
+	local ip
+	while read -r ip; do
+		[ -n "$ip" ] || continue
+		if ! is_plausible_host_address "$ip"; then
+			warn "$PROXY_HOST resolved to $ip, which is not a private address; refusing to trust it as the proxy"
+			continue
+		fi
+		PROXY_TARGET="$ip"
+		break
+	done < <(resolve_domain "$PROXY_HOST")
+
+	[ -n "$PROXY_TARGET" ] ||
+		die "layer l7 requires the $PROXY_HOST sidecar to be reachable, and it could not be resolved"
 }
 
 # --- self verification -------------------------------------------------------
@@ -1520,7 +1658,13 @@ self_verify() {
 	else
 		warn "verify SKIP: every DNS probe address is also a configured resolver"
 	fi
-	if [ -n "$anchor" ]; then
+	if [ "$LAYER" = "l7" ]; then
+		# This would reach $anchor directly, but the L7 final table has no
+		# accept for it any more - only the proxy does, and the check would
+		# need to go through the proxy to mean anything. Standing up a proxy
+		# to check against is outside what this script can do on its own.
+		info "verify SKIP: allowed host reachability (only reachable through the proxy under layer l7, which this check does not go through)"
+	elif [ -n "$anchor" ]; then
 		verify_step "allowed host is reachable ($anchor)" pass \
 			curl -sS -o /dev/null --connect-timeout 5 --max-time 15 "https://$anchor/"
 	else
@@ -1545,21 +1689,32 @@ self_verify() {
 
 	# Project specific entries are checked against the ipset rather than by
 	# connecting: they are frequently non HTTP services (databases and such).
-	local domain checked=0 configured=0 addrs
-	for domain in "${CFG_DOMAINS[@]:-}"; do
-		[ -n "$domain" ] || continue
-		configured=1
-		[ "$checked" = "1" ] && break
-		addrs="$(allowlistable_addresses "$domain")"
-		[ -n "$addrs" ] || continue
-		verify_step "firewall.json domain $domain is in the allowlist" pass \
-			any_in_allowset "$addrs"
-		checked=1
-	done
-	if [ "$configured" = "1" ] && [ "$checked" = "0" ]; then
-		# Not a failure: per spec a domain that will not resolve is a warn and
-		# continue case. It must be visible rather than silently skipped.
-		warn "verify SKIP: none of the ${#CFG_DOMAINS[@]} firewall.json domains resolved, so none could be checked"
+	#
+	# Skipped entirely under l7: build_allowlist does not add a domain's
+	# resolved address to $SET_V4 for this layer (the proxy ACL carries the
+	# name instead), so the set membership this checks for is never there by
+	# design, not by failure.
+	if [ "$LAYER" = "l7" ]; then
+		if [ "${#CFG_DOMAINS[@]}" -gt 0 ]; then
+			info "verify SKIP: firewall.json domains (realised by the proxy ACL under layer l7, not this ipset)"
+		fi
+	else
+		local domain checked=0 configured=0 addrs
+		for domain in "${CFG_DOMAINS[@]:-}"; do
+			[ -n "$domain" ] || continue
+			configured=1
+			[ "$checked" = "1" ] && break
+			addrs="$(allowlistable_addresses "$domain")"
+			[ -n "$addrs" ] || continue
+			verify_step "firewall.json domain $domain is in the allowlist" pass \
+				any_in_allowset "$addrs"
+			checked=1
+		done
+		if [ "$configured" = "1" ] && [ "$checked" = "0" ]; then
+			# Not a failure: per spec a domain that will not resolve is a warn and
+			# continue case. It must be visible rather than silently skipped.
+			warn "verify SKIP: none of the ${#CFG_DOMAINS[@]} firewall.json domains resolved, so none could be checked"
+		fi
 	fi
 
 	local cidr
@@ -1626,10 +1781,14 @@ print_allowlist() {
 	printf '%s\n' "${CFG_CIDRS[@]:-}" | print_list "cidrs"
 	printf '%s\n' "${CFG_HOST_PORTS[@]:-}" | print_list "hostPorts"
 
-	if profile_has_bundle github; then
+	if [ "$LAYER" != "l7" ] && profile_has_bundle github; then
 		printf '\n'
 		printf '%s\n' "Note: when the github bundle is selected, CIDR ranges from the GitHub meta API"
 		printf '%s\n' "are also allowed at apply time. They are not listed here."
+	elif [ "$LAYER" = "l7" ] && profile_has_bundle github; then
+		printf '\n'
+		printf '%s\n' "Note: layer l7 does not add GitHub meta API ranges; GitHub is reached by name"
+		printf '%s\n' "through the proxy instead."
 	fi
 	return 0
 }
@@ -1860,6 +2019,7 @@ main() {
 	close_network
 	build_allowlist
 	resolve_host_targets
+	resolve_proxy_target
 	apply_rules
 
 	# Only now, with the real table live, is api.github.com reachable - and only
@@ -1867,7 +2027,15 @@ main() {
 	# it unconditionally would warn that the meta API is unavailable on every run
 	# of a policy that deliberately left GitHub out, which trains the reader to
 	# ignore the one message that means the ranges really are missing.
-	if profile_has_bundle github; then
+	#
+	# l3 only: these ranges land in $SET_V4, and under l7 that set's only
+	# iptables reference is the allowCidrs match in the final table - adding
+	# GitHub's public ranges to it would open a direct, proxy-bypassing route
+	# to all of GitHub on every port, which is exactly what confining the
+	# final table to "proxy + DNS + loopback + allowCidrs + allowHostPorts"
+	# rules out. l7 already has GitHub's names in the proxy ACL, so the
+	# ranges buy it nothing.
+	if [ "$LAYER" != "l7" ] && profile_has_bundle github; then
 		add_github_meta_ranges
 	fi
 

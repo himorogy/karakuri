@@ -80,12 +80,18 @@
 - bootstrap テーブルは、INPUT と OUTPUT を落としたうえで割り当てられた resolver への 53 だけを許し、他の 53 を落とす。allowlist も記録器もホストゲートウェイも持たない。記録器はカーネルモジュールに依存し、bootstrap の適用失敗は致命なので載せない（テスト: "the bootstrap table has no recorder"）
 - テーブルの更新はテーブル単位の入れ替えだけで行い、個々の規則を逐次変更する経路は使わない（テスト: "no per-rule iptables mutation is used"）
 - allowlist は staging 側に全件を投入し終えてから原子的に差し替える。最後の追加は差し替えより前に来る（テスト: "the allowlist is complete before the swap"）
-- 最終 IPv4 テーブルの順序は、resolver の許可 → 53 の記録 → 53 の遮断 → 確立済み接続の許可 → allowlist の許可 → 記録 → ログ → 拒否。DNS の固定は確立済み接続の許可より前、allowlist の許可は記録より前、記録は拒否より前に置かれる
+- L3 実現層では、最終 IPv4 テーブルの順序は、resolver の許可 → 53 の記録 → 53 の遮断 → 確立済み接続の許可 → allowlist の許可 → 記録 → ログ → 拒否。DNS の固定は確立済み接続の許可より前、allowlist の許可は記録より前、記録は拒否より前に置かれる（起源: `0020-l7-sidecar-and-branch`）
+- L7 実現層では、最終 IPv4 テーブルの順序は、resolver の許可 → 53 の遮断 → 確立済み接続の許可 → `allowCidrs` / `allowHostPorts` の許可 → proxy 宛の許可 → ログ → 拒否。53 番への試行の記録（ipset への追加）は置かないが、割り当てリゾルバ以外への 53 番を拒否したこと自体は `fw-dns-drop:` の `LOG` ルールとして残る（起源: `0020-l7-sidecar-and-branch`）
+- L7 実現層を選んだ設定では、最終 IPv4 テーブルにドメイン由来の allowlist が現れず、proxy 宛の許可・DNS の固定・loopback・`allowCidrs`・`allowHostPorts` だけが残る。名前による許可は proxy 側の ACL が担う（テスト: "the L7 final table carries no domain allowlist" / "allowCidrs still reaches the L7 final table"）（起源: `0020-l7-sidecar-and-branch`）
+- L3 実現層を選んだ設定では、最終 IPv4 テーブルは現在と同一である。加えて適用ログに、その実現層に残る制限（先頭ドットのドメインが書けないこと、アドレスが動くドメインを載せられないこと）が出る（テスト: "the L3 final table is unchanged" / "choosing L3 reports what it cannot express"）（起源: `0020-l7-sidecar-and-branch`）
+- `version` が `1` の設定は L3 実現層として扱われ、最終 IPv4 テーブルは実現層を `l3` と明示した version 2 の設定と同一になる（テスト: "a version 1 config produces the L3 final table"）（起源: `0020-l7-sidecar-and-branch`）
 - 一致しない egress は黙って捨てず、明示的に拒否する（テスト: "unmatched egress is rejected"）
 - resolver は解決設定に書かれたアドレスを udp と tcp の両方で固定し、ハードコードしない
 - IPv6 側は allowlist を持たず、記録用のログを添えて拒否する。黙って落とすと AAAA を持つ許可済みホストが接続の遅延として現れるため（テスト: "IPv6 egress is refused, not silently dropped"）
-- audit モードでは OUTPUT の方針を**あえて許可のまま**にし、拒否を置かず、落ちるはずだった宛先を記録する。一方で INPUT は落としたまま、DNS の固定もそのまま、IPv6 も拒否したままにする（テスト: "audit leaves OUTPUT on ACCEPT" / "audit keeps INPUT on DROP"）
-- 記録用のセットは期限付きで作られ、破棄されない。実行をまたいで残すのが意図（テスト: "the audit set is created but never destroyed"）
+- L3 実現層では、audit モードは OUTPUT の方針を**あえて許可のまま**にし、拒否を置かず、落ちるはずだった宛先を記録する。一方で INPUT は落としたまま、DNS の固定もそのまま、IPv6 も拒否したままにする（テスト: "audit leaves OUTPUT on ACCEPT" / "audit keeps INPUT on DROP"）（起源: `0020-l7-sidecar-and-branch`）
+- L3 実現層では、記録用のセットは期限付きで作られ、破棄されない。実行をまたいで残すのが意図（テスト: "the audit set is created but never destroyed"）（起源: `0020-l7-sidecar-and-branch`）
+- L7 実現層では、`mode` が `audit` でも `enforce` でも最終 IPv4 テーブルは同一であり、OUTPUT の方針は `ACCEPT` にならない。ipset の記録器も置かない。proxy への到達は `mode` によらず強制され、proxy を迂回した直接接続は audit でも塞がれる（テスト: "the L7 final table is identical in audit and enforce" / "L7 audit does not put OUTPUT on ACCEPT" / "the L7 final table has no recorder"）（起源: `0020-l7-sidecar-and-branch`）
+- bootstrap テーブル・panic テーブル・IPv6 の全拒否・DNS の固定・冪等性は実現層によって変わらない（テスト: "the bootstrap table is identical across realisation layers" / "the panic table is identical across realisation layers" / "the IPv6 table is identical across realisation layers" / "the second L7 run produces an identical IPv4 table" / "the second L7 run produces an identical IPv6 table" / "the L7 final table accepts the assigned resolver on udp/53" / "the L7 final table accepts the assigned resolver on tcp/53" / "the L7 final table drops other udp/53" / "the L7 final table drops other tcp/53"）（起源: `0020-l7-sidecar-and-branch`）
 - 同じ設定での2回目の連続実行は 0 で終わり、IPv4 と IPv6 のいずれも1回目と完全に同一のテーブルを生成する
 - 生成されるテーブルは1規則1行の整形された形をとり、規則行は必ず遷移先を持つ
 - `sshdPort` を書かない設定では、bootstrap・最終・panic のどのテーブルにも inbound ポートも対になる応答経路も現れない。inbound を開くと戻りが確立済み接続として allowlist を経由せず出ていけるため、入口であると同時に出口になる（テスト: "no inbound port is opened when sshdPort is omitted"）
@@ -95,7 +101,8 @@
 - 設定の拒否・resolver の欠落・anchor の解決失敗・ホストポートの宛先が定まらないこと・最終テーブルの拒否・自己検証の失敗は、いずれも非ゼロ終了し IPv4 と IPv6 の両方で panic テーブルへ落ちる。panic テーブルは INPUT・FORWARD・OUTPUT を落とし、loopback の2規則だけを持ち、DNS の固定も確立済み接続も allowlist も記録器もログも拒否も持たない。**IPv6 側の panic テーブルは拒否すら持たず黙って落とす**
 - panic テーブルの適用自体が拒否されても実行は非ゼロで終わり、残るのは直前に受理された bootstrap テーブル——すなわち既に閉じており、割り当て resolver への 53 だけが通る状態である（テスト: "the effective table is still the bootstrap table"）
 - 記録器を含む最終テーブルが拒否された場合は、記録器を外した同じテーブルで一度だけ再試行して 0 で終わり、その旨を報告する。再試行のテーブルも拒否を保つ。再試行も拒否されたときだけ panic テーブルを**独立した適用として**投入し非ゼロで終わる（テスト: "the panic table is a restore of its own, not the last rejected one"）
-- GitHub の meta API は、github バンドルが選ばれているときだけ、かつ最終テーブルが有効になった後にだけ取得する。後でなければならないのは、その取得に要る egress を開くのが最終テーブル自身だからである。選ばれていないときに取得を試みないのは、意図的なスキップと取得失敗を区別するためであり、毎回「meta が使えない」と警告すると、本当にレンジが欠けた1回を読み飛ばす習慣を作る。取得は加算のみの best-effort で、同じホストは DNS 経由で既にセットに入っている——**唯一の外部取得をこの位置に置くことで、リビルドのどの工程も外部到達性を前提としない状態を保ち、任意の時点で強制終了しても不変条件が壊れないようにしている**（テスト: "the meta API is only fetched after the final table is live"）
+- L3 実現層では、GitHub の meta API は、github バンドルが選ばれているときだけ、かつ最終テーブルが有効になった後にだけ取得する。後でなければならないのは、その取得に要る egress を開くのが最終テーブル自身だからである。選ばれていないときに取得を試みないのは、意図的なスキップと取得失敗を区別するためであり、毎回「meta が使えない」と警告すると、本当にレンジが欠けた1回を読み飛ばす習慣を作る。取得は加算のみの best-effort で、同じホストは DNS 経由で既にセットに入っている——**唯一の外部取得をこの位置に置くことで、リビルドのどの工程も外部到達性を前提としない状態を保ち、任意の時点で強制終了しても不変条件が壊れないようにしている**（テスト: "the meta API is only fetched after the final table is live"）（起源: `0020-l7-sidecar-and-branch`）
+- L7 実現層では、`profile` に `github` が含まれていても GitHub の meta API を取得せず、その IPv4 レンジは allowlist のセットに入らない。名前による許可は proxy 側の ACL が担うため、IP レンジを持つ意味が無く、持つと proxy を迂回して全ポートへ抜ける経路になる。L3 実現層では従来どおり取得する（テスト: "the L7 layer does not fetch the GitHub meta ranges" / "the L3 layer still fetches the GitHub meta ranges"）（起源: `0020-l7-sidecar-and-branch`）
 - meta 応答の各項目は集約に渡す前に検証を通す。IPv6 の項目・private なレンジ・不正な表記は集約にもセットにも到達せず、落とした件数を報告する。使えない項目があっても実行は失敗しない（テスト: "a private meta range never reaches aggregate"）
 - meta 応答を最後まで読めなかった場合は、追加ゼロで 0 終了しつつその旨を報告する。セットは加算のみなので、沈黙して部分適用にしない
 - DNS の回答も禁止レンジで篩う。メタデータサービスのアドレスや private なアドレスはセットに入らず、理由が報告される。CIDR の指定には禁止レンジの検査があるのに DNS の回答には無い、という非対称がそのまま迂回路になっていた——許可済みドメインのゾーンが攻撃者の管理下にあるか汚染されていれば、メタデータサービスのアドレスを返すだけで allowlist に載る。しかも**再適用の時刻を選べる立場の者は rebinding のタイミングも選べる**（テスト: "the metadata service address is not allowed"）
@@ -465,6 +472,18 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `host/broker-bitwarden.sh` の施錠自身の失敗は、本来の終了コードを上書きしない
 - `host/loopback-setup.sh` の追加と削除は、引数の個数違いを非ゼロで拒否する
 
+### B-a — `未検証の約束 (テスト困難: proxy を実際に起動して通信させる必要があり、Docker と外向きの到達性が要る。0021 の検収で確認する)`
+
+起源: `0020-l7-sidecar-and-branch`
+
+- L7 実現層で `mode` が `audit` のとき、proxy は allowlist に無い宛先も通したうえで、その宛先を名前で記録に残す。`enforce` では従来どおり拒否する。この記録はエージェントのコンテナから読めるが、書き換えられない
+
+### B-b — `未検証の約束 (テスト困難: ホスト上でのイメージのビルドと実機の確認が要る。0021 の検収で確認する)`
+
+起源: `0020-l7-sidecar-and-branch`
+
+- proxy のイメージは非 root（uid 13）で起動し、ACL をビルド時に焼き込むため、実行中のコンテナに ACL を差し替える経路を持たない
+
 ## 境界宣言
 
 ### 免責
@@ -483,6 +502,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 **B. `@himorogy/egress-guard`（npm パッケージ）**
 - `scripts/init-project-firewall.sh` — egress firewall の適用 CLI
 - `templates/firewall.json` / `firewall.audit.json` / `firewall.example.json` — 利用者がコピーする設定テンプレート
+- `templates/proxy/Dockerfile` / `templates/proxy/squid.conf` — L7 sidecar のイメージと設定
 
 **C-1. `runtime-base` イメージへ焼かれたコードの振る舞い**
 - `/usr/local/bin/prod-entrypoint.sh`、`secrets-ingest.sh`、`git-askpass`、`git-auth-check`、`git-credential-gh-token`、`karakuri-context`、`env-guard-scan`、`init-project-firewall.sh`
