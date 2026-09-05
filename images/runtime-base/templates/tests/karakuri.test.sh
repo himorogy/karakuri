@@ -438,6 +438,13 @@ assert_stderr_has() {
 	esac
 }
 
+assert_stderr_lacks() {
+	case "$CASE_STDERR" in
+	*"$1"*) ng "$2 (stderr: $CASE_STDERR)" ;;
+	*) ok "$2" ;;
+	esac
+}
+
 assert_stdout_has() {
 	case "$CASE_STDOUT" in
 	*"$1"*) ok "$2" ;;
@@ -1110,6 +1117,26 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 
 	assert_rc_nonzero "[$s] karakuri-dock fails when dock.sh cannot be found"
 	assert_stderr_has "cannot find 'dock.sh'" "[$s] the error names dock.sh as the missing script"
+
+	# 置いてあるが実行ビットが落ちている場合。ファイル自体は探索で見つかるので、
+	# 置き場所ではなく mode を名指しする分岐に入る必要がある。配布物が mode
+	# 100644 のまま渡ったことが実際にあり、「置き場所が違う」としか言わない
+	# 文面のせいで、置いてある場所と KARAKURI_TOOL_DIR を疑う時間が生まれた。
+	# 直し方 (chmod +x) までを文面に含める。
+	reset_env
+	chmod -x "$FAKE_BIN_DIR/host-run.sh"
+	run_case karakuri-run -b acme -- echo hi
+	chmod +x "$FAKE_BIN_DIR/host-run.sh"
+
+	assert_rc_nonzero "[$s] karakuri-run fails when host-run.sh is present but not executable"
+	assert_stderr_has "host-run.sh" "[$s] the error names host-run.sh"
+	assert_stderr_has "not executable" \
+		"[$s] the error says the file is not executable"
+	assert_stderr_has "chmod +x" "[$s] the error shows the command that restores the mode"
+	assert_stderr_lacks "cannot find" \
+		"[$s] the error does not blame the placement when the file was found"
+	assert_not_invoked "$FAKE_ARGV_FILE" \
+		"[$s] nothing is executed when host-run.sh is not executable"
 
 	# --- 薄いラッパー（loopback） ---------------------------------------------------
 	# karakuri-loopback は _karakuri_tool でスクリプトを引き、引数をそのまま

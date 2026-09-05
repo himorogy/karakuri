@@ -144,16 +144,50 @@ fi
 # `_` にしてある）。
 
 # _karakuri_tool <name> — 実行するスクリプトの在処を stdout に出す。
+#
+# 見つからなかったときのエラーは 2 通りに分ける。「置き場所が違う」と
+# 「置いてあるが実行できない」は対処が別であり、後者を前者の文面で案内すると
+# 利用者は置き場所を疑い続けることになる。配布物が実行ビットを落とした状態で
+# 手元に届く経路は実在する (git が mode 100644 で記録していた、zip や
+# コピーの途中で剥がれた、など) ので、探索で当たったファイルは名指しして
+# chmod を示す。
+#
+# PATH 側でも実行可能であることをこちらで確かめる。シェルによっては
+# `command -v` が実行ビットの無いファイルも拾ってくるためであり、そのまま
+# 返すと呼び出し側が permission denied で落ちる。拾えたパスは「あるが
+# 実行できない」の候補として使う。
 _karakuri_tool() {
-	if [ -n "${KARAKURI_TOOL_DIR:-}" ] && [ -x "${KARAKURI_TOOL_DIR}/$1" ]; then
-		printf '%s\n' "${KARAKURI_TOOL_DIR}/$1"
-		return 0
+	local candidate="" found=""
+
+	if [ -n "${KARAKURI_TOOL_DIR:-}" ]; then
+		candidate="${KARAKURI_TOOL_DIR}/$1"
+		if [ -x "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+		if [ -f "$candidate" ]; then
+			found="$candidate"
+		fi
 	fi
-	if command -v "$1" >/dev/null 2>&1; then
-		command -v "$1"
-		return 0
+
+	# 関数やビルトインだと command -v はパスでない文字列を返すので、
+	# `-f` を見てから候補にする。
+	candidate="$(command -v "$1" 2>/dev/null)"
+	if [ -n "$candidate" ]; then
+		if [ -x "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+		if [ -z "$found" ] && [ -f "$candidate" ]; then
+			found="$candidate"
+		fi
 	fi
-	echo "karakuri: cannot find '$1'. Put it next to karakuri.sh, or on PATH, or point KARAKURI_TOOL_DIR at the directory that holds it" >&2
+
+	if [ -n "$found" ]; then
+		echo "karakuri: found '$1' at '$found', but it is not executable. Restore the mode with: chmod +x '$found'" >&2
+	else
+		echo "karakuri: cannot find '$1'. Put it next to karakuri.sh, or on PATH, or point KARAKURI_TOOL_DIR at the directory that holds it" >&2
+	fi
 	return 1
 }
 
