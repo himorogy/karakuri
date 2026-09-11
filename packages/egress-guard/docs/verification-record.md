@@ -33,6 +33,7 @@
 | 同上、ユーザー定義ネットワーク、**enforce** | 2026-08-03 | §6.19 の 19.3、および §6.21 の再実施 | 合格。プロビジョニング中だけ audit にする運用で起動後セットアップが成立した |
 | 同上、**Docker Compose**（`egress-guard-toganashi_default`、gw `172.22.0.1`） | 2026-08-03 | §6.22（§6.2・§6.3・§6.6・§6.15 の再実施を含む） | **全項目合格。** README の第一推奨がこれで検証済みになった |
 | 同上、**`enforce` と `audit` を比較**（VS Code の UI 上での確認） | 2026-08-03 | §6.23 | `enforce` では拡張が 2 つ入らない。[`known-issues.md`](./known-issues.md) #7 の実害を確認 |
+| （未実施） | — | §6.25（このリポジトリ自身の L7 実機検収、`pnpm verify:l7`） | **`0021-l7-verification-and-cutover` の実装作業時点では docker の無い環境しか無く、ここで実行できなかった。** ホストでの実行結果は実施後に追記する |
 
 > **§3 の欠陥 1・2 は、この表より前の初期検証で見つけたものです。** §6 のチェックリストを整備する前に実施したもので、実施日と範囲の記録は残っていません。そのため §6 には対応する節がありません。
 
@@ -100,6 +101,7 @@
 | **IPv6 の実到達性（`curl -6` の遮断）** | コンテナに global IPv6 アドレスが無く、自己検証でも恒常的にスキップされる | なし（[known-issues #2](./known-issues.md)） |
 | **Linux ホストでの動作** | 検証環境がすべて linuxkit VM | なし（[known-issues #3](./known-issues.md)） |
 | **I3: GitHub meta API 不達でも適用が成立すること** | 検証環境では meta API に常に到達できた。ネットワークを部分的に落とす手順が無い | `tests/firewall-rules.test.sh` の `panic` ケースが近いが、そこでは DNS も落ちるため meta 単独の不達は未確認。応答が壊れている場合（`metabounds` / `metatruncated`）はユニットテストで確認済み |
+| **このリポジトリ自身の L7 実機での成立**（proxy を無視した直接接続の遮断、`firewall.json` 変更にイメージ再ビルドが要ること、先頭ドットドメインの具体名到達を含む） | `0021-l7-verification-and-cutover` の実装作業時点では docker の無い環境しか無く、実行できなかった | `packages/egress-guard/tests/verify-l7.sh`（§6.25。ホストで `pnpm verify:l7`） |
 
 > **優先度の反転は解消しました。** README が第一に推奨する Docker Compose 構成は、2026-08-03 に §6.22 で検証済みです。残っている 6 行は、いずれも**環境か再現手段が無くて確かめられないもの**であり、後回しにしているものではありません。
 
@@ -931,3 +933,16 @@ OCI runtime exec failed: exec: "curl": executable file not found in $PATH
 修正として `verify.sh` に**判定不能**（道具を実行できなかった）を導入し、接続失敗と区別して SKIP するようにしました。あわせて V6 では「リクエストが proxy まで届いたこと」を、V7 では「停止前に同じ経路が生きていること」を前提条件として確認します。
 
 **この 2 件はどちらも proxy の採否とは無関係です。** PoC の環境の作りと、検証スクリプトの判定の作りの問題でした。
+
+### 6.25 L7 実機検収（`0021-l7-verification-and-cutover`）
+
+**このリポジトリ自身の `.devcontainer` 構成**（`layer: "l7"` を選んだ `firewall.json`、`egress-proxy` sidecar、`dev` への proxy 配線）に対する検収です。§6.24 の PoC は仕組みが成立するかを別建ての環境で確かめたもので、この節は本実装を対象にします。
+
+```sh
+# [ホスト]
+pnpm verify:l7
+```
+
+`packages/egress-guard/tests/verify-l7.sh` が §6.24 の判定項目を引き継いで実行します。追加で、proxy 環境変数を無視した直接接続の遮断（L7 と L3 を組み合わせた状態でだけ成立する項目）と、`firewall.json` の変更にイメージの再ビルドが要ることの 2 つを確認します。
+
+**この節を書いた時点では未実施です。** devcontainer の中には docker が無く、この環境からは実行できません。実行結果（PASS/FAIL/SKIP の内訳と、判定を決めた出力）、ホストの OS、Docker の版、iptables のバックエンド（`nf_tables` か `legacy` か）は、ホスト上で実際に走らせた回に追記します。

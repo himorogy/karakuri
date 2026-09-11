@@ -93,7 +93,7 @@
 
 ## 7. VS Code 拡張の配信 CDN を allowlist できない
 
-**分類:** 保留（[`spec.md`](./spec.md) §10.1 待ち。現行方式では回避策がありません）
+**分類:** 解消済み（`0021-l7-verification-and-cutover` で L7 実現層への切り替えが入り、`allowDomains` に先頭ドットの `.gallerycdn.vsassets.io` / `.gallery.vsassets.io` を書けるようになったため。このリポジトリ自身の `.devcontainer/firewall.json` も既にこの 2 行を持っています）
 
 拡張のカタログは `marketplace.visualstudio.com`（基底プロファイルの `vscode` バンドル）ですが、**実体を配るのは `*.vsassets.io` の 2 系統**です。ここが遮断されると**拡張のインストールが失敗します**。`~/.vscode-server/extensions` はボリュームに載っていないため、**再ビルドのたびに再ダウンロードが必要**です。
 
@@ -125,7 +125,7 @@ allowlist に載せる手段が両方とも塞がっています。
 
 **起動時スナップショット方式の弱点（[`spec.md`](./spec.md) §9.7 の CDN drift）が実害として出た最初の例です。** 名前で判定する層に移せば構造ごと解消します。
 
-**この項目と §9.7 の 2 件をもって、[`spec.md`](./spec.md) §10.1（L7 proxy 移行）に着手する判断をしました。** 配置（sidecar コンテナ）・TLS を終端しないこと・接続方式（明示型）は [`design.md`](./design.md) §2.23 で確定しています。実装は未着手です。
+**この項目と §9.7 の 2 件をもって、[`spec.md`](./spec.md) §10.1（L7 proxy 移行）に着手する判断をしました。** 配置（sidecar コンテナ）・TLS を終端しないこと・接続方式（明示型）は [`design.md`](./design.md) §2.23 で確定しています。
 
 ### 移行の前提だった未確認事項は解決しました（2026-08-19）
 
@@ -143,13 +143,11 @@ allowlist に載せる手段が両方とも塞がっています。
 
 **通しでも確認しました（同日）。** VS Code でアタッチした devcontainer から Squid 越しに拡張をインストールし、proxy のアクセスログに 2 系統とも `TCP_TUNNEL/200` が残ることを確かめています（[`verification-record.md`](./verification-record.md) §6.24）。**この項目は L7 proxy 移行で解消することが実証されました。**
 
-**項目としては、実装が入るまでここに残します。** 現時点で存在するのは PoC であって、`init-project-firewall.sh` の縮小も `firewall.json` からの ACL 変換もまだありません。
+**実装は `0019-l7-schema-and-acl` / `0020-l7-sidecar-and-branch` / `0021-l7-verification-and-cutover` で入りました。** `firewall.json` の `allowDomains` に先頭ドットの2行を書けば、この項目は解消します。
 
 > **あわせて分かったこと:** `gallery.vsassets.io` は `marketplace.visualstudio.com` と同じアドレスを返します。上の 2026-08-03 の表で「重なりがありません」としたのは `gallerycdn` 側についてであり、**`gallery` 側は重なっていました。** `enforce` でも一部の拡張が入る理由がここから説明できます（[`verification-record.md`](./verification-record.md) §6.24 の副産物）。
 
 コンテナ内に DNS 連動の allowlist を挟む案でも解消しますが、**別の理由で却下しました**（[`design.md`](./design.md) §2.20）。
-
-現状は「拡張はイメージビルド時に入れておく」か「拡張の更新を諦める」かの二択です。
 
 この項目から分けて置いたものが 2 つあります。
 

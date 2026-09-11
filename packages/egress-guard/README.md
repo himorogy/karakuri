@@ -322,6 +322,16 @@ tail -f /var/log/egress-proxy/access.log
 
 保証: `docs/guarantees.md` の `tests/firewall-rules.test.sh` に対応する節を参照。
 
+## L7 の実機での確認
+
+このリポジトリ自身の `.devcontainer` 構成が `layer: "l7"`（既定）で動くことは、`packages/egress-guard/tests/verify-l7.sh` で確認できます。Docker と外向きの到達性が要るため `pnpm test` には含まれません。ホストで次を実行してください。
+
+```sh
+pnpm verify:l7
+```
+
+apt-get 経由の疎通、先頭ドットで許可したドメインの具体名への到達、未許可ドメインの拒否、proxy を無視した直接接続の遮断、ACL の変更に再ビルドが要ることなどを確認します。実行結果と環境（ホストの OS・Docker の版・iptables のバックエンド）は [`docs/verification-record.md`](./docs/verification-record.md) に記録します。
+
 ## 基底プロファイル（`profile`）
 
 パッケージ側が保守しているドメインの束です。**必要なものだけを明示的に選びます。**

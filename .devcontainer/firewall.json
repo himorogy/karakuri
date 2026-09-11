@@ -1,5 +1,5 @@
 {
-	"version": 1,
+	"version": 2,
 	"profile": [
 		"anthropic",
 		"anthropic-updates",
@@ -9,5 +9,10 @@
 		"github"
 	],
 	"mode": "enforce",
-	"allowDomains": ["nodejs.org"]
+	"allowDomains": [
+		"nodejs.org",
+		"deb.debian.org",
+		".gallerycdn.vsassets.io",
+		".gallery.vsassets.io"
+	]
 }
