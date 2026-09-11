@@ -1,8 +1,15 @@
 # karakuri 自身の devcontainer（Docker Compose 構成）。
 # 雛形 images/devcontainer-base/examples/docker-compose.yaml と対応するが、
-# base の参照規律だけが違う（Dockerfile の N-1 pin コメントを参照。浮動タグを
-# 使わないため、雛形の build.pull: true もここでは不要 — pin を上げたときに
-# `docker compose build --pull` すればよい）。
+# 2 点だけ違う。
+#
+# - **base の参照規律**（Dockerfile の N-1 pin コメントを参照）。浮動タグを
+#   使わないため、雛形の dev.build.pull: true もここでは不要 — pin を上げたときに
+#   `docker compose build --pull` すればよい
+# - **egress-proxy の build context。** 雛形は利用側が templates/proxy/ を
+#   自分の .devcontainer/proxy/ へコピーする前提で書かれている。このリポジトリは
+#   その配布元そのものなので、コピーを作ると配布物と実際に動いているものが
+#   静かに食い違いうる。`.devcontainer/proxy` は
+#   `packages/egress-guard/templates/proxy` へのシンボリックリンクであり、写しではない
 #
 # Compose はプロジェクトごとにユーザー定義ネットワーク（<name>_default）を
 # 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
@@ -27,15 +34,42 @@ services:
       context: .
       dockerfile: Dockerfile
 
+    # firewall.json が実現層 l7（既定）を選んでいる前提。init-project-firewall.sh
+    # は egress-proxy の名前解決を要求するため、先に立っていないと
+    # postStartCommand が失敗する。
+    depends_on:
+      - egress-proxy
+
     # --cap-add の置き換え。egress-guard が iptables と ipset を触るために要る。
     cap_add:
       - NET_ADMIN
       - NET_RAW
 
+    # egress-proxy のアクセスログは proxy（uid/gid 13。proxy/Dockerfile の
+    # `USER proxy`）が書き、他ユーザーからは読めないパーミッションで作られる
+    # （先行検証で実測済み、0021 の検収で確認する）。node（uid 1000）を補助
+    # グループ 13 に入れないと :ro でマウントしても Permission denied になる。
+    group_add: ["13"]
+
     # 環境変数の置き場はここが既定。イメージの ENV に置くのは利用側が変える前提が
     # 無いものだけ（docs/conventions.md「環境変数の置き場」）。
     environment:
       NODE_OPTIONS: --max-old-space-size=2048
+
+      # egress-proxy への配線。大文字・小文字の両方が要る — curl と apt は小文字しか
+      # 読まない。サービス名はユーザー定義ネットワーク上でだけ Docker の埋め込み
+      # リゾルバが解決する。
+      http_proxy: "http://egress-proxy:3128"
+      https_proxy: "http://egress-proxy:3128"
+      HTTP_PROXY: "http://egress-proxy:3128"
+      HTTPS_PROXY: "http://egress-proxy:3128"
+
+      # loopback 宛の内部通信（エディタ拡張の hook 通知など）まで proxy へ回さない。
+      no_proxy: "localhost,127.0.0.1"
+      NO_PROXY: "localhost,127.0.0.1"
+
+      # Node の fetch (undici) は既定で proxy 環境変数を読まない。opt-in が要る。
+      NODE_USE_ENV_PROXY: "1"
 
       # 明示しないと .claude.json が /home/node/.claude.json（下の named volume の外）
       # に置かれ、コンテナを作り直すたびに失われる。設定すると .claude.json を含む
@@ -89,8 +123,52 @@ services:
       - karakuri-claude-config:/home/node/.claude
       - karakuri-codex-config:/home/node/.codex
 
+      # egress-proxy の access log。ro — 書ける状態にすると、侵害された
+      # エージェントが自分の通信記録を消せる。egress-proxy 側は rw で
+      # 同じ named volume をマウントする。
+      - karakuri-proxy-log:/var/log/egress-proxy:ro
+
     # ベースイメージの CMD は node なので、そのままだと即終了する。
     command: sleep infinity
+
+  # L7 egress proxy sidecar。イメージの実体は packages/egress-guard/templates/proxy
+  # を compose から直接参照する（`.devcontainer/proxy` はそのディレクトリへの
+  # シンボリックリンクであり、写しではない）。firewall.json が実現層 l7（既定）を
+  # 選んでいる限り必須 — init-project-firewall.sh はこのサービス名を DNS で
+  # 解決できることを前提に最終テーブルを組む。
+  egress-proxy:
+    build:
+      # dev と同じディレクトリ。proxy/Dockerfile が firewall.json を COPY する
+      # ため、firewall.json はここ（.devcontainer/ = context root）にある必要が
+      # ある。proxy/ 以下は上記のとおりシンボリックリンク。
+      context: .
+      dockerfile: proxy/Dockerfile
+      # proxy/Dockerfile の FROM は node:24-bookworm-slim / debian:bookworm-slim
+      # という浮動タグ。dev の Dockerfile とは違い pin していないため、こちらは
+      # pull を有効にする（雛形 images/devcontainer-base/examples/docker-compose.yaml
+      # の egress-proxy と同じ）。
+      pull: true
+
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+    # 起動時から proxy（uid 13）で動かす。root から降格させようとすると
+    # cap_drop: [ALL] の下で失敗して落ちる（templates/proxy/Dockerfile 参照）。
+    user: "13:13"
+
+    read_only: true
+    tmpfs:
+      - /var/spool/squid:uid=13,gid=13
+      - /run:uid=13,gid=13
+
+    # access log だけは名前付きボリューム。egress-proxy 側は rw、dev 側は
+    # 上の volumes で ro としてマウントする。tmpfs だとコンテナをまたいで
+    # 共有できない。
+    volumes:
+      - karakuri-proxy-log:/var/log/squid
+
+    # ports: は置かない。ホストへ公開しない。dev からはユーザー定義ネットワーク
+    # 上のサービス名 (egress-proxy:3128) で到達する。
 
 volumes:
   karakuri-bashhistory:
@@ -99,3 +177,5 @@ volumes:
     name: karakuri-claude-config
   karakuri-codex-config:
     name: karakuri-codex-config
+  karakuri-proxy-log:
+    name: karakuri-proxy-log

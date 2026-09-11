@@ -46,6 +46,12 @@ services:
       - NET_ADMIN
       - NET_RAW
 
+    # egress-proxy のアクセスログは proxy（uid/gid 13。proxy/Dockerfile の
+    # `USER proxy`）が書き、他ユーザーからは読めないパーミッションで作られる
+    # （先行検証で実測済み、0021 の検収で確認する）。node（uid 1000）を補助
+    # グループ 13 に入れないと下の :ro マウントでも Permission denied になる。
+    group_add: ["13"]
+
     # firewall.json が実現層 l7（既定）を選んでいる前提。init-project-firewall.sh
     # は egress-proxy の名前解決を要求するため、先に立っていないと postStartCommand
     # が失敗する。l3 を明示した設定では不要だが、置いたままでも害はない
