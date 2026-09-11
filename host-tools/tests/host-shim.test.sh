@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Tests for host/shims/_dotenvx.
+# Tests for host-tools/shims/_dotenvx.
 #
 # 実体の dotenvx はフェイクへ差し替える。Windows 用の _dotenvx.cmd の検査は
 # cmd.exe を要するためここには無く、.github/workflows/ci.yml の Windows
@@ -22,7 +22,7 @@ ng() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-SHIM="$TEST_DIR/../host/shims/_dotenvx"
+SHIM="$TEST_DIR/../shims/_dotenvx"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

@@ -1,5 +1,5 @@
 #!/bin/sh
-# host/shims/_dotenvx — ホスト側で dotenvx を呼ぶときに挟む shim
+# host-tools/shims/_dotenvx — ホスト側で dotenvx を呼ぶときに挟む shim
 #
 # コンテナ側 shim（images/runtime-base/shims/dotenvx）と違い、置く名前は
 # _dotenvx の1つだけ。ホストには karakuri 所有の dotenvx 実体が無いため

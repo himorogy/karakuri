@@ -12,20 +12,20 @@ dev container には LLM エージェントが常駐するため信頼しない�
 
 ## 推奨配置
 
-配布テンプレート（`images/runtime-base/templates/`）は置き場所で二つに分かれている。
-`templates/host/` はホストの固定パスへ置くもの、`templates/project/` はプロジェクトの
-リポジトリへ置くもの。`compose.prod.yaml` は名前だけ見るとプロジェクトの
-リポジトリに置くものに見えるが、`host/` にある。`prod-run.sh` の `PROD_COMPOSE_FILE` が
-指す先であり、下記のとおりホストの固定パス（`~/.config/<project>/`）に置く。
+配布物は置き場所で二つに分かれている。`host-tools/` はホストの固定パスへ置くもの、
+`images/runtime-base/templates/project/` はプロジェクトのリポジトリへ置くもの。
+`compose.prod.yaml` は名前だけ見るとプロジェクトのリポジトリに置くものに見えるが、
+`host-tools/` にある。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、下記のとおり
+ホストの固定パス（`~/.config/<project>/`）に置く。
 
-`host/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
+`host-tools/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
 （詳細は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の
 「ホスト側ツールを入手する」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
 手段が無くなるためで、clone なら手を加えれば `git status` に出る。
 
 ```
 ~/.config/karakuri/            # dev workspace の外（ホスト固定パス）。タグ指定で clone
-  images/runtime-base/templates/host/
+  host-tools/
     prod-run.sh
     dev-inject.sh
     broker-bitwarden.sh          # broker 標準実装
@@ -35,7 +35,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
 ~/.dev-broker/                 # PATH の外。broker が名指しするバイナリを置く専用の場所
   bw                            # Bitwarden CLI（native ビルドを SHA-256 照合の上配置。karakuri の配布物ではない）
 ~/.config/prod-compose/        # ホスト上の git リポジトリ。どの devcontainer にも mount しない
-  app.yaml                     # templates/host/compose.prod.yaml のコピーを <repo>.yaml で置く。
+  app.yaml                     # host-tools/compose.prod.yaml のコピーを <repo>.yaml で置く。
                                 # image の digest を実在のものへ差し替える
   <other-repo>.yaml            # プロジェクトごとに 1 枚
 <project repo>/                # dev container にマウントされる（git 管理）
@@ -68,7 +68,7 @@ export KARAKURI_PROD_COMPOSE_DIR="$HOME/.config/prod-compose"
 # 任意。扱う org が一つに定まる場合だけ設定する
 export KARAKURI_ORG=acme
 
-. ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh
+. ~/.config/karakuri/host-tools/karakuri.sh
 ```
 
 `KARAKURI_PROD_COMPOSE_DIR` には、プロジェクトごとの compose ファイルを `<repo>.yaml` の名前で
@@ -96,7 +96,7 @@ dotenvx をまとめて 1 コマンドにしているのは、`dotenvx` を `pnp
 `pnpm install --frozen-lockfile && pnpm <task>` を組み立てる（既定のタスクランナーは pnpm、
 `KARAKURI_PROD_INSTALL` / `KARAKURI_PROD_RUN` で上書きできる）。
 
-broker の標準は Bitwarden CLI（`templates/host/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.dev-broker/bw` のような PATH の外の固定パスに配置する（手順は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の「broker 本体（bw）を用意する」。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
+broker の標準は Bitwarden CLI（`host-tools/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.dev-broker/bw` のような PATH の外の固定パスに配置する（手順は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の「broker 本体（bw）を用意する」。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
 
 項目名は `env/<project>/shared/prod,env/<project>/prod`（共有 → 個人の順、カンマ区切りで複数項目をマージでき、同名キーは後勝ち）という規約で、以前はこれをプロジェクトごとのラッパースクリプトへ手で書いていたが、いまは `karakuri.sh` 内の `karakuri-broker-env` 関数がこの項目名を組み立てる。プロジェクトごとのラッパーはもう要らない。
 

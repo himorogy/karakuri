@@ -40,7 +40,7 @@ skip() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-KARAKURI_SH_REAL="$TEST_DIR/../host/karakuri.sh"
+KARAKURI_SH_REAL="$TEST_DIR/../karakuri.sh"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

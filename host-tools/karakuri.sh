@@ -4,7 +4,7 @@
 # これは source して使うファイルであって、実行するファイルではない。
 # 利用側の .zshrc / .bashrc に 1 行だけ書く:
 #
-#   . ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh
+#   . ~/.config/karakuri/host-tools/karakuri.sh
 #
 # 置き場所は dev container へ bind mount される workspace の外にすること。
 # workspace はホストに bind mount されているため、そこへ置くと dev
@@ -125,7 +125,7 @@ if [ -z "${KARAKURI_TOOL_DIR:-}" ]; then
 fi
 
 # --- shims ディレクトリを PATH へ追加 -------------------------------------------
-# host/shims/_dotenvx を確実に解決させるため、末尾へ append する。前置きしない
+# shims/_dotenvx を確実に解決させるため、末尾へ append する。前置きしない
 # 理由: _dotenvx は衝突しない名前なので前置きに利得が無く、利用者のコマンドを
 # 覆うリスクだけが増える。複数回 source されても重複しないよう、既に PATH に
 # 含まれていれば足さない。
