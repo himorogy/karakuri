@@ -227,7 +227,7 @@
 - どちらかのファイルが存在しなければ、検査は 0 を返さず失敗として終わる
 - 一致検査に検知能力があることを、テンプレート本文に1行足した版をその場で作って毎回確かめる
 
-### 13. `images/runtime-base/templates/tests/karakuri.test.sh` — `images/runtime-base/templates/host/karakuri.sh`
+### 13. `host-tools/tests/karakuri.test.sh` — `host-tools/karakuri.sh`
 
 起源: `0010-ledger-host-entry`
 
@@ -268,7 +268,7 @@
 - source すると shim のディレクトリが PATH の**末尾**へ加わる。既存の PATH の先頭は変わらず、何度 source しても重複しない（テスト: "何度 source しても shim のディレクトリが PATH に重複しない"）（起源: `0014-host-secret-run`）
 - 下位スクリプトが見つかったのに実行できない場合、置き場所ではなく mode を問題として報告し、対象のパスと直すコマンドを示す。実行できないものを解決結果として返して呼び出し側を落とすことはなく、この振る舞いは bash と zsh で変わらない（テスト: "the error does not blame the placement when the file was found"）（起源: `0014a-host-template-file-modes`）
 
-### 14. `images/runtime-base/templates/tests/dock.test.sh` — `images/runtime-base/templates/host/dock.sh`
+### 14. `host-tools/tests/dock.test.sh` — `host-tools/dock.sh`
 
 起源: `0010-ledger-host-entry`
 
@@ -287,7 +287,7 @@
 - 素の位置引数は、未知のオプションとは区別した文言で、コンテナ探索の前に非ゼロ終了する
 - ヘルプは 0 で終わり、使い方を stderr に出して stdout は空に保つ。コンテナ探索は行わない。全モードで stdout を汚さない規律の一部である
 
-### 15. `images/runtime-base/templates/tests/dev-inject.test.sh` — `images/runtime-base/templates/host/dev-inject.sh`
+### 15. `host-tools/tests/dev-inject.test.sh` — `host-tools/dev-inject.sh`
 
 起源: `0011-ledger-host-inject`
 
@@ -302,7 +302,7 @@
 - 両方が失敗したとき、broker の終了コードが SIGPIPE 相当でなければ broker のものを、SIGPIPE 相当なら下位のものを返す。SIGPIPE は「下位が先に死んで stdin を閉じた」結果であって原因ではないため、症状としてのみ報告する（テスト: "exit code is docker's (5), not broker's SIGPIPE (141)"）
 - 両方が失敗したときのエラーには両方の終了コードが現れる。どちらが真因か機械的に決められないことを、片方を選ばずに開示する
 
-### 16. `images/runtime-base/templates/tests/prod-run.test.sh` — `images/runtime-base/templates/host/prod-run.sh`
+### 16. `host-tools/tests/prod-run.test.sh` — `host-tools/prod-run.sh`
 
 起源: `0011-ledger-host-inject`
 
@@ -316,7 +316,7 @@
 - ref が40桁 hex でないとき、既定では docker を一度も起動せずに非ゼロ終了し、脱出口の環境変数を名指しする。権威は起動経路側にあるが、迂回されても閉じた側に倒れる形での早期フィードバックとして二重に検査している（テスト: "docker was not invoked when GIT_REF was rejected before launch"）
 - 脱出口を明示したときは、同じ ref でも警告を出したうえで実行を続け、成功時は 0 を返す
 
-### 17. `images/runtime-base/templates/tests/broker-bitwarden.test.sh` — `images/runtime-base/templates/host/broker-bitwarden.sh`
+### 17. `host-tools/tests/broker-bitwarden.test.sh` — `host-tools/broker-bitwarden.sh`
 
 起源: `0011-ledger-host-inject`
 
@@ -335,7 +335,7 @@
 - 項目名の指定に空の名前が含まれるとき、分割後ではなく分割前の文字列の段階で検出して非ゼロ終了する。末尾の区切りのような打ち損じが黙って無視される経路を塞ぐ
 - 下位コマンドの実体は環境変数で差し替えられる
 
-### 18. `images/runtime-base/templates/tests/loopback-setup.test.sh` — `images/runtime-base/templates/host/loopback-setup.sh`
+### 18. `host-tools/tests/loopback-setup.test.sh` — `host-tools/loopback-setup.sh`
 
 起源: `0011-ledger-host-inject`
 
@@ -369,7 +369,7 @@
 - daemon は管理対象外の帯のアドレスを一切渡さず、飛ばしたアドレスを名指しする。常に存在するアドレスも名指しで飛ばし、理由を述べる。いずれの場合も 0 で終わる
 - daemon は1つが失敗しても残りを処理し続け、失敗したアドレスを名指ししたうえで 0 で終わる。設定ファイルが存在しないときは何も呼ばず、1バイトも出さずに 0 で終わる。起動のたびのエラー行を読み飛ばす習慣を作らないための沈黙である
 
-### 19. `images/runtime-base/templates/tests/host-run.test.sh` — `images/runtime-base/templates/host/host-run.sh`
+### 19. `host-tools/tests/host-run.test.sh` — `host-tools/host-run.sh`
 
 起源: `0014-host-secret-run`
 
@@ -378,7 +378,7 @@
 - 取り込めない行があったときは、その行の内容を出力へ一切反射させず、行番号だけを報告して非ゼロで終わる（テスト: "通し: 取り込めない行は行番号だけが報告され、内容は出ない"）
 - 引数はシェルを経由せず逐語で渡り、空白を含む引数は1引数のまま保たれる
 
-### 20. `images/runtime-base/templates/tests/host-shim.test.sh` — `images/runtime-base/templates/host/shims/_dotenvx`
+### 20. `host-tools/tests/host-shim.test.sh` — `host-tools/shims/_dotenvx`
 
 起源: `0014-host-secret-run`
 
@@ -478,13 +478,13 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 起源: `0011-ledger-host-inject`
 
-- `host/broker-macos-keychain.sh` は、項目名を環境変数で受け取り、キーチェーンから取り出した内容を dotenv 形式で stdout に出す。認可の失敗は非ゼロ終了として伝え、取り出した値以外を stdout に混ぜない
-- `host/broker-macos-keychain-set.sh` は、標準入力から受け取った内容を指定された項目としてキーチェーンへ保存する。保存した内容を出力に反射しない
-- `project/env-guard.conf` は、利用側リポジトリへコピーしたとき配布されるスキャナが受理する形式であり、既定のディレクティブだけを含む
-- `project/env-guard.yml` は、利用側リポジトリへコピーしたとき、配布されるスキャナを CI から呼ぶワークフローとして成立する
-- `host/broker-bitwarden.sh` は、複数項目のときも解錠を1回だけ呼ぶ。認可の求めが項目数に比例しない
-- `host/broker-bitwarden.sh` の施錠自身の失敗は、本来の終了コードを上書きしない
-- `host/loopback-setup.sh` の追加と削除は、引数の個数違いを非ゼロで拒否する
+- `host-tools/broker-macos-keychain.sh` は、項目名を環境変数で受け取り、キーチェーンから取り出した内容を dotenv 形式で stdout に出す。認可の失敗は非ゼロ終了として伝え、取り出した値以外を stdout に混ぜない
+- `host-tools/broker-macos-keychain-set.sh` は、標準入力から受け取った内容を指定された項目としてキーチェーンへ保存する。保存した内容を出力に反射しない
+- `images/runtime-base/templates/project/env-guard.conf` は、利用側リポジトリへコピーしたとき配布されるスキャナが受理する形式であり、既定のディレクティブだけを含む
+- `images/runtime-base/templates/project/env-guard.yml` は、利用側リポジトリへコピーしたとき、配布されるスキャナを CI から呼ぶワークフローとして成立する
+- `host-tools/broker-bitwarden.sh` は、複数項目のときも解錠を1回だけ呼ぶ。認可の求めが項目数に比例しない
+- `host-tools/broker-bitwarden.sh` の施錠自身の失敗は、本来の終了コードを上書きしない
+- `host-tools/loopback-setup.sh` の追加と削除は、引数の個数違いを非ゼロで拒否する
 
 ### B-a — `未検証の約束 (テスト困難: proxy を実際に起動して通信させる必要があり、Docker と外向きの到達性が要る。0021 の検収で確認する)`
 
@@ -537,13 +537,14 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `init-project-firewall.sh` が root 所有 755 で複製され、sudoers に無引数実行が登録されていること
 
 **D. ホストと利用側リポジトリへ配布されるテンプレート**
-- `host/karakuri.sh` — シェルへ source する関数集
-- `host/dock.sh`、`host/prod-run.sh`、`host/dev-inject.sh`、`host/host-run.sh`
-- `host/broker-bitwarden.sh`、`host/broker-macos-keychain.sh`、`host/broker-macos-keychain-set.sh`
-- `host/loopback-setup.sh` と `host/loopback/` の daemon・plist
-- `host/compose.prod.yaml`
-- `host/shims/`（`_dotenvx` と Windows 用ラッパー）
-- `project/env-guard.conf`、`project/env-guard.yml`
+- `host-tools/karakuri.sh` — シェルへ source する関数集
+- `host-tools/dock.sh`、`host-tools/prod-run.sh`、`host-tools/dev-inject.sh`、`host-tools/host-run.sh`
+- `host-tools/broker-bitwarden.sh`、`host-tools/broker-macos-keychain.sh`、`host-tools/broker-macos-keychain-set.sh`
+- `host-tools/loopback-setup.sh` と `host-tools/loopback/` の daemon・plist
+- `host-tools/compose.prod.yaml`
+- `host-tools/shims/`（`_dotenvx` と Windows 用ラッパー）
+- `host-tools/tests/` — 配布物に同梱されるテスト一式
+- `images/runtime-base/templates/project/env-guard.conf`、`images/runtime-base/templates/project/env-guard.yml`
 
 **E. `devcontainer-base` イメージと `examples/` の雛形3本**
 公開面と判定するが、対応するテストを持たず、何を約束にすべきかも定めていない。候補層（`docs/guarantee-candidates/`）へ置く。

@@ -50,7 +50,7 @@ Host devc-<your-project>-dev
   LocalForward 127.0.1.1:<port> localhost:<port>
 
 Host devc-*
-  ProxyCommand ~/.config/karakuri/images/runtime-base/templates/host/dock.sh -p %h --stdio
+  ProxyCommand ~/.config/karakuri/host-tools/dock.sh -p %h --stdio
   User node
   IdentityFile ~/.ssh/keys/<your-key>
   IdentitiesOnly yes
@@ -76,7 +76,7 @@ Host devc-*
 
 ```
 Host devc-<your-alias>
-  ProxyCommand ~/.config/karakuri/images/runtime-base/templates/host/dock.sh -p <compose-project> --stdio
+  ProxyCommand ~/.config/karakuri/host-tools/dock.sh -p <compose-project> --stdio
   # プロジェクトのポート一覧に合わせて列挙する
   LocalForward 127.0.1.1:4588 localhost:4588
   LocalForward 127.0.1.1:<port> localhost:<port>
@@ -93,11 +93,11 @@ Host devc-<your-alias>
 
 代償は、`Host devc-*` の 1 本では済まなくなることです。プロジェクトを増やすたびに、この形の `Host` ブロックを 1 つずつ足すことになります。
 
-`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../templates/host/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
+`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../host-tools/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
 
 **ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock -p <compose-project> [-b <broker-key>]` で呼べますが（利用者側に置く短い `dock` 関数の作り方は [example/README.md](../../example/README.md) の「dev の起動」を参照）、`ProxyCommand` は関数を経由できません。
 
-`dock.sh` は実行ファイルなので、`templates/host` を `PATH` に入れていれば `ProxyCommand dock.sh -p %h --stdio` とも書けます。ただし `ssh` を起動する側の環境の `PATH` に依存します（対話シェルから打つ分には効きますが、GUI アプリや別ツールが `ssh` を起動する経路では違う `PATH` になります）。**絶対パスを勧めます。**
+`dock.sh` は実行ファイルなので、`host-tools` を `PATH` に入れていれば `ProxyCommand dock.sh -p %h --stdio` とも書けます。ただし `ssh` を起動する側の環境の `PATH` に依存します（対話シェルから打つ分には効きますが、GUI アプリや別ツールが `ssh` を起動する経路では違う `PATH` になります）。**絶対パスを勧めます。**
 
 `HostName` は DNS では引かれません。`ProxyCommand` の `%h` に展開されて `dock.sh -p` へ渡る値になるだけです。`dock.sh` はこの値をそのまま compose project 名として使い、`com.docker.compose.project` と `com.docker.compose.service` のラベルでコンテナを引きます（`<your-project>-dev` のような組み立ては `dock.sh` 側ではもう行わないので、`HostName` に compose project 名そのものを書きます）。**`docker-compose.yaml` の `name:` が `HostName` と同じ値である必要があります**（雛形のとおりであれば `<your-project>-dev` で合っています）。`container_name` の書き方には依存しません。
 

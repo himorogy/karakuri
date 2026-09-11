@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem host/shims/_dotenvx.cmd — Windows 用の _dotenvx ラッパー
+rem host-tools/shims/_dotenvx.cmd — Windows 用の _dotenvx ラッパー
 rem
 rem pnpm の run-script は Windows で cmd.exe から起動するため、拡張子の無い
 rem POSIX シェルスクリプト（_dotenvx）は PATHEXT に該当せず解決されない。
