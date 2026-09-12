@@ -67,11 +67,11 @@ BARE_RE="${NUM_RE}|設計書|rev\\.[0-9]+"
 
 # git 管理下にあり、このリポジトリを見られる人なら誰でも辿れる参照。
 # この形でなら記号を伴ってよい。
-ALLOWED_REF='docs/(secure-publish|prod-secret-isolation-design)\.md'
+ALLOWED_REF='docs/(archive/)?(secure-publish|prod-secret-isolation-design)\.md'
 
 # 設計文書そのもの。git 管理下にあるので karakuri の中では辿れるが、
 # templates/ は他リポジトリへコピーされるため、コピー先では解決できない。
-DESIGN_DOC='docs/prod-secret-isolation-design\.md'
+DESIGN_DOC='docs/(archive/)?prod-secret-isolation-design\.md'
 
 # scan_strict <file> -> 違反行を stdout に出す
 scan_strict() {

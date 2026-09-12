@@ -89,7 +89,9 @@ verify:
 
 ### 検査対象の調整
 
-`images/runtime-base/tests/shipped-symbols.test.sh` は `images/runtime-base/migration.md` を strict 検査の対象にしている（`require_files` と `scan_strict` の引数）。移設で対象の集合が変わるので、この 2 箇所から `migration.md` を外す。他の検査対象・許可する参照パターン・否定対照は変えない。設計書を指すコード内コメントは旧パスのままなので、許可パターン（`ALLOWED_REF`）も旧パスのままでよい。
+`images/runtime-base/tests/shipped-symbols.test.sh` は `images/runtime-base/migration.md` を strict 検査の対象にしている（`require_files` と `scan_strict` の引数）。移設で対象の集合が変わるので、この 2 箇所から `migration.md` を外す。他の検査対象と否定対照は変えない。
+
+許可パターン（`ALLOWED_REF`）は旧パスの文字列一致なので、移設先 `docs/archive/` のパスを伴う節番号を弾く。新パスも許可側に入れる。コピー先で解決できないパスを検知する `DESIGN_DOC` も同じく新パスへ追随させる（templates / host-tools 向けの門が archive 経由で開かないようにする）。旧パスの許可と検知は据え置く（設計書を指すコード内コメントは旧パスのままなので、それを落とすのはコメント整理のチケット）。PR レビューでの裁定により追加した。
 
 台帳 §11 の対象範囲の文言は「このリポジトリに留まる README と移行手順」と書いているが、移設後は移行手順にあたる検査対象が無くなる。文言を実態に同期する（「と移行手順」を落とす）。約束の内容は変えない。
 
