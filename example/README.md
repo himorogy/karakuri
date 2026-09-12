@@ -1,6 +1,6 @@
 # 推奨 devcontainer / prod 構成例
 
-dev container には LLM エージェントが常駐するため信頼しない。prod container は人間が明示的に起動し、prod の秘匿情報は broker → stdin → コンテナ内 tmpfs の経路だけを流れる（設計の全体像は `docs/prod-secret-isolation-design.md`）。
+dev container には LLM エージェントが常駐するため信頼しない。prod container は人間が明示的に起動し、prod の秘匿情報は broker → stdin → コンテナ内 tmpfs の経路だけを流れる（設計の全体像は `docs/archive/prod-secret-isolation-design.md`）。
 
 本ディレクトリのファイルとコピー先の対応:
 
@@ -204,5 +204,3 @@ dev compose 側の前提（本ディレクトリの `docker-compose.yaml` に反
 1. **dev 鍵の注入方式** — broker 方式へ移行する（上記「dev の起動」）。ホスト恒久平文 `dev/.env.container` は廃止。
 2. **対話 prod 作業** — 二段構えを標準手順とする。`/src` の tmpfs（毎回 clone）は維持する。named volume 化は、前回実行のコードが打ったローカル ref の汚染と `.git/config` 経由のコード実行（いずれも実測で再現済み）を復活させるため行わない。
 3. **GH_TOKEN の checkout 後破棄** — 維持する。破棄は prod-entrypoint.sh 内の処理であり、dev は entrypoint を通らないため dev の git 操作には影響しない。
-
-いずれも設計書（`docs/prod-secret-isolation-design.md`）rev.9 に反映済み。

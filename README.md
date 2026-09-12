@@ -74,7 +74,7 @@ allowlist の変更をエージェントに頼むときは
 
 - **新しいプロジェクトに入れる** — [`images/devcontainer-base/examples/`](./images/devcontainer-base/examples)  
 の 4 ファイルを `.devcontainer/` にコピーし、`firewall.json` を書く
-- **既存の devcontainer を載せ替える** — [`images/devcontainer-base/migration.md`](./images/devcontainer-base/migration.md)。
+- **既存の devcontainer を載せ替える** — [`docs/archive/devcontainer-base-migration.md`](./docs/archive/devcontainer-base-migration.md)。
 ベースイメージは pnpm 11 なので、pnpm 10 のプロジェクトは先に読むこと
 - **パッケージだけ使う** — 各パッケージの README に単体での導入手順があります。
 ベースイメージを使わなくても入れられます
@@ -141,4 +141,4 @@ pnpm test      # 各パッケージのテスト
 > コミットメッセージにあります。
 
 **推測で書かず、`audit` で測ってから足す。** 手順は
-[`packages/egress-guard/docs/measuring-egress.md`](./packages/egress-guard/docs/measuring-egress.md)。
+[`docs/archive/egress-guard-measuring-egress.md`](./docs/archive/egress-guard-measuring-egress.md)。

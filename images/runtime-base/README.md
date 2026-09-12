@@ -12,7 +12,7 @@ ghcr.io/himorogy/runtime-base:1
 構成ではこの性質は得られない。
 
 本 README は収録物と運用手順を扱う。設計の全体像・脅威モデル・判断根拠は
-[`docs/prod-secret-isolation-design.md`](../../docs/prod-secret-isolation-design.md) にある。
+[`docs/archive/prod-secret-isolation-design.md`](../../docs/archive/prod-secret-isolation-design.md) にある。
 個々の判断の根拠は、それが効いている場所（entrypoint のコメント、
 `host-tools/compose.prod.yaml` のコメント）にも書いてある。
 
@@ -245,7 +245,7 @@ helper を書き込み、統合ターミナルの environ へ `GIT_ASKPASS` を�
 `/run/secrets/GH_TOKEN` を読む経路に固定してある。トークンが無ければ helper が `quit=1` を返し、
 git は他の経路へ落ちずにその場で失敗する。なぜ helper でなければ打ち消せないか、スロットの構成、
 実測のログは [`Dockerfile`](./Dockerfile) の `ENV GIT_CONFIG_COUNT` の直上と、
-[`verification-record.md`](./verification-record.md) の 0.14 にある。
+[`docs/archive/runtime-base-verification-record.md`](../../docs/archive/runtime-base-verification-record.md) の 0.14 にある。
 
 **保証。** [`docs/guarantees.md`](../../docs/guarantees.md) の `git-credential.test.sh` の節
 （helper の固定、連鎖の停止、打ち消しが github.com に限られること）と、`entrypoint.test.sh` の節
@@ -1022,7 +1022,7 @@ pnpm test       # shim / entrypoint / prod-run の挙動
 
 docker が要る項目（compose の実挙動、`read_only` 下の pnpm 完走、keychain ACL ごとの挙動、
 core dump の抑止）は実機で確認する。結果は
-[verification-record.md](./verification-record.md) に記録する。
+[runtime-base-verification-record.md](../../docs/archive/runtime-base-verification-record.md) に記録する。
 
 ### 恒常チェック
 

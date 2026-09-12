@@ -10,7 +10,7 @@
 
 `devcontainer.json` は `features`・`postCreateCommand`・`postStartCommand` を持ち、`waitFor` を `postStartCommand` に置いています。`docker compose` を直接叩くとこの 3 つがどれも走らないため、**egress-guard が適用されないコンテナ**ができます。環境変数が一部届かないという程度の話ではありません。
 
-環境変数の届き方もこの前提に乗っています。sshd はセッションの環境を自分の environ から引き継がないため、`docker exec` が sshd へ渡した値は、それがイメージの `ENV` であれ compose の `environment:` であれ SSH セッションには届きません（実測は `images/runtime-base/verification-record.md`）。届くのは PAM（pam_env）が `/etc/environment` から読んだものだけです。devcontainer ツールはコンテナ作成時にコンテナの env 全量を `/etc/environment` へ写す（`patchEtcEnvironment`）ので、**この前提を守る限り、イメージの `ENV` も compose の `environment:` も等しく SSH セッションへ届きます。**
+環境変数の届き方もこの前提に乗っています。sshd はセッションの環境を自分の environ から引き継がないため、`docker exec` が sshd へ渡した値は、それがイメージの `ENV` であれ compose の `environment:` であれ SSH セッションには届きません（実測は `docs/archive/runtime-base-verification-record.md`）。届くのは PAM（pam_env）が `/etc/environment` から読んだものだけです。devcontainer ツールはコンテナ作成時にコンテナの env 全量を `/etc/environment` へ写す（`patchEtcEnvironment`）ので、**この前提を守る限り、イメージの `ENV` も compose の `environment:` も等しく SSH セッションへ届きます。**
 
 写し込みは作成時 1 回だけで、マーカー（`/var/devcontainer/.patchEtcEnvironmentMarker`）が二重実行を防ぎます。`/var` は tmpfs ではないためマーカーはコンテナの停止・起動をまたいで残り、`/etc/environment` が起動のたびに伸びることはありません（2026-09-03 に実測）。
 
@@ -93,7 +93,7 @@ Host devc-<your-alias>
 
 代償は、`Host devc-*` の 1 本では済まなくなることです。プロジェクトを増やすたびに、この形の `Host` ブロックを 1 つずつ足すことになります。
 
-`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../host-tools/karakuri.sh` から source する場合の隣です。入手方法は [docs/host-tools-distribution.md](../../docs/host-tools-distribution.md) を参照してください。
+`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../host-tools/karakuri.sh` から source する場合の隣です。入手方法は [docs/archive/host-tools-distribution.md](../../docs/archive/host-tools-distribution.md) を参照してください。
 
 **ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock -p <compose-project> [-b <broker-key>]` で呼べますが（利用者側に置く短い `dock` 関数の作り方は [example/README.md](../../example/README.md) の「dev の起動」を参照）、`ProxyCommand` は関数を経由できません。
 

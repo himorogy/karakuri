@@ -37,9 +37,9 @@
 
 以下は設計上受け入れている制約であり、脆弱性としては扱いません。報告の前にご確認ください。
 
-* [`packages/egress-guard/docs/design.md`](./packages/egress-guard/docs/design.md) §3 — 受容した残余リスク
-* [`packages/egress-guard/docs/spec.md`](./packages/egress-guard/docs/spec.md) §9 — 決定済みの制限
-* [`packages/egress-guard/docs/known-issues.md`](./packages/egress-guard/docs/known-issues.md) — 未実装・未検証・保留の課題
+* [`docs/archive/egress-guard-design.md`](./docs/archive/egress-guard-design.md) §3 — 受容した残余リスク
+* [`docs/archive/egress-guard-spec.md`](./docs/archive/egress-guard-spec.md) §9 — 決定済みの制限
+* [`docs/archive/egress-guard-known-issues.md`](./docs/archive/egress-guard-known-issues.md) — 未実装・未検証・保留の課題
 
 これらに該当する内容であっても、**想定より影響が大きいことを示せる場合**は報告してください。受容の判断そのものが誤っている可能性は常にあります。
 
