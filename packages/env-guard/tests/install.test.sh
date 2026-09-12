@@ -10,9 +10,6 @@
 # .git/hooks/pre-commit へ書く」ことだけで、ここで見たいのは
 # env-guard install がそれを呼んで結果を確かめるところである。
 #
-# 通しの確認 (導入 -> 平文の .env を stage -> hook が拒否する) と、その経路を
-# わざと壊したときに黙って通らないことを、最後の 2 群で見る。
-#
 set -uo pipefail
 
 GUARD_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -50,7 +47,7 @@ skip() {
 # そこへ書こうとして失敗し (root 所有で書けない)、テストが叩く
 # .git/hooks/pre-commit が生まれない (2) env-guard install の検証もイメージの
 # hook を読んで通ってしまい、「hook の呼び先が無い」の否定対照が緑にならない。
-# core.hooksPath を意図的に使う検査 10 は自分で設定し直すので影響を受けない。
+# core.hooksPath を意図的に使う検査は自分で設定し直すので影響を受けない。
 make_repo() {
 	local dir="$1"
 	mkdir -p "$dir/repo"

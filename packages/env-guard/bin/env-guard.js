@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// packages/env-guard/bin/env-guard.js
-//
 // ホスト側 (開発コンテナの外) から commit する経路にも検査を効かせるための
 // 導入コマンド。
 //
@@ -106,12 +104,6 @@ function hasDependency(pkg, name) {
 	return false;
 }
 
-// describeConfig -> package.json の simple-git-hooks.pre-commit がどうなっているか。
-//
-//   installed  … 既に env-guard の hook を指している
-//   absent     … 未設定。書き込んでよい
-//   conflict   … 別のコマンドが設定済み。上書きしない
-//   invalid    … 設定の形が想定と違う。触らない
 function describeConfig(pkg) {
 	const section = pkg["simple-git-hooks"];
 
@@ -157,7 +149,6 @@ function describeConfig(pkg) {
 // package.json を、頼まれてもいない範囲まで書き換えることになる。
 // そこで、追加するキーの分だけを文字列として差し込む。
 
-// skipString <text> <i> — text[i] が `"` のとき、閉じ引用符の次の位置を返す。
 function skipString(text, i) {
 	let j = i + 1;
 	while (j < text.length) {
@@ -173,9 +164,6 @@ function skipString(text, i) {
 	return j;
 }
 
-// scanObject <text> <start> — text[start] が `{` のとき、対応する `}` の位置と、
-// その object の直下にあるキーの位置を返す。壊れていれば null。
-//
 // 文字列の中身を読み飛ばすので、値に `{` や `}` が入っていても数え違えない。
 function scanObject(text, start) {
 	if (text[start] !== "{") {
@@ -232,8 +220,8 @@ function detectIndent(text) {
 	return m ? m[1] : "  ";
 }
 
-// insertKey — object の最後のキーとして keyText を差し込む。
-// 直前のキーの行末にコンマが 1 つ増えるほかは、行が増えるだけになる。
+// insertKey — 直前のキーの行末にコンマが 1 つ増えるほかは、差分が行の追加だけに
+// なるように差し込む。
 function insertKey(text, closeIndex, keyText, childPad, parentPad, eol) {
 	const head = text.slice(0, closeIndex);
 	const trimmed = head.replace(/\s+$/, "");
@@ -245,7 +233,6 @@ function insertKey(text, closeIndex, keyText, childPad, parentPad, eol) {
 	);
 }
 
-// addPreCommit — 書き込み後のテキストを返す。安全に差し込めなければ null。
 function addPreCommit(text) {
 	const rootStart = text.indexOf("{");
 	if (rootStart < 0) {
@@ -285,7 +272,6 @@ function addPreCommit(text) {
 		updated = insertKey(text, root.end, block, indent, "", eol);
 	}
 
-	// 差し込んだ結果が、意図した 1 キーの追加以外の変化を含まないことを確かめる。
 	// 追加したキーを取り除いたものが元と一致しなければ、差し込み位置の読み違い
 	// なので書かない。
 	let before;
@@ -350,11 +336,9 @@ function isExecutable(file) {
 	}
 }
 
-// verifyHook — 「書いたつもりで効いていない」を作らないための最終確認。
-// hook ファイルが在ること・実行できること・env-guard の hook を呼んでいること、
-// そしてその呼び先が実際に置かれていることを見る。呼び先まで見るのは、
-// package.json に書いて hook ファイルも生まれたのに、パッケージ本体が
-// node_modules に無くて commit のたびに失敗する、という形を先に潰すため。
+// verifyHook — 「書いたつもりで効いていない」を作らないための最終確認。呼び先の
+// 実在まで見るのは、package.json に書いて hook ファイルも生まれたのに、パッケージ
+// 本体が node_modules に無くて commit のたびに失敗する、という形を先に潰すため。
 function verifyHook(root, hooksDir) {
 	const file = path.join(hooksDir, "pre-commit");
 	const problems = [];
