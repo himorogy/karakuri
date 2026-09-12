@@ -171,7 +171,7 @@ build:
 
 ### 既存プロジェクトを載せ替える場合
 
-新規ではなく pnpm 10 の devcontainer を移す場合は [migration.md](./migration.md) を先に
+新規ではなく pnpm 10 の devcontainer を移す場合は [devcontainer-base-migration.md](../../docs/archive/devcontainer-base-migration.md) を先に
 読むこと。base は pnpm 11 を焼いており、`strictDepBuilds` の既定変更で `pnpm install` が
 失敗する、`.npmrc` の設定が読まれなくなる、`pnpm/action-setup` が v6 以上でないと動かない、
 といった当たりがある。

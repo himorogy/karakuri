@@ -169,10 +169,10 @@ check "env-guard の README が受け取った側で解決できない設計文�
 
 # runtime-base の README はこのリポジトリに留まるので、docs/ 配下へのリンクは
 # 辿れる。禁じるのは記号だけ。
-require_files "$IMG_DIR/README.md" "$IMG_DIR/migration.md"
+require_files "$IMG_DIR/README.md"
 
 check "README に設計文書内でしか通じない記号が無い" scan_strict \
-	"$IMG_DIR/README.md" "$IMG_DIR/migration.md"
+	"$IMG_DIR/README.md"
 
 # --- lenient: イメージに COPY されるコード -----------------------------------------
 #
