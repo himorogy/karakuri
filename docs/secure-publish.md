@@ -6,8 +6,8 @@
 |---|---|
 | [`../SECURITY.md`](../SECURITY.md) | **脆弱性の報告方法** |
 | この文書 | **公開経路の設計**（脅威モデル・信頼境界・ゲート・判断の根拠） |
-| [`../packages/egress-guard/docs/design.md`](../packages/egress-guard/docs/design.md) | egress-guard 本体の設計判断 |
-| [`../packages/egress-guard/docs/spec.md`](../packages/egress-guard/docs/spec.md) | egress-guard の規範記述 |
+| [`./archive/egress-guard-design.md`](./archive/egress-guard-design.md) | egress-guard 本体の設計判断 |
+| [`./archive/egress-guard-spec.md`](./archive/egress-guard-spec.md) | egress-guard の規範記述 |
 
 この文書は**公開されていることを前提に書いています**。経路の秘匿を防御力に数えていません。ここに書かれた設計を攻撃者が全て知っていても、経路は守られるべきものとして設計しています。
 
@@ -38,7 +38,7 @@
 * **公開者のアカウントを奪った攻撃者** — GitHub または npm のいずれか一方の資格情報を得た状態
 * **リポジトリへの書き込み権限を得た内部の誰か** — 権限を持つこと自体は正当だが、単独で公開まで到達できてはならない
 
-egress-guard 本体の脅威モデル（[`design.md`](../packages/egress-guard/docs/design.md) §1）が「コンテナ内のエージェント」を敵に置いているのに対し、この文書の敵は**公開経路に触れる全ての実行環境と人間**です。
+egress-guard 本体の脅威モデル（[`egress-guard-design.md`](./archive/egress-guard-design.md) §1）が「コンテナ内のエージェント」を敵に置いているのに対し、この文書の敵は**公開経路に触れる全ての実行環境と人間**です。
 
 ### 1.3 守らないもの
 
