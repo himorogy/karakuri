@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: docs
 base: kuda/0024-host-tools-relocate
 targets:
