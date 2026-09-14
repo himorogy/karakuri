@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: docs
 base: kuda/0025-current-docs-inventory
 targets:
