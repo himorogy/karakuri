@@ -1,33 +1,28 @@
 #!/bin/sh
-# /usr/local/share/git-hooks/pre-commit
-#
 # core.hooksPath でイメージから全リポジトリ・全 clone・worktree に効かせる
-# (.git/hooks への書き込みは clone ごとに必要で既存 clone にも改善にも
-# 伝播しないため採らない。
-# docs/prod-secret-isolation-design.md §4.7)。
-# core.hooksPath は全 hook を上書きするため、husky / lefthook 等の
+# (.git/hooks への書き込みは clone ごとに必要で、既存 clone にも改善にも
+# 伝播しないため採らない)。core.hooksPath が設定されていると git は
+# .git/hooks を見なくなる (git 2.39.5 で実測) ため、husky / lefthook 等の
 # per-repo hook を黙って壊さないよう明示的にチェーンする。
 set -e
 root=$(git rev-parse --show-toplevel)
 
 # 検査そのものは共有スキャナ env-guard-scan に委ねる。CI 側 (karakuri の
 # reusable workflow env-guard.yml) が実行するのと同じ 1 本のファイルであり、
-# この hook が与えるのは「staged なファイルの一覧」だけである。判定・許可
-# リスト・設定ファイル (リポジトリルートの env-guard.conf) の解釈・
-# .env.keys の再帰探索は全てスキャナ側にある。
+# この hook が与えるのは「staged なファイルの一覧」だけである。
 #
 # 以前ここで呼んでいた `dotenvx precommit` は外した。precommit は自前の
 # ファイル名フィルタを持っていて上書きできないため、残すと「CI は通るのに
 # hook だけ落ちる」逆向きの分岐を作る。staged ファイルに対する検査内容は
 # 共有スキャナが同じだけ覆う。
 #
-# スキャナの探し方: まず自分自身の隣 (../bin/) を見て、無ければイメージが
-# 置く /usr/local/bin を見る。イメージ内では hook は
-# /usr/local/share/git-hooks/pre-commit にあり ../bin は存在しないので、
-# 必ず /usr/local/bin/env-guard-scan が使われる。リポジトリの作業ツリーから
-# この hook を直接実行したとき (テスト) だけ、隣にある実物が使われる。
-# 順序が逆だと、dev container に古いイメージ由来のスキャナが入っている場合に
-# 「テストは通るが実際に動くのは別の版」という版の食い違いを起こす。
+# 名前ではなく自分の位置から解決するので PATH を引かない。ログインシェルと違う
+# PATH で起動される GUI の git クライアントからでも同じスキャナが走る。
+#
+# 自分自身の隣 (../bin/) を先に見るのは、順序が逆だと、dev container に古い
+# イメージ由来のスキャナが入っている場合に「テストは通るが実際に動くのは別の
+# 版」という版の食い違いを起こすため。イメージ内の hook には隣に bin が無い
+# ので、そこでは必ず /usr/local/bin のスキャナが使われる。
 hook_dir=$(unset CDPATH && cd -- "$(dirname -- "$0")" && pwd)
 if [ -x "$hook_dir/../bin/env-guard-scan" ]; then
   scan="$hook_dir/../bin/env-guard-scan"
