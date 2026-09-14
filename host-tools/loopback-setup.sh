@@ -893,8 +893,8 @@ cmd_install() {
 	# sudo のパスワードを打たせてから「配布物が無い」と言うのは順序が悪い。
 	local src_daemon="${SRC_DIR}/karakuri-loopback-aliases"
 	local src_plist="${SRC_DIR}/com.karakuri.loopback-aliases.plist"
-	[ -f "$src_daemon" ] || _die "cannot find '${src_daemon}'. The 'loopback' directory is expected next to this script — copy the whole host/ directory, not just this file"
-	[ -f "$src_plist" ] || _die "cannot find '${src_plist}'. The 'loopback' directory is expected next to this script — copy the whole host/ directory, not just this file"
+	[ -f "$src_daemon" ] || _die "cannot find '${src_daemon}'. The 'loopback' directory is expected next to this script — copy the whole host-tools/ directory, not just this file"
+	[ -f "$src_plist" ] || _die "cannot find '${src_plist}'. The 'loopback' directory is expected next to this script — copy the whole host-tools/ directory, not just this file"
 	_check_payload_paths "$src_daemon" "$src_plist"
 
 	# sudo はスクリプト全体にかけない（`sudo loopback-setup.sh` を運用に

@@ -27,7 +27,7 @@ TARGET_DIRS=(
 	packages/env-guard/hooks
 	packages/egress-guard/scripts
 	packages/egress-guard/templates
-	images/runtime-base/templates/host
+	host-tools
 	images/runtime-base/templates/project
 )
 
@@ -128,7 +128,7 @@ blob_of() {
 	git -C "$REPO_ROOT" ls-files -s -- "$1" | awk '{print $2}'
 }
 
-HOST_DIR="images/runtime-base/templates/host"
+HOST_DIR="host-tools"
 SHEBANG_BLOB="$(blob_of "$HOST_DIR/host-run.sh")"
 PLAIN_BLOB="$(blob_of "$HOST_DIR/karakuri.sh")"
 [ -n "$SHEBANG_BLOB" ] || die "否定対照の材料 (host-run.sh) が見つからない"

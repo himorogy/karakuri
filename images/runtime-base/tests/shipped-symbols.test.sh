@@ -13,7 +13,7 @@
 #
 #   strict  … 他リポジトリ・他 org へ丸ごと出るもの。記号は残せない。
 #             images/runtime-base の README はこのリポジトリに留まるので
-#             docs/ 配下の文書はパスで参照してよいが、templates/ と
+#             docs/ 配下の文書はパスで参照してよいが、templates/ と host-tools/ と
 #             packages/env-guard の README は受け取った側の手元へ渡るため、
 #             docs/ へのパスも解決できない (下の別検査で見る)
 #   lenient … イメージに COPY されるコード (bin / shims / hooks)。コメントは
@@ -25,7 +25,7 @@
 # スキャナと pre-commit hook は packages/env-guard へ移したが、イメージに
 # 入るコードであることは変わらないので lenient のままにしてある。
 # packages/env-guard/README.md は npm パッケージとして他 org の手元へ渡るので
-# templates/ と同じ strict 扱いにする。devcontainer-base/bin/ も他 org の
+# templates/ と host-tools/ と同じ strict 扱いにする。devcontainer-base/bin/ も他 org の
 # イメージへ渡るコードなので、同じ理由で lenient に含めてある。
 #
 # images/devcontainer-base の文書が参照しているのは docs/secure-publish.md と
@@ -36,6 +36,7 @@ set -uo pipefail
 
 IMG_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 GUARD_DIR="$(cd "$IMG_DIR/../../packages/env-guard" && pwd)"
+HOST_TOOLS_DIR="$(cd "$IMG_DIR/../.." && pwd)/host-tools"
 
 PASS=0
 FAIL=0
@@ -148,13 +149,13 @@ require_files() {
 
 # --- strict: 他リポジトリ・他 org へ出るもの ---------------------------------------
 
-TEMPLATE_LIST="$(list_files "$IMG_DIR/templates")" || exit 1
+TEMPLATE_LIST="$(list_files "$IMG_DIR/templates" "$HOST_TOOLS_DIR")" || exit 1
 mapfile -t TEMPLATE_FILES <<<"$TEMPLATE_LIST"
 
-check "templates/ に設計文書内でしか通じない記号が無い" scan_strict "${TEMPLATE_FILES[@]}"
+check "templates/ と host-tools/ に設計文書内でしか通じない記号が無い" scan_strict "${TEMPLATE_FILES[@]}"
 
-# templates は丸ごとコピーされるので、パスで参照しても受け取った側では解決できない。
-check "templates/ がコピー先で解決できない設計文書のパスを持たない" scan_design_doc \
+# templates と host-tools/ は丸ごとコピーされるので、パスで参照しても受け取った側では解決できない。
+check "templates/ と host-tools/ がコピー先で解決できない設計文書のパスを持たない" scan_design_doc \
 	"${TEMPLATE_FILES[@]}"
 
 # packages/env-guard の README は npm パッケージとして他 org の手元へ渡る。

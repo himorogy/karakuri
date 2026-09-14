@@ -24,7 +24,7 @@ ng() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-DOCK_SH="$TEST_DIR/../host/dock.sh"
+DOCK_SH="$TEST_DIR/../dock.sh"
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT

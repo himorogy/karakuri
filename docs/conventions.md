@@ -70,7 +70,7 @@ compose の `environment:` に置くもの:
 `packages/env-guard` の `bin` と `hooks`
 （`images/runtime-base/tests/shipped-symbols.test.sh` の lenient 検査が見ている範囲と同じ）。
 
-`images/runtime-base/templates/host` 配下（ホスト側ツールの usage を含む）はこの範囲の外である。
+`host-tools/` 配下（ホスト側ツールの usage を含む）はこの範囲の外である。
 
 コード内のコメントは日本語のままでよい。規約が縛るのは外へ出る文字列だけである。
 

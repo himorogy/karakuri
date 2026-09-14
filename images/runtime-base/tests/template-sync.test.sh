@@ -19,7 +19,7 @@ set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/../../.." && pwd)"
 
-TEMPLATE="$REPO_ROOT/images/runtime-base/templates/host/compose.prod.yaml"
+TEMPLATE="$REPO_ROOT/host-tools/compose.prod.yaml"
 EXAMPLE="$REPO_ROOT/example/docker-compose.prod.yaml"
 
 PASS=0

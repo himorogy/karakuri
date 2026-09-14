@@ -52,7 +52,7 @@ jobs:
 
       - run: pnpm test
 
-  # host/shims/_dotenvx.cmd は手書きの Windows バッチファイルで、cmd.exe の
+  # host-tools/shims/_dotenvx.cmd は手書きの Windows バッチファイルで、cmd.exe の
   # errorlevel 伝播漏れ（別のバッチファイルを call 無しで呼ぶと制御が戻らず、
   # 落ちるべきときに 0 で返る）という古典的な罠を踏みうる。bash から呼ぶと
   # .cmd の解決も errorlevel の伝播も検査したい経路を通らないため、cmd.exe
@@ -69,7 +69,7 @@ jobs:
       - name: fails when no DOTENV_PRIVATE_KEY* is set
         run: |
           set DOTENV_PRIVATE_KEY=
-          call images\runtime-base\templates\host\shims\_dotenvx.cmd run -- echo unused
+          call host-tools\shims\_dotenvx.cmd run -- echo unused
           if %errorlevel% EQU 0 (
             echo expected a non-zero exit when no key is set
             exit /b 1
@@ -85,7 +85,7 @@ jobs:
           ) > "%RUNNER_TEMP%\fakebin\dotenvx.cmd"
           set "PATH=%RUNNER_TEMP%\fakebin;%PATH%"
           set DOTENV_PRIVATE_KEY_PROD=stub-value
-          call images\runtime-base\templates\host\shims\_dotenvx.cmd run -- echo unused > out.txt
+          call host-tools\shims\_dotenvx.cmd run -- echo unused > out.txt
           type out.txt
           findstr /c:"real dotenvx invoked with" out.txt
           if %errorlevel% NEQ 0 (

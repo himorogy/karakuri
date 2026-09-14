@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Tests for loopback-setup.sh and the LaunchDaemon it installs
-# (host/loopback/karakuri-loopback-aliases).
+# (host-tools/loopback/karakuri-loopback-aliases).
 #
 # macOS も root 権限も無いところで走る（dev container は Linux で、
 # /etc は触らせない）。やり方は 2 つ:
@@ -35,7 +35,7 @@ ng() {
 }
 
 TEST_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOST_DIR="$TEST_DIR/../host"
+HOST_DIR="$TEST_DIR/.."
 LOOPBACK_SETUP_SH="$HOST_DIR/loopback-setup.sh"
 LOOPBACK_DIST_DIR="$HOST_DIR/loopback"
 DAEMON_SRC="$LOOPBACK_DIST_DIR/karakuri-loopback-aliases"

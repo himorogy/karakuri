@@ -14,7 +14,7 @@ ghcr.io/himorogy/runtime-base:1
 本 README は収録物と運用手順を扱う。設計の全体像・脅威モデル・判断根拠は
 [`docs/prod-secret-isolation-design.md`](../../docs/prod-secret-isolation-design.md) にある。
 個々の判断の根拠は、それが効いている場所（entrypoint のコメント、
-`templates/host/compose.prod.yaml` のコメント）にも書いてある。
+`host-tools/compose.prod.yaml` のコメント）にも書いてある。
 
 ---
 
@@ -209,7 +209,7 @@ fallback 資格情報が存在しえない。したがって必要な secret を
 ### ホストにも同名の shim がある（`_dotenvx`）
 
 コンテナ側の3本とは別に、ホストで実行するコマンド向けの shim が
-[`templates/host/shims/_dotenvx`](./templates/host/shims/_dotenvx) に1本だけある。置く名前は
+[`host-tools/shims/_dotenvx`](../../host-tools/shims/_dotenvx) に1本だけある。置く名前は
 `_dotenvx` だけで、素の `dotenvx` は置かない。ホストには karakuri 所有の dotenvx 実体が無いため
 素の名前に対応する実体を持てず、素の名前で置くと無関係なプロジェクトのグローバル dotenvx まで
 覆ってしまう。
@@ -225,7 +225,7 @@ fallback 資格情報が存在しえない。したがって必要な secret を
 あることだけで、出どころは問わない（下記 `karakuri-run` 経由でも、CI が secrets から直接渡した
 鍵でも通る）。鍵の値は検査も出力もしない。
 
-Windows 用に [`_dotenvx.cmd`](./templates/host/shims/_dotenvx.cmd) も同梱する。`pnpm` の
+Windows 用に [`_dotenvx.cmd`](../../host-tools/shims/_dotenvx.cmd) も同梱する。`pnpm` の
 run-script は Windows で cmd.exe から起動するため、拡張子の無いスクリプトは PATH に置いても
 解決されない。配るのは `.cmd` の1本だけで、PowerShell 用の `.ps1` は配らない。
 
@@ -610,22 +610,22 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 Windows(Git Bash / MSYS2) の 2 つ。Linux はホストとしては対象にしない（コンテナの中は
 Linux だが、ホストツールをそこで動かすことはない）。
 
-テンプレート一式は [`templates/`](./templates/) にある。置き場所で二つに分けてあり、
-`templates/host/` はホストの固定パスへ置くもの、`templates/project/` はプロジェクトの
-リポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）。
+置き場所で二つに分けてある。ホストの固定パスへ置くものは [`host-tools/`](../../host-tools/)、
+プロジェクトのリポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）は
+[`templates/project/`](./templates/project/) にある。
 
-`host/` 側は、**このリポジトリをタグ指定で clone して使う**。ファイルを個別にコピーしない。
+`host-tools/` 側は、**このリポジトリをタグ指定で clone して使う**。ファイルを個別にコピーしない。
 
 ```sh
 git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git ~/.config/karakuri
 ```
 
 タグは `host-tools-v*` 系列を使う。イメージのリリースタグ（`runtime-base-v*`）とは別系列で、
-ホスト側ツールだけの版を表す。`templates/` は `.dockerignore` でビルドコンテキストから
-外れているため、ここが変わってもイメージの中身は変わらない。系列を分けておくと、
-ホスト側ツールの修正がイメージの再リリースを引き起こさない。
+ホスト側ツールだけの版を表す。`host-tools/` は `images/runtime-base/` の外にあり、
+イメージのビルドコンテキストに入らないため、ここが変わってもイメージの中身は変わらない。
+系列を分けておくと、ホスト側ツールの修正がイメージの再リリースを引き起こさない。
 
-`~/.config/karakuri/images/runtime-base/templates/host` を `PATH` に足すか、そこから
+`~/.config/karakuri/host-tools` を `PATH` に足すか、そこから
 `~/.local/bin/` へ symlink を張る。どちらでもよい。Windows(Git Bash) では `~` は
 `git clone` を打った Git Bash 上のホームディレクトリで、パスは Unix 形式
 （`/c/Users/<name>/...`）になる。`C:\Users\...` 形式ではないので、Windows のエクスプローラ
@@ -641,7 +641,7 @@ git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karak
 
 ```sh
 git -C ~/.config/karakuri fetch --tags
-git -C ~/.config/karakuri log --oneline HEAD..origin/main -- images/runtime-base/templates/
+git -C ~/.config/karakuri log --oneline HEAD..origin/main -- host-tools/
 git -C ~/.config/karakuri checkout host-tools-v<new>
 ```
 
@@ -650,17 +650,17 @@ clone 先は dev workspace の外に置くこと。**禁じているのは置き
 ラッパーを dev container の LLM エージェントが書き換えれば、人間がホストで実行する際に
 正規 broker の前後で鍵を複製できる。この clone は bind mount されないので、その経路が無い。
 
-呼び出し規約は [`templates/host/karakuri.sh`](./templates/host/karakuri.sh) にある。
+呼び出し規約は [`host-tools/karakuri.sh`](../../host-tools/karakuri.sh) にある。
 `.zshrc` / `.bashrc` からこれを `source` すると、broker 項目の命名・compose project 名・
 対話 prod 作業の二段構えといった規約が関数として入る。設定として残るのは
 `KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
 関数の一覧と推奨 alias はファイル末尾のコメントにある。
 
-この `source` で `templates/host/shims`（上記の `_dotenvx`）も `PATH` の末尾へ自動で加わる。
+この `source` で `host-tools/shims`（上記の `_dotenvx`）も `PATH` の末尾へ自動で加わる。
 別途 `PATH` へ足す手順は要らない — **導入手順の行数はここで増えない。**
 
 Windows(Git Bash) では `~/.bash_profile` に書く。無ければ作り、直接
-`source ~/.config/karakuri/images/runtime-base/templates/host/karakuri.sh` を書くか、
+`source ~/.config/karakuri/host-tools/karakuri.sh` を書くか、
 `~/.bashrc` にまとめる習慣があるなら `~/.bash_profile` から `~/.bashrc` を source する
 定番の形にしてそちらへ書く。
 
@@ -680,7 +680,7 @@ Windows(Git Bash) では `~/.bash_profile` に書く。無ければ作り、直�
 `karakuri-help` が関数の一覧と、環境変数の説明・現在値を出す。
 
 SSH port forwarding を使う場合は、これに加えて `~/.ssh/config` の設定と、初回 1 回の
-`karakuri-loopback install` が要る。前者の書き方と、`ProxyCommand` に `templates/host/dock.sh`
+`karakuri-loopback install` が要る。前者の書き方と、`ProxyCommand` に `host-tools/dock.sh`
 の絶対パスを書く理由は
 [`images/devcontainer-base/PORT-FORWARDING.md`](../devcontainer-base/PORT-FORWARDING.md) にある。
 後者は `/etc/hosts` の管理ブロックを用意し、macOS では loopback エイリアスを再起動を跨いで
@@ -736,7 +736,7 @@ export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
 vault の同期は broker が取得のたびに 1 回行うので、`bw sync` を手で打つ必要はない
 （`BROKER_BW_SYNC=0` で無効化できる）。鍵束をどう Bitwarden 側に置くか — Secure Note の
 項目名の付け方、共有分と個人分の分け方 — は
-[`templates/host/broker-bitwarden.sh`](./templates/host/broker-bitwarden.sh) の冒頭にある。
+[`host-tools/broker-bitwarden.sh`](../../host-tools/broker-bitwarden.sh) の冒頭にある。
 
 ### ホストで実行するコマンドへ鍵を渡す（`karakuri-run`）
 
@@ -775,7 +775,7 @@ shim のディレクトリを `PATH` へ足す。鍵は環境変数（secrets）
 ```sh
 # タグ指定の浅い clone で shim のディレクトリだけ取り、PATH へ足す
 git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git "$RUNNER_TEMP/karakuri"
-export PATH="$RUNNER_TEMP/karakuri/images/runtime-base/templates/host/shims:$PATH"
+export PATH="$RUNNER_TEMP/karakuri/host-tools/shims:$PATH"
 ```
 
 Windows runner でも同じレシピが成立する。パスは runner のテンポラリディレクトリ
@@ -811,7 +811,7 @@ Windows runner でも同じレシピが成立する。パスは runner のテン
   <repo>.yaml
 ```
 
-`templates/host/compose.prod.yaml` をこの名前でコピーし、`image:` の digest を実在のものへ
+`host-tools/compose.prod.yaml` をこの名前でコピーし、`image:` の digest を実在のものへ
 差し替える（`karakuri-image-digest <tag>` が貼り付け用の行を出す）。**ホスト側ツールのうち、
 編集を伴うコピーになるのはこのファイルだけ**である。他は clone のまま使う。
 
@@ -833,7 +833,7 @@ git 管理の目的は改竄検知ではなく、digest をいつ上げたかの
 ### prod でコマンドを実行する
 
 `compose.prod.yaml` は名前だけ見ると「プロジェクトのリポジトリに置くもの」に見えるが、
-`host/` に入っているのが正しい。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、
+`host-tools/` に入っているのが正しい。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、
 下記の起動コマンド例のとおりホストの固定パス（`~/.config/<project>/`）に置く。これは
 clone から `~/.config/<project>/` へコピーする（`image:` の digest を差し替えるため、
 ここだけは編集を伴うコピーになる）。
@@ -937,7 +937,7 @@ entrypoint 完了後なので `/run/secrets` は注入済み。退出後の `doc
 3. 取得時に OS レベルの認可（パスワード / Touch ID プロンプト）が働く
 4. 非対話環境で認可を得られない場合は非ゼロ終了する
 
-参照実装は [`templates/host/broker-macos-keychain.sh`](./templates/host/broker-macos-keychain.sh)（macOS の
+参照実装は [`host-tools/broker-macos-keychain.sh`](../../host-tools/broker-macos-keychain.sh)（macOS の
 `security` CLI）。セットアップ手順はファイル冒頭のコメントにある。Windows 側の標準は未決で、
 1Password / Bitwarden CLI への統一も候補に残っている。stdin 注入方式なので、broker はコマンド
 1 個の差し替えで移行でき、compose と entrypoint は無変更で済む。
