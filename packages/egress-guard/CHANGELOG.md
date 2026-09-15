@@ -1,5 +1,29 @@
 # @himorogy/egress-guard
 
+## 0.3.0
+
+### Minor Changes
+
+- **設定スキーマ version 2 と実現層（`layer`）を追加した。** `version` は `1` と `2` を受理する（省略は従来どおり拒否）。`layer` を書けるのは version 2 の設定だけで、`l7`（既定。省略時）と `l3` を選べる。
+
+  **移行手順:**
+
+  - **既存の `firewall.json`（`version: 1`）を使っている場合** — 書き換えは要らない。`version: 1` の設定は従来どおり L3 実現層として動く
+  - **L7 を使いたい場合** — `version: 2` へ移り、`layer` を省略するか `l7` を明示する。利用側の opt-in であり、この版が強制するものではない
+
+- **L7 forward proxy 実現層を追加した（既定）。** 名前による許可を iptables の IP allowlist から proxy 側の ACL へ移す。最終 IPv4 テーブルは proxy 宛の許可・DNS の固定・loopback・`allowCidrs`・`allowHostPorts` だけになり、ドメイン由来の ipset も GitHub meta API の取得も無い。`mode: audit` でも OUTPUT は `ACCEPT` にならず proxy への到達は強制され、audit の記録は proxy 側のログが担う。
+
+  sidecar の配布物として `templates/proxy/Dockerfile` と `templates/proxy/squid.conf` を追加した。ACL と `mode` はビルド時に焼き込み、非 root で起動する。設定から ACL を出す `--print-proxy-acl` を追加した。
+
+  **移行手順:** 利用側は compose に sidecar を足し、`http_proxy` / `https_proxy` を配線する必要がある。README の「L7 sidecar を用意する」節を参照。
+
+- **先頭ドットのワイルドカードを追加した。** version 2 の `allowDomains` は `.example.com`（そのドメイン自身とすべてのサブドメイン）を受理する。`*` を含む値は従来どおり拒否し、メッセージが先頭ドットの形を示す。`layer: l3` の設定に先頭ドットがあれば拒否する（L3 はサブドメインを列挙できない）。先頭ドットのドメインは DNS 解決の対象にせず、`WARNING: failed to resolve` を出さない。
+
+### Patch Changes
+
+- 空文字の `allowDomains` / `allowCidrs` エントリを黙って捨てず、理由を述べて拒否するようにした。
+- npm へ公開される tarball で `scripts/init-project-firewall.sh` の実行ビットが落ちていた（0.1.1 / 0.2.0）のを止めた。0.3.0 からは実行可能なまま届く。
+
 ## 0.2.0
 
 ### Minor Changes
