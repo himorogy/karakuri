@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
 #
-# packages/env-guard/bin/env-guard.js (env-guard install) の検査。
-#
-# 使い捨ての git repo を mktemp -d に作り、その中で実際にコマンドを走らせて
-# 終了コードと package.json の中身を見る。npm レジストリには触らない。
-#
 # simple-git-hooks 本体は入れず、テスト用の最小の代役を node_modules/.bin へ
 # 置く。役目は「package.json の simple-git-hooks.pre-commit を
 # .git/hooks/pre-commit へ書く」ことだけで、ここで見たいのは
@@ -350,9 +345,8 @@ rm -rf "$t"
 
 # --- 8. 否定対照: hook からスキャナへの経路が壊れていたら黙って通さない -----------
 #
-# hook はスキャナを「自分の隣の ../bin」「イメージが置く /usr/local/bin」の順で
-# 探す。前者を欠いた状態を作る。後者が在る環境ではこの状況を作れないので、
-# 作れなかったことが分かる形で skip する。
+# /usr/local/bin にスキャナが在る環境ではこの状況を作れないので、作れなかった
+# ことが分かる形で skip する。
 
 if [ -x /usr/local/bin/env-guard-scan ]; then
 	skip "否定対照: 隣にスキャナが無い -> 非ゼロ (/usr/local/bin のスキャナが在るため未検証)"
@@ -360,7 +354,6 @@ else
 	t="$(mktemp -d)"
 	make_repo "$t"
 	printf '%s' "$PKG_WITH_SGH" >"$t/repo/package.json"
-	# hooks だけを置き、bin/env-guard-scan は置かない。
 	mkdir -p "$t/repo/node_modules/@himorogy/env-guard/hooks"
 	cp "$GUARD_DIR/hooks/pre-commit" \
 		"$t/repo/node_modules/@himorogy/env-guard/hooks/pre-commit"
@@ -384,10 +377,6 @@ else
 fi
 
 # --- 9. 否定対照: hook の呼び先が置かれていなければ導入を成功と報告しない ---------
-#
-# package.json に書けて .git/hooks/pre-commit も生まれても、パッケージ本体が
-# node_modules に無ければ commit のたびに失敗する。書けたことだけを見て
-# 「入った」と報告しないことを見る。
 
 t="$(mktemp -d)"
 make_repo "$t"
@@ -401,7 +390,6 @@ else
 	ng "否定対照: hook の呼び先が無い -> 導入を成功と報告せず非ゼロ終了する (rc=$rc out=$out)"
 fi
 
-# 同じ状態で --check も 0 を返さないこと。
 run_cli "$t/repo" install --check >/dev/null 2>&1
 rc=$?
 if [ "$rc" -ne 0 ]; then
@@ -412,13 +400,6 @@ fi
 rm -rf "$t"
 
 # --- 10. core.hooksPath がスキャナ直呼びの hook (イメージ方式) を指すとき --------
-#
-# dev container のイメージは core.hooksPath に置いた hook から共有スキャナ
-# env-guard-scan を直接呼ぶ。検査の実体はスキャナであり、node_modules の
-# hook ファイルを経由することは要件ではないので、--check はこれを「検査が
-# 繋がっている」として通す (コンテナ内で --check が ❌ になる偽陰性を
-# 実測で踏んだ regression)。node_modules 経路もイメージ hook も呼ばない
-# ファイルは従来どおり落とす (否定対照)。
 
 t="$(mktemp -d)"
 make_repo "$t"
@@ -438,7 +419,6 @@ else
 	ng "core.hooksPath がスキャナ直呼び hook を指す -> --check は 0 (rc=$rc)"
 fi
 
-# 否定対照: スキャナにも node_modules の hook にも触れないファイルは落ちる。
 printf '#!/bin/sh\nexit 0\n' >"$t/imagehooks/pre-commit"
 run_cli "$t/repo" install --check >/dev/null 2>&1
 rc=$?
@@ -450,11 +430,6 @@ fi
 rm -rf "$t"
 
 # --- 11. git が使えない場所では何も書かない -------------------------------------
-#
-# install は git hook を実体化する機能なので、git repo の外 (または git が
-# PATH に無いとき) には成立しない。ここで package.json だけ書き換えると、
-# hook を置けたのか確かめられないまま設定だけが残る。何も書かずに落ちる
-# ことを見る。
 
 t="$(mktemp -d)"
 mkdir -p "$t/repo"

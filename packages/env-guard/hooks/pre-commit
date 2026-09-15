@@ -2,19 +2,13 @@
 # core.hooksPath でイメージから全リポジトリ・全 clone・worktree に効かせる
 # (.git/hooks への書き込みは clone ごとに必要で、既存 clone にも改善にも
 # 伝播しないため採らない)。core.hooksPath が設定されていると git は
-# .git/hooks を見なくなる (git 2.39.5 で実測) ため、husky / lefthook 等の
-# per-repo hook を黙って壊さないよう明示的にチェーンする。
+# .git/hooks を見なくなるため、husky / lefthook 等の per-repo hook を黙って
+# 壊さないよう明示的にチェーンする。
 set -e
 root=$(git rev-parse --show-toplevel)
 
-# 検査そのものは共有スキャナ env-guard-scan に委ねる。CI 側 (karakuri の
-# reusable workflow env-guard.yml) が実行するのと同じ 1 本のファイルであり、
-# この hook が与えるのは「staged なファイルの一覧」だけである。
-#
-# 以前ここで呼んでいた `dotenvx precommit` は外した。precommit は自前の
-# ファイル名フィルタを持っていて上書きできないため、残すと「CI は通るのに
-# hook だけ落ちる」逆向きの分岐を作る。staged ファイルに対する検査内容は
-# 共有スキャナが同じだけ覆う。
+# 検査は共有スキャナ env-guard-scan に委ね、この hook が与えるのは
+# 「staged なファイルの一覧」だけである。
 #
 # 名前ではなく自分の位置から解決するので PATH を引かない。ログインシェルと違う
 # PATH で起動される GUI の git クライアントからでも同じスキャナが走る。
@@ -34,10 +28,8 @@ else
   exit 1
 fi
 
-# 一覧の作成に失敗したら通さない (fail-closed)。空の一覧は「検査対象が
-# 無かった」を意味するが、コマンド自体の失敗も同じ「空」に化けるため区別
-# する。`if ! ...; then` の形にするのは、set -e で何も言わずに落ちると
-# 踏んだ人間が理由に辿り着けないため。
+# `if ! ...; then` の形にするのは、set -e で何も言わずに落ちると踏んだ人間が
+# 理由に辿り着けないため。
 staged=$(mktemp)
 if ! git diff --cached --name-only >"$staged"; then
   rm -f "$staged"

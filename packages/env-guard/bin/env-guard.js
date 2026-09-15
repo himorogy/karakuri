@@ -336,9 +336,6 @@ function isExecutable(file) {
 	}
 }
 
-// verifyHook — 「書いたつもりで効いていない」を作らないための最終確認。呼び先の
-// 実在まで見るのは、package.json に書いて hook ファイルも生まれたのに、パッケージ
-// 本体が node_modules に無くて commit のたびに失敗する、という形を先に潰すため。
 function verifyHook(root, hooksDir) {
 	const file = path.join(hooksDir, "pre-commit");
 	const problems = [];
@@ -361,14 +358,7 @@ function verifyHook(root, hooksDir) {
 				`${file} runs ${HOOK_PATH}, but there is no such file: install the dependencies of this project`,
 			);
 		}
-	} else if (content.includes("env-guard-scan")) {
-		// 検査の実体は共有スキャナ env-guard-scan であり、この hook 経由で
-		// 呼ぶことは要件ではない。dev container のイメージが core.hooksPath に
-		// 置く hook はスキャナを直接呼ぶ設計で、そこを「node_modules の hook を
-		// 呼んでいない」と落とすのは偽陰性になる (コンテナ内で --check を
-		// 実行した実測で発覚)。スキャナへの言及があれば検査は繋がっていると
-		// みなす。
-	} else {
+	} else if (!content.includes("env-guard-scan")) {
 		problems.push(`${file} does not run ${HOOK_PATH}`);
 	}
 
@@ -548,9 +538,6 @@ function install(root, checkOnly) {
 		out(`env-guard:   "pre-commit": ${JSON.stringify(HOOK_COMMAND)}`);
 	}
 
-	// package.json に書いただけでは .git/hooks/pre-commit は生まれない。
-	// 書けたと報告して実際には何も検査されていない状態を作らないよう、
-	// ここで実体化まで進めてから確かめる。
 	let verified = verifyHook(root, hooksDir);
 	if (!verified.ok) {
 		runSimpleGitHooks(root);
