@@ -305,7 +305,10 @@ check_acl_needs_rebuild() {
 	local marker="rebuild-marker-test.invalid"
 	local tmp_ctx
 	tmp_ctx="$(mktemp -d)"
-	trap 'rm -rf "$tmp_ctx"' RETURN
+	# bash の RETURN trap は関数を抜けても解除されず、後続の関数 return
+	# (最後は main の return) で再発火して $tmp_ctx が消えた後に set -u に
+	# 掛かる。自分の return で確実に一度だけ発火させ、そのまま解除する。
+	trap 'rm -rf "$tmp_ctx"; trap - RETURN' RETURN
 
 	if ! command -v jq >/dev/null 2>&1; then
 		skip "ACL再ビルド" "jq が無く、変更後の firewall.json を組み立てられない"
@@ -400,6 +403,27 @@ probe_curl() {
 	return "$rc"
 }
 
+# egress-proxy-v6 は wait_for_stack の対象 (dev / egress-proxy) に含まれない。
+# ビルドが全キャッシュで即座に終わる周では、squid が listen する前に
+# check_ptr_spoof の probe が接続失敗し、リクエストが proxy に届かないまま
+# 判定不能になる。戻り値: 0 = 接続を受け付けた、1 = 上限まで受け付けなかった、
+# 2 = probe_curl 自身が判定不能 (dev_curl と同じ意味)。
+wait_for_proxy_v6() {
+	local tries=0
+	local max_tries=15
+	while [ "$tries" -lt "$max_tries" ]; do
+		probe_curl -sS -o /dev/null --max-time 2 "http://egress-proxy-v6:3128/" >/dev/null 2>&1
+		local rc=$?
+		case "$rc" in
+		0) return 0 ;;
+		2) return 2 ;;
+		esac
+		tries=$((tries + 1))
+		sleep 1
+	done
+	return 1
+}
+
 check_ptr_spoof() {
 	# design.md §2.23 必須要件2 (名前ベースACLにIPリテラルを持ち込ませない)。
 	# egress-proxy と同じ Dockerfile / squid.conf / firewall.json から、DNS の
@@ -418,7 +442,9 @@ check_ptr_spoof() {
 	local harness_ip="203.0.113.53"
 	local overlay
 	overlay="$(mktemp)"
-	trap 'rm -f "$overlay"' RETURN
+	# 自分の return で一度だけ発火させて解除する。理由は check_acl_needs_rebuild
+	# の同じ形の trap を参照。
+	trap 'rm -f "$overlay"; trap - RETURN' RETURN
 	cat >"$overlay" <<EOF
 services:
   egress-proxy-v6:
@@ -465,29 +491,38 @@ EOF
 		ng "PTR偽装検証用のサービスを起動できなかった"
 		dcv6 logs --no-log-prefix egress-proxy-v6 ptr-spoof-harness >&2 2>&1 || true
 	else
-		# egress-proxy-v6 は dev の最終テーブルの許可先 (egress-proxy 自身) では
-		# ないので dev_curl は使えない (probe_curl 参照)。
-		probe_curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
-		local rc=$?
-		if [ "$rc" -eq 2 ]; then
+		wait_for_proxy_v6
+		local wait_rc=$?
+		if [ "$wait_rc" -eq 2 ]; then
 			skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
-		elif ! dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -q "$harness_ip"; then
-			# poc/l7-proxy/verify.sh の V6 と同じ前提条件: リクエストが proxy
-			# まで届いたことを先に確かめる。届いていなければ「victim へ接続
-			# しなかった」のが -n の効果なのか、そもそも egress-proxy-v6 に
-			# 到達しなかっただけなのか区別できない。
-			skip "PTR偽装" "egress-proxy-v6 のログに $harness_ip 宛のリクエストが無い。proxy まで届いていないため -n の効果を判定できない"
+		elif [ "$wait_rc" -ne 0 ]; then
+			skip "PTR偽装" "egress-proxy-v6 が待ち時間内に接続を受け付けなかった"
+			dcv6 logs --no-log-prefix --tail 40 egress-proxy-v6 >&2 2>&1 || true
 		else
-			sleep 1
-			if dcv6 logs --no-log-prefix ptr-spoof-harness 2>&1 | grep -q 'SPOOF SUCCEEDED'; then
-				ng "PTR偽装が成立し、harnessへの接続が実際に発生した (-n が効いていない)"
+			# egress-proxy-v6 は dev の最終テーブルの許可先 (egress-proxy 自身) では
+			# ないので dev_curl は使えない (probe_curl 参照)。
+			probe_curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
+			local rc=$?
+			if [ "$rc" -eq 2 ]; then
+				skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
+			elif ! dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -q "$harness_ip"; then
+				# poc/l7-proxy/verify.sh の V6 と同じ前提条件: リクエストが proxy
+				# まで届いたことを先に確かめる。届いていなければ「victim へ接続
+				# しなかった」のが -n の効果なのか、そもそも egress-proxy-v6 に
+				# 到達しなかっただけなのか区別できない。
+				skip "PTR偽装" "egress-proxy-v6 のログに $harness_ip 宛のリクエストが無い。proxy まで届いていないため -n の効果を判定できない"
 			else
-				ok "リクエストは proxy に届いたが、harness (victim) への接続は発生しなかった"
-			fi
-			if dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -qE "TCP_DENIED.*CONNECT $harness_ip"; then
-				ok "squidのアクセスログにも該当IPへのdenyが残っている"
-			else
-				skip "squidアクセスログでのdeny行の確認" "logformatの都合で文字列一致しない場合がある"
+				sleep 1
+				if dcv6 logs --no-log-prefix ptr-spoof-harness 2>&1 | grep -q 'SPOOF SUCCEEDED'; then
+					ng "PTR偽装が成立し、harnessへの接続が実際に発生した (-n が効いていない)"
+				else
+					ok "リクエストは proxy に届いたが、harness (victim) への接続は発生しなかった"
+				fi
+				if dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -qE "TCP_DENIED.*CONNECT $harness_ip"; then
+					ok "squidのアクセスログにも該当IPへのdenyが残っている"
+				else
+					skip "squidアクセスログでのdeny行の確認" "logformatの都合で文字列一致しない場合がある"
+				fi
 			fi
 		fi
 	fi
