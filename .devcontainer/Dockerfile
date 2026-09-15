@@ -10,15 +10,17 @@
 # 参照しない。通常は 1 つ前の実証済みリリースへ pin し、pin を上げるのはその版が
 # base を利用する別のリポジトリで実運用に耐えたことを確認してから。
 #
-# **一時的に :edge の digest を指している（0021-l7-verification-and-cutover）。**
-# 公開済みの正式リリースはどれも egress-guard 0.2.0 以下を焼いており、
-# `.devcontainer/firewall.json` の version 2 を `unsupported schema version` で
-# 拒否する。egress-guard 0.3.0 とそれを焼いた base の正式版はこのブランチの
-# マージ後にしか出せないため、先行検証で使った :edge のビルド（未公開の
-# egress-guard 0.3.0 を焼いてある）を index digest で指す。プラットフォーム単体の
-# manifest の digest ではなく index の digest を使うのは、単体だと他アーキで
-# pull できないため。正式版への pin の戻しは別の作業単位で行う。
-FROM ghcr.io/himorogy/devcontainer-base:edge@sha256:12dbdd8ed072f9e3bf34b1ef70d03aeb3b62d0d25e00dd09c0715deb1223bc1d
+# **2.4.0 を選ぶ理由。** egress-guard 0.3.0（`.devcontainer/firewall.json` の
+# `version: 2` を受理する版）を焼いた公開済みの base は 2.4.0 が最初で、
+# それより前の版はどれも `unsupported schema version` で拒否する。L7 を選んだ
+# この devcontainer が起動できる正式版は 2.4.0 だけである。
+#
+# **N-1 規律との関係。** 上の「1 つ前の実証済みリリースへ pin する」規律は
+# この時点では適用できない（1 つ前の版では起動しない）。2.4.0 の実証は、
+# 公開前に同じ内容を :edge で焼いて別のリポジトリで L7 を通したことと、
+# このリポジトリの検収が担う。規律が再び効くのは 2.5.0 以降で、そのとき
+# karakuri は 2.4.0 に留まる。
+FROM ghcr.io/himorogy/devcontainer-base:2.4.0@sha256:4fb802e8baa98dc7e28e22a1d7e24f688c5368a699cdd790916c4a2e06275947
 
 # --- egress-guard 実効設定 -------------------------------------------------------
 USER root
