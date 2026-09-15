@@ -358,8 +358,7 @@ function verifyHook(root, hooksDir) {
 				`${file} runs ${HOOK_PATH}, but there is no such file: install the dependencies of this project`,
 			);
 		}
-	} else if (content.includes("env-guard-scan")) {
-	} else {
+	} else if (!content.includes("env-guard-scan")) {
 		problems.push(`${file} does not run ${HOOK_PATH}`);
 	}
 

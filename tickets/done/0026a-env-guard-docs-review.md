@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: docs
 base: main
 targets:
@@ -8,6 +8,7 @@ targets:
   - packages/env-guard/hooks/pre-commit
   - packages/env-guard/bin/env-guard.js
   - packages/env-guard/tests/install.test.sh
+  - .github/workflows/env-guard.yml # 拡張: env-guard.conf の書式の参照先が空振りしていた（PR レビューの裁定で直す）
 verify:
   - pnpm test
 ---
@@ -64,8 +65,12 @@ verify:
 ### やらないこと
 
 - 台帳 `docs/guarantees.md` と `docs/conventions.md` の編集（移送先として検討した 2 件は、いずれも既に台帳が固定しているか、リポジトリ固有の事実でないと判定した）
-- スキャナと hook と導入コマンドの振る舞いの変更。`bin/env-guard.js` の `verifyHook` にある空の `else if` 分岐を条件式へ畳む整理（コメントを消すと分岐が無根拠に見える）は、振る舞いが変わらなくてもコードの変更なので別のチケットに切る
+- スキャナと hook と導入コマンドの振る舞いの変更。`bin/env-guard.js` の `verifyHook` にある空の `else if` 分岐を条件式へ畳む整理は、当初は別のチケットに切る予定だったが、PR レビューで人間が「この枚で直す」と裁定した（`#2`）。振る舞いを変えずに空の分岐を消す範囲でこの枚に含める。`--check` の判定結果（スキャナを直接呼ぶ hook を通し、どちらにも触れない hook を落とす）は台帳 §1 と `tests/install.test.sh` の検査 10 が固定しており、それを維持する
 - 保留 2 件（上の表）
+
+### PR レビューで追加された対応
+
+- `.github/workflows/env-guard.yml` 36 行目「書式は env-guard-scan の冒頭のコメントを参照。」の参照先に書式は無い（正本は `packages/env-guard/README.md` の `env-guard.conf` の節）。PR 57 のレビューで人間が「直す」と裁定した（`#3`）。参照先を README に書き換える。workflow の振る舞いは変えない
 
 ## 保証
 
