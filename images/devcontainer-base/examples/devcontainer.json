@@ -104,7 +104,12 @@
 	// インストール系に合う。firewall 前の実行だが、フック本体はホスト側 ro で
 	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルと同じく
 	// 開発者本人だけ。信頼水準は変わらない。
-	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
+	//
+	// L7 実現層では compose の environment に proxy 変数がコンテナ作成時から
+	// 入っており、フックの取得先（個人ドメインや GitHub Releases 等）は
+	// sidecar の ACL に無いため、そのままでは 403 で落ちる。personal-setup は
+	// それらを外してフックを直接経路で走らせる（base のイメージへ焼き込み済み）。
+	"postCreateCommand": "personal-setup",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。
 	// 引数は渡さない。sudoers 側で引数付き実行を拒否している。

@@ -41,6 +41,7 @@ base に入れる条件は次のいずれか。
   開発者本人だけで、tracked な devcontainer.json / Dockerfile と信頼水準は同じ。
   守備範囲は対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると
   環境の同一性が崩れる
+  L7 実現層では postCreateCommand の時点で compose の proxy 変数（`http_proxy` 等）が既にコンテナへ入っているため、実行は `personal-setup`（base に焼き込み済み）を経由させ、それらを外してフックを直接経路で走らせる。
 - npm で入る → D（devDependency）。base に焼くとバージョンがプロジェクトの
   `package.json` と乖離し、ローカルと CI でフォーマット結果が変わる
 - プロジェクト固有 → プロジェクトの Dockerfile
@@ -75,6 +76,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
   到達の機構は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - `/usr/local/bin/git-identity-setup`（`bin/git-identity-setup` 由来）。対話シェルの起動時に
   呼ばれ、`GH_TOKEN` のアカウントから git の commit 者情報を導出する。詳細は「git identity」節
+- `/usr/local/bin/personal-setup`（`bin/personal-setup` 由来）。`postCreateCommand` から呼ばれ、個人フックを proxy 変数を外した環境で実行する。保証は `docs/guarantees.md` の `images/devcontainer-base/tests/personal-setup.test.sh` の節
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
   `WORKDIR` は `/workspaces`（複数形。devcontainer の既定に合わせている）
@@ -190,6 +192,7 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
   制限なしで実行される。
   この時点で復号キーは既にコンテナ内にある。Feature を使うと版は
   `devcontainer-lock.json` に固定されるが、**固定されるのは取得物であって通信ではない**
+  L7 実現層では compose の `environment` に proxy 変数がコンテナ作成時から入るため、素の `postCreateCommand` は既定で proxy 経由になる（個人フックはこれを避けるため `personal-setup` を経由させている。「収録判定」参照）。
 - **`waitFor` は待機指定であって境界ではない**。エディタが接続を報告するタイミングを
   制御するだけで、先行する lifecycle command の通信は止めない
 - **コンテナ内で root を取ったプロセス**。雛形は egress-guard の実装上
