@@ -34,8 +34,10 @@
 	"workspaceFolder": "/workspaces/karakuri",
 	// 個人設定フック (/personal はホスト側 ~/.config/devc-personal の ro mount) も
 	// ここで実行する。取得を伴うため firewall 適用前のこの段に置く。フック本体は
-	// コンテナ内の主体には書けない。根拠は examples/devcontainer.json のコメント。
-	"postCreateCommand": "if [ -x /personal/setup.sh ]; then /personal/setup.sh; fi",
+	// コンテナ内の主体には書けない。根拠は images/devcontainer-base/examples/devcontainer.json のコメント。
+	// L7 では作成時から proxy 変数が入っているため、personal-setup がそれを外して
+	// 直接経路で走らせる。
+	"postCreateCommand": "personal-setup",
 	// ファイアウォールを毎起動時に適用する。waitFor と組み合わせているため、適用に
 	// 失敗した状態でエディタが使えるようになる前に失敗が表面化する。
 	"postStartCommand": "sudo /usr/local/bin/init-project-firewall.sh",
