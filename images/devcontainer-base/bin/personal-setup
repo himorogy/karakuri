@@ -1,0 +1,24 @@
+#!/bin/sh
+# /usr/local/bin/personal-setup
+#
+# postCreateCommand から呼ばれる。個人設定フック (既定 /personal/setup.sh)
+# を proxy の環境変数を持たない環境で実行する。compose 側が http_proxy /
+# https_proxy / HTTP_PROXY / HTTPS_PROXY をコンテナ作成時から渡す構成では、
+# フックが個人ツールの取得に使う宛先 (GitHub Releases の
+# release-assets.githubusercontent.com や個人ドメイン) は sidecar の許可リストに
+# 無いため、フックへは渡さず直接経路で出す。postCreate の時点では firewall
+# (postStartCommand の iptables) は未適用なので、proxy 変数さえ外せば届く。
+#
+# 実行主体は変えない。postCreateCommand は remoteUser (node) で走り、この
+# スクリプトも sudo を挟まずそのユーザーのまま実行する。
+#
+# PERSONAL_SETUP_HOOK はテストがフックのパスを差し替えるための口
+# (git-identity-setup の GIT_IDENTITY_SETUP_FETCH_CMD と同型)。
+set -eu
+
+HOOK="${PERSONAL_SETUP_HOOK:-/personal/setup.sh}"
+
+if [ -x "$HOOK" ]; then
+  unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+  exec "$HOOK"
+fi

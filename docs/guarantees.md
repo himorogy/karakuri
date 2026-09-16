@@ -448,6 +448,15 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - 逆に、読み込んで使うファイル（source される関数集・compose・plist・Windows 用ラッパー）は実行可能にならない。PATH 上の `shims/` から誤って起動される経路を作らない
 - npm パッケージとして配られる面（`@himorogy/env-guard` の `bin` と `hooks`、`@himorogy/egress-guard` の `scripts` と `templates`）でも同じく、実行して使うスクリプトはそのまま実行でき、読み込んで使うファイルは実行可能にならない。受け取った側が mode を直す手順を要求されることはない（起源: `0014b-public-surface-file-modes`）
 
+### 24. `images/devcontainer-base/tests/personal-setup.test.sh` — `images/devcontainer-base/bin/personal-setup`
+
+起源: `0029-personal-setup-bypasses-proxy`
+
+- `/personal/setup.sh` が実行可能なら、呼び出し元と同じユーザーのままそれを実行し、その終了コードで終わる。無い、または実行可能でなければ何もせず 0 で終わる
+  （テスト: "フックがあれば呼び出し元のユーザーで実行して終了コードを返す" / "フックが無ければ何もせず 0 で終わる" / "実行可能でないフックは実行せず 0 で終わる"）
+- フックは proxy の環境変数（`http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY`）を持たない環境で走る。呼び出し側の環境にそれらがあってもフックへは渡らない
+  （テスト: "proxy 変数はフックへ渡らない" / "否定対照: proxy 以外の環境変数はそのまま渡る"）
+
 ## Unverified Promises
 
 ### C-2a — `未検証の約束 (テスト困難: CI の runtime-base ワークフローが、push 済みイメージを両アーキで smoke test する)`
@@ -506,6 +515,12 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `firewall.json` を書き換えても、イメージを再ビルドするまで proxy の判定は変わらない。実行中のコンテナから ACL を差し替える経路は無い
 - 先頭ドットで許可したドメインについて、設定に書いていない具体的なホストへ接続でき、その接続は時間を置いた 2 回目も成立する
 
+### E-a — `未検証の約束 (テスト困難: イメージのビルドが要る。pin を上げた後の rebuild を検収で確認する)`
+
+起源: `0029-personal-setup-bypasses-proxy`
+
+- `personal-setup` はイメージの `/usr/local/bin` に実行可能な状態で置かれ、`postCreateCommand` から名前だけで起動できる
+
 ## 境界宣言
 
 ### 免責
@@ -547,7 +562,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `images/runtime-base/templates/project/env-guard.conf`、`images/runtime-base/templates/project/env-guard.yml`
 
 **E. `devcontainer-base` イメージと `examples/` の雛形3本**
-公開面と判定するが、対応するテストを持たず、何を約束にすべきかも定めていない。候補層（`docs/guarantee-candidates/`）へ置く。
+公開面と判定する。焼き込む bin/ は §22・§24 と E-a が持ち、雛形3本は候補層（`docs/guarantee-candidates/`）へ置く。
 
 ### 索引の粒度
 
