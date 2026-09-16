@@ -2,10 +2,8 @@
 #
 # egress-guard L7 — 実機の判定を常設化したスクリプト。
 #
-# packages/egress-guard/poc/l7-proxy/verify.sh が確かめていた項目を引き継ぎ、
-# 対象を本実装（このリポジトリの .devcontainer/docker-compose.yaml）へ向ける。
-# 新しく、proxy 環境変数を無視した直接接続の遮断と、ACL 変更にイメージの
-# 再ビルドが要ることの 2 項目を足す。
+# 対象は本実装（このリポジトリの .devcontainer/docker-compose.yaml）。proxy
+# 環境変数を無視した直接接続の遮断と、ACL 変更にイメージの再ビルドが要ることを含む。
 #
 # 判定できない・対象を超える項目は SKIP として明示し、黙って飛ばさない
 # (docs/verification-record.md 5節: 消えた SKIP はあったことにされたカバレッジ
@@ -45,7 +43,7 @@ volumes:
 EOF
 
 # apt-get update の 1〜2回目の間隔。既定は90秒だが、実機のCDNの挙動を見るなら
-# もっと長く取ってよい (poc/l7-proxy/verify.sh の V3 を引き継ぐ)。
+# もっと長く取ってよい。
 APT_RECHECK_WAIT_SECONDS="${APT_RECHECK_WAIT_SECONDS:-90}"
 
 # 終了時にスタックを畳まない (ログを見ながらデバッグしたいとき用)。
@@ -82,7 +80,8 @@ dc() {
 #
 # 2 を 1 と混ぜてはいけない。「接続が失敗すること」を成功条件にしている項目
 # では、道具が無くて失敗したのか proxy が拒否したのかを区別しないと ok が
-# 偽陽性になる (poc/l7-proxy/verify.sh の同名関数のコメントに記録がある実例)。
+# 偽陽性になる (curl が入っていない状態で、拒否を確かめる複数項目が揃って
+# ok になった実例がある)。
 dev_curl() {
 	local out rc
 	out="$(dc exec -T dev curl "$@" 2>&1)"
@@ -151,8 +150,11 @@ apply_firewall() {
 # dev からは同じ named volume を :ro でマウントした /var/log/egress-proxy 越しに
 # 読む (README.md「proxy のログを読む」)。dev から読めることは group_add: ["13"]
 # の効果そのものでもある。
-proxy_log_has() { # <needle>
-	dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -q -- "$1"
+proxy_log_has() { # <status> <host> — 例: "TCP_TUNNEL/200" "github.com"
+	# ホスト名だけの一致は「proxy まで届いた」の証拠にしかならず、
+	# 許可/拒否のどちらの証拠にもならない (0021a の否定対照で、接続が
+	# 失敗した FAIL とログ検査の ok が両立した実例がある)。
+	dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -q -- "$1 .*CONNECT $2:"
 }
 
 check_apt_first_pass() {
@@ -192,10 +194,10 @@ check_leading_dot_domains() {
 		2) skip "$target" "dev で curl を実行できなかった" ;;
 		*) ng "$target への接続が失敗した" ;;
 		esac
-		if proxy_log_has "$target"; then
-			ok "proxyのログに $target が残る (allowDomainsに書いていない具体名。サフィックスマッチの証拠)"
+		if proxy_log_has "TCP_TUNNEL/200" "$target"; then
+			ok "$target への接続が許可 (TCP_TUNNEL/200) として proxy のログに残る (allowDomainsに書いていない具体名。サフィックスマッチの証拠)"
 		else
-			ng "proxyのログに $target が見つからない"
+			ng "$target への接続が許可 (TCP_TUNNEL/200) として proxy のログに残っていない"
 		fi
 	done
 }
@@ -210,10 +212,10 @@ check_denied_domain() {
 	2) skip "$target" "dev で curl を実行できなかった。proxy が拒否したのか道具が無いのか区別できない" ;;
 	*) ok "許可していないドメインへの接続は失敗する" ;;
 	esac
-	if proxy_log_has "$target"; then
-		ok "proxyのログに拒否したドメイン名が残る"
+	if proxy_log_has "TCP_DENIED/403" "$target"; then
+		ok "$target への接続が拒否 (TCP_DENIED/403) として proxy のログに残る"
 	else
-		ng "proxyのログに $target が見つからない"
+		ng "$target への接続が拒否 (TCP_DENIED/403) として proxy のログに残っていない"
 	fi
 }
 
@@ -428,9 +430,7 @@ check_ptr_spoof() {
 	# design.md §2.23 必須要件2 (名前ベースACLにIPリテラルを持ち込ませない)。
 	# egress-proxy と同じ Dockerfile / squid.conf / firewall.json から、DNS の
 	# 向き先だけ ptr-spoof-harness にした egress-proxy-v6 を、この検証のためだけの
-	# overlay で追加する。詳しい構成は
-	# packages/egress-guard/poc/l7-proxy/docker-compose.poc.yml の同名サービスと
-	# その README を参照 (private レンジだと `deny to_private` が dstdomain の
+	# overlay で追加する (private レンジだと `deny to_private` が dstdomain の
 	# 判定より先に効いてしまい偽陽性になるため TEST-NET-3 を使う)。
 	echo "== dstdomain -n が PTR 偽装を防いでいるか (design.md §2.23 必須要件 2) =="
 
@@ -506,10 +506,9 @@ EOF
 			if [ "$rc" -eq 2 ]; then
 				skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
 			elif ! dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -q "$harness_ip"; then
-				# poc/l7-proxy/verify.sh の V6 と同じ前提条件: リクエストが proxy
-				# まで届いたことを先に確かめる。届いていなければ「victim へ接続
-				# しなかった」のが -n の効果なのか、そもそも egress-proxy-v6 に
-				# 到達しなかっただけなのか区別できない。
+				# 前提条件: リクエストが proxy まで届いたことを先に確かめる。届いて
+				# いなければ「victim へ接続しなかった」のが -n の効果なのか、そもそも
+				# egress-proxy-v6 に到達しなかっただけなのか区別できない。
 				skip "PTR偽装" "egress-proxy-v6 のログに $harness_ip 宛のリクエストが無い。proxy まで届いていないため -n の効果を判定できない"
 			else
 				sleep 1
