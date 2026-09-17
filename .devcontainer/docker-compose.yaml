@@ -54,12 +54,6 @@ services:
       - NET_ADMIN
       - NET_RAW
 
-    # egress-proxy のアクセスログは proxy（uid/gid 13。proxy/Dockerfile の
-    # `USER proxy`）が書き、他ユーザーからは読めないパーミッションで作られる
-    # （先行検証で実測済み、0021 の検収で確認する）。node（uid 1000）を補助
-    # グループ 13 に入れないと :ro でマウントしても Permission denied になる。
-    group_add: ["13"]
-
     # 環境変数の置き場はここが既定。イメージの ENV に置くのは利用側が変える前提が
     # 無いものだけ（docs/conventions.md「環境変数の置き場」）。
     environment:

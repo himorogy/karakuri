@@ -148,13 +148,25 @@ apply_firewall() {
 
 # egress-proxy のアクセスログはファイル (/var/log/squid/access.log) にあり、
 # dev からは同じ named volume を :ro でマウントした /var/log/egress-proxy 越しに
-# 読む (README.md「proxy のログを読む」)。dev から読めることは group_add: ["13"]
-# の効果そのものでもある。
+# 読む (README.md「proxy のログを読む」)。dev から読めることは、イメージが
+# node を proxy グループに入れていることの効果そのものでもある。
 proxy_log_has() { # <status> <host> — 例: "TCP_TUNNEL/200" "github.com"
 	# ホスト名だけの一致は「proxy まで届いた」の証拠にしかならず、
 	# 許可/拒否のどちらの証拠にもならない (0021a の否定対照で、接続が
 	# 失敗した FAIL とログ検査の ok が両立した実例がある)。
 	dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -q -- "$1 .*CONNECT $2:"
+}
+
+# proxy_log_has は `dc exec -T dev` で読んでおり、これは docker exec 経路。
+# sshd 経由のログインは /etc/group から補助グループを組み直すため、同じ組み直しを
+# 起こす su で読めることを別に見る (ログの内容には依らない)。
+check_proxy_log_readable_via_login() {
+	echo "== ログイン経路 (sshd 相当) でも proxy のログが読めるか =="
+	if dc exec -T -u root dev su node -c 'cat /var/log/egress-proxy/access.log' >/dev/null 2>&1; then
+		ok "node が su 経由 (sshd ログインと同じ補助グループの組み直し) で proxy のログを読める"
+	else
+		ng "node が su 経由で proxy のログを読めない"
+	fi
 }
 
 check_apt_first_pass() {
@@ -565,6 +577,7 @@ main() {
 		exit 1
 	fi
 
+	check_proxy_log_readable_via_login
 	check_apt_first_pass
 	check_apt_second_pass
 	check_leading_dot_domains
