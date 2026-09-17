@@ -26,8 +26,7 @@ RUN apt-get update \
 # Dockerfile: this runs code at image build time, and a dist-tag would let a
 # package update change what that code does without anyone choosing to.
 # The version matters here beyond pinning as such - --print-proxy-acl below
-# needs a version that has that flag, and package.json in this repo names
-# the lowest one that does.
+# needs a version that has that flag, and 0.3.0 is the lowest one that does.
 RUN npm install -g @himorogy/egress-guard@0.4.0
 
 COPY firewall.json /firewall.json

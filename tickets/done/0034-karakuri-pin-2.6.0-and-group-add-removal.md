@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: chore
 base: main
 targets:
@@ -31,7 +31,7 @@ verify:
    2.6.0 では `/etc/group` で `node` が `proxy` に入っており、`docker exec` 経路でも sshd 経路でも `group_add` に頼らない。
    残すとそれが読める理由に見え、0032 が直した非対称（`group_add` は sshd 経由に届かない）の説明が二重になる
 3. `.devcontainer/proxy/Dockerfile` の `npm install -g @himorogy/egress-guard@0.3.0` を `0.4.0` へ。
-   直上のコメント（ビルド時にコードを実行するので pin する、`--print-proxy-acl` を持つ最低版）は変えない。
+   直上のコメント（ビルド時にコードを実行するので pin する、`--print-proxy-acl` を持つ最低版）のうち、「package.json in this repo names the lowest one that does」は成り立たなくなっている（`packages/egress-guard/package.json` は 0.4.0、最低版は 0.3.0）ので、0.3.0 が最低版である旨に直す（PR レビューの指示。それ以外の文は変えない）。
    sidecar が焼く ACL の出どころが 0.4.0 になり、`firewall.json` の `allowDomains` に自前で足してある `platform.claude.com` はバンドル側からも出るようになる（`allowDomains` の行は 0031 の判断どおり残す）
 4. `packages/egress-guard/tests/verify-l7.sh` に、ログイン経路でも proxy のログが読める検査を足す。
    既存の `proxy_log_has` は `dc exec -T dev` で読んでおり、これは `docker exec` 経路である。
