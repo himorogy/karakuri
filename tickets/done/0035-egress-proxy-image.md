@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: feat
 base: main
 targets:
@@ -48,7 +48,7 @@ verify:
    検査: (a) `templates/firewall.json` で ACL が `--print-proxy-acl` の出力と一致し `squid.conf` は `deny !allowed` のまま、(b) `templates/firewall.audit.json` で `allow !allowed` になる、(c) 壊れた JSON で非ゼロ、かつ ACL ファイルが作られない、(d) 引数無しで非ゼロ。
    ランナーは `images/runtime-base/tests/run.sh` の形に倣うが、1 本なので直接 `bash images/egress-proxy/tests/bake.test.sh` を `package.json` の `test` に足す。`lint:sh:images` に `images/egress-proxy/bin/*`（sh）と `images/egress-proxy/tests/*.sh`（bash）を足す
 5. `images/egress-proxy/README.md` — 何を焼いてあるか、利用側の書き方（compose の `dockerfile_inline` 3 行: `FROM ghcr.io/himorogy/egress-proxy:1` / `COPY firewall.json /firewall.json` / `RUN egress-proxy-bake /firewall.json`）、
-   リリース節（`images/devcontainer-base/README.md`「リリース」の型。タグ `egress-proxy-v*` → `:1` / `:1.0` / `:1.0.0` / `sha-`。runtime-base / devcontainer-base とは独立で順序の縛りは無い。初回は GHCR のパッケージを public にする手順）。
+   リリース節（`images/devcontainer-base/README.md`「リリース」の型。タグ `egress-proxy-v*` → `:1` / `:1.0` / `:1.0.0` / `sha-`。runtime-base / devcontainer-base とは独立で順序の縛りは無い）。GHCR のパッケージを public にする初回の手順は README に書かない（PR レビューの指示）。
    設計の理由は書かない（`packages/egress-guard/docs/design.md` が持つ）
 6. `.github/workflows/egress-proxy.yml` — `runtime-base.yml` の型（tag push / pull_request 検証のみ / workflow_dispatch で `:edge`、action は SHA 固定、multi-arch、metadata-action の semver 3 行）。
    paths は `images/egress-proxy/**`（`*.md` 除外）とこの workflow 自身。
