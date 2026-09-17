@@ -1327,9 +1327,9 @@ healthy_net_stubs
 
 # Every bundle at once. sentry.io and statsig.com are absent on purpose: they
 # were never shown to be required and now belong to no bundle, so the largest
-# base profile that can be asked for is these fourteen domains.
+# base profile that can be asked for is these fifteen domains.
 ALL_BUNDLE_DOMAINS=(
-	api.anthropic.com
+	api.anthropic.com platform.claude.com
 	downloads.claude.ai downloads.claude.com
 	auth.openai.com chatgpt.com
 	registry.npmjs.org
@@ -1822,7 +1822,7 @@ if [ "$rc" -eq 0 ]; then
 else
 	ng "--print-proxy-acl exits 0 on a config with a leading dot domain (rc=$rc)"
 fi
-acl_expected="$(printf '%s\n' '.example.com' 'api.anthropic.com' 'nowhere.example.net')"
+acl_expected="$(printf '%s\n' '.example.com' 'api.anthropic.com' 'nowhere.example.net' 'platform.claude.com')"
 if [ "$acl" = "$acl_expected" ]; then
 	ok "the proxy ACL is unchanged by the leading dot form"
 else

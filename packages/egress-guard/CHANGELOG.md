@@ -1,5 +1,11 @@
 # @himorogy/egress-guard
 
+## 0.4.0
+
+### Minor Changes
+
+- **`anthropic` バンドルに `platform.claude.com` を足した。** Claude Code（v2.1.274 で実測）のログインとアクセストークン更新は `api.anthropic.com` ではなく `platform.claude.com/v1/oauth/token` へ送られる。`enforce` を選んだ構成では、0.3.0 まではこの端点が拒否され、トークン更新の失敗と再ログインの失敗という形で現れていた。enforce で許可される宛先が増えるため Patch ではなく Minor とする。
+
 ## 0.3.0
 
 ### Minor Changes

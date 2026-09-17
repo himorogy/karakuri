@@ -521,6 +521,12 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - `personal-setup` はイメージの `/usr/local/bin` に実行可能な状態で置かれ、`postCreateCommand` から名前だけで起動できる
 
+### F-a — `未検証の約束 (テスト困難: proxy と外向きの到達性が要る。enforce で rebuild した proxy 越しに claude のログインと 8 時間後の更新を検収で確認する)`
+
+起源: `0031-anthropic-bundle-platform-claude-com`
+
+- `anthropic` バンドルを選んだ構成では、Claude Code のログインと、その後のアクセストークンの更新が通る
+
 ## 境界宣言
 
 ### 免責

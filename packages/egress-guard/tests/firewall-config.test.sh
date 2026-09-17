@@ -495,6 +495,7 @@ downloads.claude.com
 github.com
 marketplace.visualstudio.com
 objects.githubusercontent.com
+platform.claude.com
 raw.githubusercontent.com
 registry.npmjs.org
 update.code.visualstudio.com
@@ -553,7 +554,8 @@ bundle_holds() { # <bundle> <domains, newline separated>
 		ng "the $1 bundle holds exactly its documented domains (got: $got)"
 	fi
 }
-bundle_holds anthropic "api.anthropic.com"
+bundle_holds anthropic "api.anthropic.com
+platform.claude.com"
 bundle_holds anthropic-updates "downloads.claude.ai
 downloads.claude.com"
 bundle_holds openai "auth.openai.com
@@ -579,6 +581,7 @@ fi
 SUBSET_LISTING="$(listing_for '{"version":1,"profile":["anthropic","npm"]}')"
 says "the selected bundles are named in order" "$SUBSET_LISTING" "profile: anthropic, npm"
 if [ "$(section_of "$SUBSET_LISTING" domains)" = "api.anthropic.com
+platform.claude.com
 registry.npmjs.org" ]; then
 	ok "a subset lists only the domains of the bundles it asked for"
 else
