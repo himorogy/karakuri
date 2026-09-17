@@ -10,18 +10,19 @@
 # 参照しない。通常は 1 つ前の実証済みリリースへ pin し、pin を上げるのはその版が
 # base を利用する別のリポジトリで実運用に耐えたことを確認してから。
 #
-# **2.5.0 を選ぶ理由。** 個人設定フックを proxy 変数を外して実行する
-# `personal-setup` を焼いた最初の版である。2.4.0 では `postCreateCommand` の
-# フックが sidecar の ACL に落ちて個人ツールの取得が 403 で失敗する。
+# **2.6.0 を選ぶ理由。** `node` が `proxy` グループに入っており（sshd 経由の
+# ログインでも proxy のログが読める）、egress-guard 0.4.0 を焼いている
+# （anthropic バンドルに `platform.claude.com`）最初の版である。
 #
 # **N-1 規律との関係。** 規律の趣旨は「最新リリースが壊れたときに、直す環境が
 # 最新リリース自身に依存しない」であり、karakuri の開発環境が動かなくなるのを
-# 防ぐためのものである。2.5.0 は同じ内容を :edge で焼いてこの devcontainer
-# 自身で検証済み（rebuild が通り、個人ツールの取得が成功し、enforce のまま
-# proxy 経由の遮断が効いている）で、動くことが確認された版へ上げる判断は
-# 規律の趣旨に反しない。次に規律が効くのは 2.6.0 以降で、そのとき karakuri は
-# 2.5.0 に留まる。
-FROM ghcr.io/himorogy/devcontainer-base:2.5.0@sha256:97a3f200e0ef5721b3c3b845037516a55072035f7d5580505e570c7b465490e2
+# 防ぐためのものである。2.6.0 は同じソースから `:local` を焼いてこの devcontainer
+# 自身で rebuild して確認済み（ssh 経由の `id -Gn` に `proxy`、
+# `/var/log/egress-proxy/access.log` が読める、`platform.claude.com` が
+# `TCP_TUNNEL/200`、`ab.chatgpt.com` が 403、`codex exec` が動く）で、動くことが
+# 確認された版へ上げる判断は規律の趣旨に反しない。次に規律が効くのは 2.7.0
+# 以降で、そのとき karakuri は 2.6.0 に留まる。
+FROM ghcr.io/himorogy/devcontainer-base:2.6.0@sha256:379be607b3dd188a236fd4f7deccbeea9ea998e39687e682de8f24c4e8ed6379
 
 # --- egress-guard 実効設定 -------------------------------------------------------
 USER root
