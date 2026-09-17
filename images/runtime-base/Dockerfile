@@ -36,7 +36,7 @@ ARG PNPM_VERSION=11.25.0
 # §10 の実測項目に含める。
 ARG DOTENVX_VERSION=2.23.0
 ARG WRANGLER_VERSION=4.128.0
-ARG EGRESS_GUARD_VERSION=0.3.0
+ARG EGRESS_GUARD_VERSION=0.4.0
 
 # --- ロケール / タイムゾーン --------------------------------------------------
 # LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定に
