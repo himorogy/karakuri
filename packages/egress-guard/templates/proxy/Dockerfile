@@ -28,7 +28,7 @@ RUN apt-get update \
 # The version matters here beyond pinning as such - --print-proxy-acl below
 # needs a version that has that flag, and package.json in this repo names
 # the lowest one that does.
-RUN npm install -g @himorogy/egress-guard@0.3.0
+RUN npm install -g @himorogy/egress-guard@0.4.0
 
 COPY firewall.json /firewall.json
 

@@ -13,6 +13,7 @@
 		"nodejs.org",
 		"deb.debian.org",
 		".gallerycdn.vsassets.io",
-		".gallery.vsassets.io"
+		".gallery.vsassets.io",
+		"platform.claude.com"
 	]
 }

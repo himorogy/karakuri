@@ -120,18 +120,35 @@ readonly -a PROFILE_BUNDLE_NAMES=(
 	"github"
 )
 
-# The minimum Claude Code needs to talk to the service at all. One domain.
+# The minimum Claude Code needs to talk to the service at all, plus the host
+# its OAuth login and token refresh actually use.
 #
-# Established by scanning the strings of the claude binary (v2.1.221, 285MB):
-# api.anthropic.com appears 79 times. console.anthropic.com, sentry.io and
-# statsig.com appear zero times, and none of the three was ever observed in an
-# audit run either. All three came in with the thirteen domains inherited from
-# the claude-code devcontainer and none of them meets this bundle's definition,
-# so none of them is here. A project that turns out to need one can list it in
-# allowDomains, and it can move into a bundle once something demonstrates it is
-# required.
+# Established by scanning the strings of the claude binary (v2.1.274):
+# platform.claude.com appears 31 times, and the /oauth/authorize,
+# /oauth/code/callback and /v1/oauth/token endpoints are all under it.
+# console.anthropic.com - the name this bundle's comment used to record as
+# appearing zero times - is platform.claude.com's former name.
+#
+# Confirmed against the proxy access log: token refresh CONNECTs to
+# platform.claude.com:443 on roughly an 8 hour cycle (2026-09-15 17:42,
+# 09-16 01:40 and 09-16 09:37 all passed). Once enforce started denying it
+# (09-16 17:34, 09-17 14:19) the access token expired, and the re-login code
+# exchange that followed (09-17 14:49-15:03, 15 attempts) was denied under
+# the same name.
+#
+# Left out, with reasons:
+#   - releases.claude.com: 10 occurrences in the binary, never seen in the
+#     access log.
+#   - ab.chatgpt.com, sdmntprsouthcentralus.oaiusercontent.com: one
+#     occurrence each while measuring codex 0.154.0's `codex login` and
+#     `codex exec` under audit mode, but enforce has not been shown to break
+#     codex without them. oaiusercontent.com's A record (172.64.144.52) is
+#     the same destination excluded earlier as unable to name the service;
+#     it is now observed as a CONNECT target name, but the need is still
+#     unshown.
 readonly -a BUNDLE_ANTHROPIC=(
 	"api.anthropic.com"
+	"platform.claude.com"
 )
 
 # Where Claude Code fetches its own updates from. Found by running in audit mode
