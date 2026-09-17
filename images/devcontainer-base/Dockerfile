@@ -111,6 +111,14 @@ RUN printf '%s\n' \
          'AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys' \
        > /etc/ssh/sshd_config.d/60-authorized-keys.conf
 
+# node を proxy グループ (gid 13、Debian の base-passwd が固定で持つ番号。
+# sidecar の `user: "13:13"` と同じ) の補助グループに入れる。compose の
+# `group_add:` は PID 1 と docker exec 経由でしか効かず、上の sshd-inetd 経由の
+# ログインは sshd が /etc/group から補助グループを組み直すため 13 が落ちる
+# (実測: PID 1 は `Groups: 13 1000`、ssh 経由は `Groups: 1000`)。イメージ側で
+# 所属を持たせ、どちらの経路でも egress-proxy の access log を読めるようにする。
+RUN usermod -aG proxy ${USERNAME}
+
 # --- crit ---------------------------------------------------------------------
 # Claude Code 連携がコンテナ内の crit CLI とローカル daemon を前提とするため、
 # ホストではなくコンテナ側に置く。prod container はエージェントを含まないため
