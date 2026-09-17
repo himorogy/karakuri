@@ -457,6 +457,13 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - フックは proxy の環境変数（`http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY`）を持たない環境で走る。呼び出し側の環境にそれらがあってもフックへは渡らない
   （テスト: "proxy 変数はフックへ渡らない" / "否定対照: proxy 以外の環境変数はそのまま渡る"）
 
+### 25. `images/egress-proxy/tests/bake.test.sh` — `images/egress-proxy/bin/egress-proxy-bake`
+
+起源: `0035-egress-proxy-image`
+
+- `egress-proxy-bake` は、設定が `--check-config` を通らないとき非ゼロで終わり、ACL を書かない（テスト: "壊れた設定では非ゼロで終わり ACL を作らない"）
+- `egress-proxy-bake` が書く ACL は、同じ設定に対する `init-project-firewall.sh --print-proxy-acl` の出力と一致する。`mode` が `audit` のときだけ、allowlist 外の宛先を通す（テスト: "ACL は --print-proxy-acl の出力と一致する" / "audit では allowlist 外を通す設定になる" / "enforce では拒否のまま"）
+
 ## Unverified Promises
 
 ### C-2a — `未検証の約束 (テスト困難: CI の runtime-base ワークフローが、push 済みイメージを両アーキで smoke test する)`
@@ -527,6 +534,12 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - `anthropic` バンドルを選んだ構成では、Claude Code のログインと、その後のアクセストークンの更新が通る
 
+### C-3a — `未検証の約束 (テスト困難: CI の egress-proxy ワークフローが push 済みイメージで smoke test する)`
+
+起源: `0035-egress-proxy-image`
+
+- イメージは `squid` を非 root（uid 13）で起動する（B-b の同じ文の担い手が、0036 以降はこのイメージになる。ここでは 25 の行として置き、B-b は 0036 で担い手の交替を書く）
+
 ## 境界宣言
 
 ### 免責
@@ -556,6 +569,10 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - 上記の各ファイルが PATH 上に置かれ、実行可能であること
 - `core.hooksPath` が `/usr/local/share/git-hooks` を指すこと
 - `init-project-firewall.sh` が root 所有 755 で複製され、sudoers に無引数実行が登録されていること
+
+**C-3. `egress-proxy` イメージ**
+- `/usr/local/bin/egress-proxy-bake`
+- `/etc/squid/squid.conf`
 
 **D. ホストと利用側リポジトリへ配布されるテンプレート**
 - `host-tools/karakuri.sh` — シェルへ source する関数集
