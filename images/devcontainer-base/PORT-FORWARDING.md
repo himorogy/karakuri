@@ -93,7 +93,7 @@ Host devc-<your-alias>
 
 代償は、`Host devc-*` の 1 本では済まなくなることです。プロジェクトを増やすたびに、この形の `Host` ブロックを 1 つずつ足すことになります。
 
-`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../host-tools/karakuri.sh` から source する場合の隣です。入手方法は [docs/archive/host-tools-distribution.md](../../docs/archive/host-tools-distribution.md) を参照してください。
+`ProxyCommand` のパスは、ホスト側ツール一式を clone した場所に合わせてください。上の例は `karakuri.sh` を `~/.config/karakuri/.../host-tools/karakuri.sh` から source する場合の隣です。入手方法は [host-tools/README.md](../../host-tools/README.md) を参照してください。
 
 **ここに `karakuri-dock` とは書けません。** `ssh` は `ProxyCommand` を `/bin/sh -c` で起動するため、`karakuri.sh` が `source` で定義した関数はそこから見えません。同じ `dock.sh` の対話シェル側は `karakuri-dock -p <compose-project> [-b <broker-key>]` で呼べますが（利用者側に置く短い `dock` 関数の作り方は [example/README.md](../../example/README.md) の「dev の起動」を参照）、`ProxyCommand` は関数を経由できません。
 
@@ -234,7 +234,7 @@ win-dock() {
 }
 ```
 
-`dock.sh` と `karakuri-dock` では、リモートでの呼び出し方が非対称です。`dock.sh` は実行ファイルの絶対パス指定なので `ssh <windows-host> <dock.sh の絶対パス> ...` とそのまま書けますが、`karakuri-dock` は `karakuri.sh` が `source` で定義する関数なので、`ssh <host> <command>` の非対話・非ログイン経路には存在しません。`bash -lc '...'` を 1 つの引数としてリモートへ渡し（上の例のようにクォートを 2 段重ねます）、login shell として `~/.bash_profile`（[images/runtime-base/README.md](../runtime-base/README.md) 参照）を読ませて関数を見えるようにする必要があります（実機で確認済み）。この形はリモート側のシェルが単引用符を剥がすことに依存する二段構えで、実測した環境は Windows の OpenSSH の `DefaultShell` に Git Bash の `bash.exe` が設定されたものです。
+`dock.sh` と `karakuri-dock` では、リモートでの呼び出し方が非対称です。`dock.sh` は実行ファイルの絶対パス指定なので `ssh <windows-host> <dock.sh の絶対パス> ...` とそのまま書けますが、`karakuri-dock` は `karakuri.sh` が `source` で定義する関数なので、`ssh <host> <command>` の非対話・非ログイン経路には存在しません。`bash -lc '...'` を 1 つの引数としてリモートへ渡し（上の例のようにクォートを 2 段重ねます）、login shell として `~/.bash_profile`（[host-tools/README.md](../../host-tools/README.md) 参照）を読ませて関数を見えるようにする必要があります（実機で確認済み）。この形はリモート側のシェルが単引用符を剥がすことに依存する二段構えで、実測した環境は Windows の OpenSSH の `DefaultShell` に Git Bash の `bash.exe` が設定されたものです。
 
 転送が張れないときに「警告に留めて入る」が単純には成立しない点に注意してください。上の設定は `ExitOnForwardFailure yes` を持つため、転送先のポートが bind できない状態では `ssh devc-win-<your-project>` そのものが `Could not request local forwarding.` で失敗し、**入れません**。`karakuri-dock` 本体（`docker exec` で入る通常経路）が転送の失敗を警告に留められるのは、入る経路と転送が別プロセスだからです。1 ホップ経路は同じ ssh セッションなのでこの前提が無く、入る側だけを通すには `-o ClearAllForwardings=yes` で転送を外して繋ぎ直す必要があります。`win-dock` はこれを行っています。`ExitOnForwardFailure` を `no` に緩めて済ませないでください——それを外すと `karakuri-port-forward` が転送の失敗を検出できなくなります（転送が無いまま master だけ残り、成功したように見えます）。この関数は規約の吸収と同じ扱いで利用者側に置くもので、karakuri の配布物には入りません。
 

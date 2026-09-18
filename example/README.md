@@ -19,8 +19,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
 ホストの固定パス（`~/.config/<project>/`）に置く。
 
 `host-tools/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
-（詳細は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の
-「ホスト側ツールを入手する」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
+（詳細は [`host-tools/README.md`](../host-tools/README.md) の「入手」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
 手段が無くなるためで、clone なら手を加えれば `git status` に出る。
 
 ```
@@ -96,7 +95,7 @@ dotenvx をまとめて 1 コマンドにしているのは、`dotenvx` を `pnp
 `pnpm install --frozen-lockfile && pnpm <task>` を組み立てる（既定のタスクランナーは pnpm、
 `KARAKURI_PROD_INSTALL` / `KARAKURI_PROD_RUN` で上書きできる）。
 
-broker の標準は Bitwarden CLI（`host-tools/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.dev-broker/bw` のような PATH の外の固定パスに配置する（手順は [`images/runtime-base/README.md`](../images/runtime-base/README.md) の「broker 本体（bw）を用意する」。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
+broker の標準は Bitwarden CLI（`host-tools/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.dev-broker/bw` のような PATH の外の固定パスに配置する（手順は [`host-tools/README.md`](../host-tools/README.md) の「bw 本体を用意する」。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
 
 項目名は `env/<project>/shared/prod,env/<project>/prod`（共有 → 個人の順、カンマ区切りで複数項目をマージでき、同名キーは後勝ち）という規約で、以前はこれをプロジェクトごとのラッパースクリプトへ手で書いていたが、いまは `karakuri.sh` 内の `karakuri-broker-env` 関数がこの項目名を組み立てる。プロジェクトごとのラッパーはもう要らない。
 
