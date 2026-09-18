@@ -166,22 +166,26 @@ services:
     # base イメージの CMD は node なので、そのままだと即終了する。
     command: sleep infinity
 
-  # L7 egress proxy sidecar（packages/egress-guard/templates/proxy/ が実体、
-  # 据え方は packages/egress-guard/README.md の実現層の節）。firewall.json が
+  # L7 egress proxy sidecar（images/egress-proxy/ が実体、据え方は
+  # packages/egress-guard/README.md の実現層の節）。firewall.json が
   # 実現層 l7（既定）を選んでいる限り必須 — init-project-firewall.sh は
   # このサービス名を DNS で解決できることを前提に最終テーブルを組む。
   egress-proxy:
     build:
-      # dev と同じディレクトリ。Dockerfile が firewall.json を COPY するため。
+      # firewall.json を COPY するため、dev と同じディレクトリを context にする。
       context: .
-      dockerfile: proxy/Dockerfile
+      dockerfile_inline: |
+        FROM ghcr.io/himorogy/egress-proxy:1
+        COPY firewall.json /firewall.json
+        RUN egress-proxy-bake /firewall.json
+      # 浮動タグ :1 を追随させる。
       pull: true
 
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
     # 起動時から proxy（uid 13）で動かす。root から降格させようとすると
-    # cap_drop: [ALL] の下で失敗して落ちる（templates/proxy/Dockerfile 参照）。
+    # cap_drop: [ALL] の下で失敗して落ちる（images/egress-proxy/Dockerfile 参照）。
     user: "13:13"
 
     read_only: true

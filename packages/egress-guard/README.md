@@ -298,13 +298,31 @@ version 2 の設定は `layer` でファイアウォールの実現層を選べ�
 
 **`layer` の既定 `l7` を使うには、`egress-proxy` という名前の sidecar コンテナが要ります。** 立っていないと `init-project-firewall.sh` は最終テーブルを組む段で `egress-proxy` の名前解決に失敗し、非ゼロで終了して panic テーブル（loopback のみ許可）に落ちます。`l3` を明示した設定ではこの sidecar は不要です。
 
-雛形は `templates/proxy/`（`Dockerfile` と `squid.conf`）です。`templates/*.json` と同じ扱いで、プロジェクトの `.devcontainer/proxy/` へコピーしてください。完全な compose の書き方は `images/devcontainer-base/examples/docker-compose.yaml` の `egress-proxy` service を参照してください。`dev` 側に足すのは次の3つです。
+sidecar は配布イメージ [`ghcr.io/himorogy/egress-proxy`](../../images/egress-proxy/README.md) を使います。
+プロジェクトの compose に `dockerfile_inline` で次の3行を書いてください。
+
+```yaml
+services:
+  egress-proxy:
+    build:
+      dockerfile_inline: |
+        FROM ghcr.io/himorogy/egress-proxy:1
+        COPY firewall.json /firewall.json
+        RUN egress-proxy-bake /firewall.json
+```
+
+焼いてあるもの・タグ体系・リリース手順は [`images/egress-proxy/README.md`](../../images/egress-proxy/README.md) を参照してください。
+完全な compose の書き方は `images/devcontainer-base/examples/docker-compose.yaml` の `egress-proxy` service を参照してください。
+`dev` 側に足すのは次の3つです。
 
 - `depends_on: [egress-proxy]` — 名前解決の前提を満たす起動順
 - `HTTP_PROXY` / `HTTPS_PROXY`（大文字・小文字の両方。`curl` と `apt` は小文字しか読まない）、`no_proxy` / `NO_PROXY`（`localhost,127.0.0.1`。loopback 宛の内部通信まで proxy へ回さないため）、`NODE_USE_ENV_PROXY=1`（Node の `fetch` は既定で proxy 環境変数を読まない）
 - proxy のログを読むための named volume（[proxy のログを読む](#proxy-のログを読む)）
 
-**ACL と `mode` はイメージのビルド時に焼き込まれます。** `templates/proxy/Dockerfile` が `firewall.json` を読んで `--print-proxy-acl` の出力と `mode` をイメージに入れるため、`allowDomains` や `mode` を変えたら sidecar 側も再ビルドが要ります（`dev` と同じ操作で両方に反映されます）。実行中のコンテナに ACL を差し替える経路はありません。
+**ACL と `mode` はイメージのビルド時に焼き込まれます。**
+`dockerfile_inline` の `RUN egress-proxy-bake /firewall.json` が `firewall.json` を読んで `--print-proxy-acl` の出力と `mode` をイメージに入れるため、`allowDomains` や `mode` を変えたら sidecar 側も再ビルドが要ります（`dev` と同じ操作で両方に反映されます）。
+実行中のコンテナに ACL を差し替える経路はありません。
+`restart` で設定を再読込させたくなりますが、そうすると sidecar を落とすことが `firewall.json` の再読込になり、`dev` から 3128 番へ到達できる以上それはエージェントに届く操作面になります。
 
 **git を ssh で使っている場合、proxy 環境変数は効きません。** `ssh_config` に `HTTP_PROXY` を読む記述はないためです。`ProxyCommand` で `CONNECT` に載せるか、`url.https://github.com/.insteadOf` で https 経由へ書き換えてください（このリポジトリ自身は https + トークンで認証しているため、この機構は入れていません）。
 
