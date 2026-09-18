@@ -1,0 +1,62 @@
+#!/bin/sh
+# /usr/local/bin/egress-proxy-bake
+#
+# 利用側の dockerfile_inline から `RUN egress-proxy-bake /firewall.json` の
+# 形で呼ばれる。project の firewall.json から squid の ACL と mode を
+# イメージへ焼き込み、実行中のコンテナに ACL を差し替える経路を持たせない
+# (docs/guarantees.md B-b)。
+#
+# 出力先の2ファイル (allowed-domains.txt / squid.conf) はこのイメージの
+# Dockerfile で proxy:proxy 所有にしてある。呼び出し元は USER proxy のまま
+# ここへ来る (base イメージが USER proxy で終わっているため) ので、
+# ディレクトリの書き込み権限に頼らず、既存ファイルの中身を丸ごと
+# 置き換えることでのみ書き込む (ファイル自体の所有権があれば足りる)。
+# そのため rename ではなく既存ファイルへの truncate 書き込みを使う。
+set -eu
+
+SQUID_DIR="${EGRESS_PROXY_SQUID_DIR:-/etc/squid}"
+ALLOWED_DOMAINS_FILE="$SQUID_DIR/allowed-domains.txt"
+SQUID_CONF_FILE="$SQUID_DIR/squid.conf"
+
+usage() {
+	cat <<'EOF' >&2
+Usage: egress-proxy-bake <path-to-firewall.json>
+EOF
+}
+
+FIREWALL_JSON="${1:-}"
+
+if [ -z "$FIREWALL_JSON" ] || [ ! -f "$FIREWALL_JSON" ]; then
+	usage
+	exit 1
+fi
+
+# 非ゼロならここで `set -e` により、ACL にも squid.conf にも触れずそのまま
+# 非ゼロで終わる。
+init-project-firewall.sh --check-config --config "$FIREWALL_JSON"
+
+# --print-proxy-acl の出力を一時ファイルへ書き切ってから既存の
+# allowed-domains.txt を置き換える。生成の途中で失敗しても (`set -e` で
+# ここへ来る前に止まる)、置き換え前の allowed-domains.txt には触れない。
+tmp_acl="$(mktemp)"
+trap 'rm -f "$tmp_acl"' EXIT
+
+init-project-firewall.sh --print-proxy-acl --config "$FIREWALL_JSON" >"$tmp_acl"
+cat "$tmp_acl" >"$ALLOWED_DOMAINS_FILE"
+
+MODE="$(jq -r '.mode // "enforce"' "$FIREWALL_JSON")"
+
+if [ "$MODE" = "audit" ]; then
+	# sed -i は同じディレクトリに一時ファイルを作ってから rename するため
+	# ディレクトリの書き込み権限を要求する。ここは squid.conf 自身の所有権
+	# だけで書けるようにしたいので、変換結果を別ファイルへ書いてから
+	# squid.conf の中身を丸ごと置き換える。
+	tmp_conf="$(mktemp)"
+	sed 's/^http_access deny !allowed$/http_access allow !allowed/' "$SQUID_CONF_FILE" >"$tmp_conf"
+	cat "$tmp_conf" >"$SQUID_CONF_FILE"
+	rm -f "$tmp_conf"
+
+	# sed の対象行がなくなっていれば置換は静かに何もせず終わる。それを
+	# 「audit 化できた」と取り違えないよう、書き換わったことを確かめる。
+	grep -q '^http_access allow !allowed$' "$SQUID_CONF_FILE"
+fi

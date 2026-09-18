@@ -21,12 +21,13 @@
 #             echo/printf で外へ出す文字列に記号を混ぜることは許さない
 #
 # 対象は runtime-base の出荷物、そこへ焼き込まれる packages/env-guard の
-# 出荷物、および devcontainer-base がイメージへ COPY する bin/ である。
-# スキャナと pre-commit hook は packages/env-guard へ移したが、イメージに
-# 入るコードであることは変わらないので lenient のままにしてある。
+# 出荷物、および devcontainer-base・egress-proxy がイメージへ COPY する
+# bin/ である。スキャナと pre-commit hook は packages/env-guard へ移したが、
+# イメージに入るコードであることは変わらないので lenient のままにしてある。
 # packages/env-guard/README.md は npm パッケージとして他 org の手元へ渡るので
-# templates/ と host-tools/ と同じ strict 扱いにする。devcontainer-base/bin/ も他 org の
-# イメージへ渡るコードなので、同じ理由で lenient に含めてある。
+# templates/ と host-tools/ と同じ strict 扱いにする。devcontainer-base/bin/ と
+# egress-proxy/bin/ も他 org のイメージへ渡るコードなので、同じ理由で
+# lenient に含めてある。
 #
 # images/devcontainer-base の文書が参照しているのは docs/secure-publish.md と
 # 自分自身の節番号なので、受け取った側が辿れないという問題が起きない
@@ -185,7 +186,8 @@ BAKED_LIST="$(list_files \
 	"$IMG_DIR/shims" \
 	"$GUARD_DIR/bin" \
 	"$GUARD_DIR/hooks" \
-	"$IMG_DIR/../devcontainer-base/bin")" || exit 1
+	"$IMG_DIR/../devcontainer-base/bin" \
+	"$IMG_DIR/../egress-proxy/bin")" || exit 1
 mapfile -t BAKED_FILES <<<"$BAKED_LIST"
 
 check "イメージに入るコードに裸の記号が無い / 出力文字列に記号が無い" scan_lenient "${BAKED_FILES[@]}"

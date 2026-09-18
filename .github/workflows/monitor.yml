@@ -275,7 +275,23 @@ jobs:
             fi
           fi
 
-          # --- 4. devcontainer-base の固定値 ---
+          # --- 4. egress-proxy の固定値 ---
+          # egress-proxy イメージも @himorogy/egress-guard を npm から取得して
+          # 焼き込む。runtime-base の Dockerfile とは別ファイルの ARG なので、
+          # 独立に監視する（片方だけ上げて他方を忘れる事故を拾う）。
+          EGRESS_PROXY_DOCKERFILE="images/egress-proxy/Dockerfile"
+
+          if [ -f "$EGRESS_PROXY_DOCKERFILE" ]; then
+            TEXT="${TEXT}*egress-proxy*\n"
+
+            EGRESS_PROXY_GUARD_PACKAGE="@himorogy/egress-guard"
+            EGRESS_PROXY_GUARD_PINNED=$(sed -n "s/^ARG EGRESS_GUARD_VERSION=//p" "$EGRESS_PROXY_DOCKERFILE" | head -1)
+            EGRESS_PROXY_GUARD_LATEST=$(npm view "$EGRESS_PROXY_GUARD_PACKAGE" version 2>/dev/null) || EGRESS_PROXY_GUARD_LATEST=""
+            report_lag_no_advisory "$EGRESS_PROXY_GUARD_PACKAGE" "$EGRESS_PROXY_DOCKERFILE" "ARG EGRESS_GUARD_VERSION" \
+              "$EGRESS_PROXY_GUARD_PINNED" "$EGRESS_PROXY_GUARD_LATEST"
+          fi
+
+          # --- 5. devcontainer-base の固定値 ---
           # crit は無認証でリポジトリを読め agent_cmd を起動しうるため、
           # latest 追従にはせず ARG で pin している（侵害リリースの自動流入を
           # 防ぐ。egress-guard の pin と同じ判断）。golang builder の版も
