@@ -538,7 +538,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 起源: `0035-egress-proxy-image`
 
-- イメージは `squid` を非 root（uid 13）で起動する（B-b の同じ文の担い手が、0036 以降はこのイメージになる。ここでは 25 の行として置き、B-b は 0036 で担い手の交替を書く）
+- イメージは `squid` を非 root（uid 13）で起動する（B-b の同じ文の担い手はこのイメージである）
 
 ## 境界宣言
 
@@ -558,7 +558,6 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 **B. `@himorogy/egress-guard`（npm パッケージ）**
 - `scripts/init-project-firewall.sh` — egress firewall の適用 CLI
 - `templates/firewall.json` / `firewall.audit.json` / `firewall.example.json` — 利用者がコピーする設定テンプレート
-- `templates/proxy/Dockerfile` / `templates/proxy/squid.conf` — L7 sidecar のイメージと設定
 
 **C-1. `runtime-base` イメージへ焼かれたコードの振る舞い**
 - `/usr/local/bin/prod-entrypoint.sh`、`secrets-ingest.sh`、`git-askpass`、`git-auth-check`、`git-credential-gh-token`、`karakuri-context`、`env-guard-scan`、`init-project-firewall.sh`

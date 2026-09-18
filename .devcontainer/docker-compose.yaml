@@ -3,22 +3,8 @@
 # 1 点だけ違う。
 #
 # - **base の参照規律**（Dockerfile の N-1 pin コメントを参照）。浮動タグを
-#   使わないため、雛形の dev.build.pull: true もここでは不要 — pin を上げたときに
-#   `docker compose build --pull` すればよい
-#
-# egress-proxy は雛形と同じ据え方 — `.devcontainer/proxy/` は
-# packages/egress-guard/templates/proxy/ の**写し**であり、参照ではない。
-# このリポジトリは雛形の配布元そのものだが、だからこそ作業樹を直接参照しない。
-# dev の N-1 pin と同じ理由で、開発環境が未リリースの雛形に依存すると、雛形を
-# 壊したときに直す環境も一緒に壊れる。写しの版は proxy/Dockerfile の acl
-# ステージが npm install する egress-guard の版に揃え、上げるときは base の pin
-# と同時に上げる。作業樹の雛形との差分は意図したものなので、揃っていなくても
-# 異常ではない。
-#
-# 参照（シンボリックリンク）にしない技術的な理由もある。Docker は build
-# context を tar で送る際にシンボリックリンクを辿らず、リンクのまま入れる。
-# context（.devcontainer/）の外を指すリンクはビルダー側で切れ、
-# `COPY proxy/squid.conf` が not found になる。
+#   使わないため、雛形の `dev` / `egress-proxy` の build.pull: true はどちらも
+#   ここでは不要 — pin を上げたときに `docker compose build --pull` すればよい
 #
 # Compose はプロジェクトごとにユーザー定義ネットワーク（<name>_default）を
 # 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
@@ -134,28 +120,29 @@ services:
     # ベースイメージの CMD は node なので、そのままだと即終了する。
     command: sleep infinity
 
-  # L7 egress proxy sidecar。proxy/ は packages/egress-guard/templates/proxy/
-  # の写し（冒頭コメントを参照）。firewall.json が実現層 l7（既定）を
-  # 選んでいる限り必須 — init-project-firewall.sh はこのサービス名を DNS で
-  # 解決できることを前提に最終テーブルを組む。
+  # L7 egress proxy sidecar。images/egress-proxy/README.md の使い方どおり
+  # dockerfile_inline で組む。firewall.json が実現層 l7（既定）を選んでいる
+  # 限り必須 — init-project-firewall.sh はこのサービス名を DNS で解決できる
+  # ことを前提に最終テーブルを組む。
+  #
+  # FROM は digest pin。このリポジトリは egress-proxy イメージの配布元自身
+  # であり、浮動タグは使わない（dev の Dockerfile の pin コメントと同じ規律）。
+  # 初版のため、まだ N-1 の判断は無い。
   egress-proxy:
     build:
-      # dev と同じディレクトリ。proxy/Dockerfile が firewall.json を COPY する
-      # ため、firewall.json はここ（.devcontainer/ = context root）にある必要が
-      # ある。
+      # dev と同じディレクトリ。firewall.json はここ（.devcontainer/ = context
+      # root）にある必要がある。
       context: .
-      dockerfile: proxy/Dockerfile
-      # proxy/Dockerfile の FROM は node:24-bookworm-slim / debian:bookworm-slim
-      # という浮動タグ。dev の Dockerfile とは違い pin していないため、こちらは
-      # pull を有効にする（雛形 images/devcontainer-base/examples/docker-compose.yaml
-      # の egress-proxy と同じ）。
-      pull: true
+      dockerfile_inline: |
+        FROM ghcr.io/himorogy/egress-proxy:1.0.0@sha256:99c49a3c3b26ac1b972985e80f47766d4b9301f97ff2ae7348239bc86b472551
+        COPY firewall.json /firewall.json
+        RUN egress-proxy-bake /firewall.json
 
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
     # 起動時から proxy（uid 13）で動かす。root から降格させようとすると
-    # cap_drop: [ALL] の下で失敗して落ちる（templates/proxy/Dockerfile 参照）。
+    # cap_drop: [ALL] の下で失敗して落ちる（images/egress-proxy/Dockerfile 参照）。
     user: "13:13"
 
     read_only: true
