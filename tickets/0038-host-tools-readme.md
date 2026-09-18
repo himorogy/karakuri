@@ -10,6 +10,7 @@ targets:
   - example/README.md
   - host-tools/broker-bitwarden.sh
   - host-tools/loopback-setup.sh
+  - docs/archive/runtime-base-migration.md # 拡張: 移す節を指す参照がここにも残っていた
 verify:
   - pnpm test
   - ~/.claude/skills/kuda/scripts/kuda-md-reflow --check host-tools/README.md
@@ -126,6 +127,7 @@ dev の節は現状 `example/README.md` と `PORT-FORWARDING.md` が散文を持
 - `example/README.md` 22〜23 行目（「ホスト側ツールを入手する」）と 99 行目（「broker 本体（bw）を用意する」）
 - `host-tools/broker-bitwarden.sh` 30 行目付近（bw の入手手順の正典を runtime-base README → `host-tools/README.md`）
 - `host-tools/loopback-setup.sh` 77 行目付近（対応 OS の出典を runtime-base README → `host-tools/README.md`）
+- `docs/archive/runtime-base-migration.md` 154 行目（「ホスト側ツールを入手する」への参照 → `host-tools/README.md` の「入手」。レビューで見つかった分。参照行だけを直す）
 
 ### archive の削除
 

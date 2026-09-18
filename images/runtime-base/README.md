@@ -206,28 +206,7 @@ prod container は `/home/node` が tmpfs で毎回空であり、`~/.wrangler` 
 fallback 資格情報が存在しえない。したがって必要な secret を欠いたコマンドは、下流の認証失敗
 として顕在化する。加えて entrypoint が取込件数 ≥ 1 と各値の非空を検証している。
 
-### ホストにも同名の shim がある（`_dotenvx`）
-
-コンテナ側の3本とは別に、ホストで実行するコマンド向けの shim が
-[`host-tools/shims/_dotenvx`](../../host-tools/shims/_dotenvx) に1本だけある。置く名前は
-`_dotenvx` だけで、素の `dotenvx` は置かない。ホストには karakuri 所有の dotenvx 実体が無いため
-素の名前に対応する実体を持てず、素の名前で置くと無関係なプロジェクトのグローバル dotenvx まで
-覆ってしまう。
-
-上の「`pnpm run` の内側では効かない」制約はホスト側にも当てはまるが、答えはこの `_dotenvx` と
-いう名前そのものである。プロジェクトの `package.json` の呼び出しを `_dotenvx` へ揃えておけば、
-`pnpm run` が `node_modules/.bin` を PATH 先頭に積んでも、そちらは `dotenvx` という名前の解決
-にしか勝てず、`_dotenvx`（karakuri 側の shim）は迂回されない。
-
-**意味論もコンテナ側と反転する。** コンテナ側は鍵ファイルの不在を「このコンテナは秘密を要らない」
-として素通しするが（上記「素通しは fail-open ではない」）、ホスト側の不在は「渡されるはずの鍵が
-渡っていない」ことを意味するので、必ず落とす。通す条件は `DOTENV_PRIVATE_KEY*` が environ に
-あることだけで、出どころは問わない（下記 `karakuri-run` 経由でも、CI が secrets から直接渡した
-鍵でも通る）。鍵の値は検査も出力もしない。
-
-Windows 用に [`_dotenvx.cmd`](../../host-tools/shims/_dotenvx.cmd) も同梱する。`pnpm` の
-run-script は Windows で cmd.exe から起動するため、拡張子の無いスクリプトは PATH に置いても
-解決されない。配るのは `.cmd` の1本だけで、PowerShell 用の `.ps1` は配らない。
+ホストで実行するコマンド向けの shim（`_dotenvx`）は [`host-tools/README.md`](../../host-tools/README.md) にある。
 
 ---
 
@@ -357,6 +336,17 @@ ref 名として解決されうる。すると**可変 ref の内容が immutabl
 現行の git（2.39.5 で実測）はこのケースを意図的に無視するため、この検査は多重防御である。
 `rev-parse` の解決規則は git の版と実装に属するもので、このイメージが管理できる範囲にない。
 
+**解決済みの commit sha は必ず記録される。**
+
+```
+prod-entrypoint: GIT_REF=main resolved to 4f3a9c2b8e1d7a05...
+```
+
+同じ内容が `/run/prod-ref` にも書かれる（tmpfs、sha は秘匿情報ではないので 0644）。
+可変 ref を許した場合、これが「何をデプロイしたか」の唯一の記録になる。`logging: driver: none`
+なので `docker logs` では取れないが、アタッチしている手元には出る。対話二段構えで
+`docker exec` して入った場合は `cat /run/prod-ref` で読む。
+
 ### 復元の三段階は重複ではない
 
 - `checkout --detach --force` … HEAD を移す
@@ -402,6 +392,12 @@ pnpm 自身が出力で機構を明言する — 前者は `Packages are copied 
 store は `/src` の中にあるため `clean -xdff` の対象になる。entrypoint は checkout → clean →
 `exec "$@"` の順で `pnpm install` はその後に走るため、同一 run 内で消えることはない。
 **この順序を入れ替えてはならない。**
+
+> **`pnpm install` の後に `git clean -xdff` を打たないこと。** store は `/src/.pnpm-store` に
+> あるので `clean` の対象になり、`node_modules` ごと消える。後続の処理が依存を失って失敗する。
+> entrypoint 内の順序（checkout → clean → コマンド）は正しいので、**利用者が渡すコマンドの
+> 中で `clean` を挟んだ場合だけ**の話。復旧は `pnpm install` のやり直しだが、store の
+> 再ダウンロードが要る。
 
 ### なぜ `/src` を使い捨てるのか
 
@@ -604,366 +600,7 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 
 ## 使い方
 
-### ホスト側ツールを入手する
-
-ホスト側ツール（`karakuri.sh` の関数群と `dock.sh`）が動作する OS は macOS と
-Windows(Git Bash / MSYS2) の 2 つ。Linux はホストとしては対象にしない（コンテナの中は
-Linux だが、ホストツールをそこで動かすことはない）。
-
-置き場所で二つに分けてある。ホストの固定パスへ置くものは [`host-tools/`](../../host-tools/)、
-プロジェクトのリポジトリへ置くもの（`env-guard.conf` / `env-guard.yml`）は
-[`templates/project/`](./templates/project/) にある。
-
-`host-tools/` 側は、**このリポジトリをタグ指定で clone して使う**。ファイルを個別にコピーしない。
-
-```sh
-git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git ~/.config/karakuri
-```
-
-タグは `host-tools-v*` 系列を使う。イメージのリリースタグ（`runtime-base-v*`）とは別系列で、
-ホスト側ツールだけの版を表す。`host-tools/` は `images/runtime-base/` の外にあり、
-イメージのビルドコンテキストに入らないため、ここが変わってもイメージの中身は変わらない。
-系列を分けておくと、ホスト側ツールの修正がイメージの再リリースを引き起こさない。
-
-`~/.config/karakuri/host-tools` を `PATH` に足すか、そこから
-`~/.local/bin/` へ symlink を張る。どちらでもよい。Windows(Git Bash) では `~` は
-`git clone` を打った Git Bash 上のホームディレクトリで、パスは Unix 形式
-（`/c/Users/<name>/...`）になる。`C:\Users\...` 形式ではないので、Windows のエクスプローラ
-等で確認したパスをそのまま貼らないこと。
-
-コピーではなく clone にするのは、コピーが増えるほど「手元のものが正本と同じか」を
-確かめる手段が無くなるためである。clone なら手元にあるのは正本と同じ git オブジェクトで、
-書き換えれば `git status` に出る。secret の搬送路が黙って書き換わっていないことを、
-追加の道具なしに確認できる。
-
-更新は明示的に行う。`git pull` で追随させない — 未リリースの状態が prod の経路に
-入りうる。
-
-```sh
-git -C ~/.config/karakuri fetch --tags
-git -C ~/.config/karakuri log --oneline HEAD..origin/main -- host-tools/
-git -C ~/.config/karakuri checkout host-tools-v<new>
-```
-
-clone 先は dev workspace の外に置くこと。**禁じているのは置き場所であって、git リポジトリの
-中にあること自体ではない。** dev workspace はホストに bind mount されており、そこに置いた
-ラッパーを dev container の LLM エージェントが書き換えれば、人間がホストで実行する際に
-正規 broker の前後で鍵を複製できる。この clone は bind mount されないので、その経路が無い。
-
-呼び出し規約は [`host-tools/karakuri.sh`](../../host-tools/karakuri.sh) にある。
-`.zshrc` / `.bashrc` からこれを `source` すると、broker 項目の命名・compose project 名・
-対話 prod 作業の二段構えといった規約が関数として入る。設定として残るのは
-`KARAKURI_BW_BIN` / `KARAKURI_PROD_COMPOSE` のような、環境そのものを指すものだけになる。
-関数の一覧と推奨 alias はファイル末尾のコメントにある。
-
-この `source` で `host-tools/shims`（上記の `_dotenvx`）も `PATH` の末尾へ自動で加わる。
-別途 `PATH` へ足す手順は要らない — **導入手順の行数はここで増えない。**
-
-Windows(Git Bash) では `~/.bash_profile` に書く。無ければ作り、直接
-`source ~/.config/karakuri/host-tools/karakuri.sh` を書くか、
-`~/.bashrc` にまとめる習慣があるなら `~/.bash_profile` から `~/.bashrc` を source する
-定番の形にしてそちらへ書く。
-
-`~/.bashrc` に直接書いて済ませないのは 2 つ理由がある。ひとつは、Git Bash は login shell
-として起動するため `~/.bash_profile` は bash 自身の仕様で必ず読まれるのに対し、
-`~/.bashrc` が読まれるかは `/etc/profile` / `/etc/bash.bashrc` の構成次第で、版や配布形態
-によって変わりうること。もうひとつは、`ssh <host> bash -lc "..."` の経路
-（[`PORT-FORWARDING.md`](../devcontainer-base/PORT-FORWARDING.md) の「mac から Windows 上の
-コンテナへ入る」が使う）は login shell なので `~/.bash_profile` を読むが、`~/.bashrc` は
-非対話 bash では原則読まれないこと。`~/.bashrc` にしか書いていないと、ローカルの対話シェル
-では動くのにリモート実行だけ関数が見つからないという食い違いが起きる。
-
-`KARAKURI_ORG` もあるが、こちらは**任意**である。リポジトリは `<org>/<repo>` の 1 引数で
-渡せるので、扱う org が複数あって一つに定まらないなら設定しない。設定するのは「ほとんどの
-場合これ」という org がある場合だけで、その場合もスラッシュ付きで渡せば上書きできる。
-
-`karakuri-help` が関数の一覧と、環境変数の説明・現在値を出す。
-
-SSH port forwarding を使う場合は、これに加えて `~/.ssh/config` の設定と、初回 1 回の
-`karakuri-loopback install` が要る。前者の書き方と、`ProxyCommand` に `host-tools/dock.sh`
-の絶対パスを書く理由は
-[`images/devcontainer-base/PORT-FORWARDING.md`](../devcontainer-base/PORT-FORWARDING.md) にある。
-後者は `/etc/hosts` の管理ブロックを用意し、macOS では loopback エイリアスを再起動を跨いで
-張り直す LaunchDaemon を入れる。**`karakuri.sh` が提供する関数のうち、`sudo` を要求するのは
-`karakuri-loopback` だけである。** Windows(Git Bash) では `karakuri-loopback` は何も変更せず
-終了する（macOS 専用であることを示す 1 行を出すだけ）。mac から Windows 上のコンテナへ入る
-1 ホップの経路（下記 PORT-FORWARDING.md 参照）では、`LocalForward` は mac 側の 1 段だけで
-済むため、この段自体が要らない。
-
-### broker 本体（bw）を用意する
-
-標準の broker は Bitwarden CLI を呼ぶ。**bw 本体は karakuri の配布物ではない**ので、clone には
-含まれない。別途取得する。
-
-**native ビルドを取る。`npm install -g @bitwarden/cli` は使わない。** broker はホスト側で最も
-特権的な部品で、マスターパスワードを握り、全鍵束を stdout に出す。その取得経路は狭く・固定的に
-保つ。npm 版はインストール時に postinstall が走り、依存木が深く、update で黙って版が動く。
-nodenv 等の環境では node の版ごとのインストールになるため、node を切り替えた瞬間に消える。
-native 版は単一ファイルで、版は自分で上げるまで動かない。
-
-```sh
-# bitwarden/clients の Releases（cli-v* タグ）から取得する
-VER=<version>
-curl -LO "https://github.com/bitwarden/clients/releases/download/cli-v${VER}/bw-macos-${VER}.zip"
-
-# Releases ページに併記されている値と突き合わせる。ここを飛ばすなら native を選ぶ意味がない
-shasum -a 256 "bw-macos-${VER}.zip"
-
-# PATH の外へ置く（理由は下記）
-mkdir -p ~/.dev-broker
-unzip "bw-macos-${VER}.zip" && mv bw ~/.dev-broker/bw && chmod +x ~/.dev-broker/bw
-
-# 初回実行が隔離属性で止まる場合
-xattr -d com.apple.quarantine ~/.dev-broker/bw
-
-# アカウントへのログイン（初回のみ）
-~/.dev-broker/bw login
-```
-
-Linux なら `bw-linux-<VER>.zip`、Windows なら `bw-windows-<VER>.zip` を同じ手順で。
-
-**`~/.dev-broker/` は PATH に入れない。** `~/.local/bin` のような PATH 上のディレクトリへ置くと、
-PATH 順で先に来たもの（バージョンマネージャの shim など）が勝ちうる。broker が呼ぶバイナリは
-固定的であってほしいので、PATH から外し、絶対パスで名指しする。
-
-```sh
-export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
-```
-
-名指しを必須にしておくと、設定漏れが「別の bw が黙って呼ばれる」ではなく「bw が見つからない」
-として現れる。失敗の出方が変わるだけに見えるが、前者は気づく契機が無い。
-
-vault の同期は broker が取得のたびに 1 回行うので、`bw sync` を手で打つ必要はない
-（`BROKER_BW_SYNC=0` で無効化できる）。鍵束をどう Bitwarden 側に置くか — Secure Note の
-項目名の付け方、共有分と個人分の分け方 — は
-[`host-tools/broker-bitwarden.sh`](../../host-tools/broker-bitwarden.sh) の冒頭にある。
-
-### ホストで実行するコマンドへ鍵を渡す（`karakuri-run`）
-
-Electron・ネイティブ拡張を持つプロジェクトなど、ホストでしかビルドできないプロジェクト向けの
-入口。dev container も prod も経由しない。
-
-```sh
-karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]
-```
-
-`-b` は必須で、`karakuri-dev-inject` / `karakuri-dock` の `-p` のような既定の供給元へは落ちない
-（この関数は compose project を持たないため）。`-e` は `dev`（既定）か `prod`。`--` を終端子とし、
-それ以降は一切解釈せず逐語で実行する。
-
-broker の項目名は既存の dev 注入・prod 起動と同じ規約で組み立つので、鍵の置き場を増やす必要は
-ない — `dev` は共有 → 全プロジェクト共通の個人 → プロジェクト個人の3項目、`prod` は共有 →
-プロジェクトの2項目。
-
-```sh
-karakuri-run -b acme -- dotenvx run -f .env -- pnpm build
-karakuri-run -b acme -e prod -- dotenvx run --strict -f .env.prod -- pnpm build
-```
-
-**`-e prod` の限界。** `prod-run.sh` が持つ隔離（tmpfs のコンテナで走り、workspace を mount
-しない）はホストでのビルドでは構造的に取れない。`-e prod` を選ぶと、本番の私鍵がホストの
-ビルド木全体に入り、その木で走る全ての依存・postinstall・ビルドツールの子プロセスから読める。
-既定を `dev` にし、`prod` を明示的に打たせるのはこの代償を意識させるためである。
-
-### CI から `_dotenvx` を解決する
-
-利用側の `package.json` を `_dotenvx` へ揃えると、その `package.json` のスクリプトは CI からも
-呼ばれる。CI の runner には karakuri も shim も無いので、`_dotenvx` を名前解決させるには
-shim のディレクトリを `PATH` へ足す。鍵は環境変数（secrets）で渡せば、そのまま通る
-（`_dotenvx` は鍵の出どころを問わない）。
-
-```sh
-# タグ指定の浅い clone で shim のディレクトリだけ取り、PATH へ足す
-git clone --depth 1 --branch host-tools-v1.0.0 https://github.com/himorogy/karakuri.git "$RUNNER_TEMP/karakuri"
-export PATH="$RUNNER_TEMP/karakuri/host-tools/shims:$PATH"
-```
-
-Windows runner でも同じレシピが成立する。パスは runner のテンポラリディレクトリ
-（`$RUNNER_TEMP` 等）を使い、POSIX 固定のパスは書かない。`_dotenvx.cmd` の同梱が前提になる
-（上記「ホストにも同名の shim がある」参照）。
-
-**npm の `bin` として配る形は採らない。** そうすればラッパーを手書きせずに済むが、関門が
-`node_modules`、すなわち workspace の内側へ降りる。`node_modules/.bin` は PATH 先頭なので、
-守るべき相手（dev container 内のエージェント等）が書ける場所へ私鍵の関門を移すことになる。
-
-**移行時に CI が赤くなりうる。** `_dotenvx` へ揃えると、鍵が供給されていない CI ジョブは
-「鍵が無い」として明示的に落ちる。それまでは dotenvx が rc=0 で暗号文を値として注入していた
-ため成功に見えていただけである。落ちたら既存の鍵未供給が顕在化したものであって、この経路が
-壊したのではない。
-
-**限界。** 手で export した古い鍵での実行は、shim からは CI の正当な供給と区別できないため
-通る。閉じる手段は shim の側には無い（利用側の穴を検査するのは別チケットの範囲）。
-
-**利用側が受け入れのために必要な作業。**
-
-- `package.json` の dotenvx 呼び出しを `_dotenvx` へ揃える
-- ホスト実行の入口を `karakuri-run` 経由にする
-- ワークツリーに置いていた dotenvx の私鍵ファイルを消す
-- CI に shim ディレクトリの `PATH` を足す（上記レシピ）
-
-### compose ファイルを置く
-
-`compose.prod.yaml` はプロジェクトごとに 1 枚持つ。置き場所をまとめて
-`KARAKURI_PROD_COMPOSE_DIR` に指すと、prod 系の関数が repo 名から `<repo>.yaml` を引く。
-
-```
-~/.config/prod-compose/
-  <repo>.yaml
-```
-
-`host-tools/compose.prod.yaml` をこの名前でコピーし、`image:` の digest を実在のものへ
-差し替える（`karakuri-image-digest <tag>` が貼り付け用の行を出す）。**ホスト側ツールのうち、
-編集を伴うコピーになるのはこのファイルだけ**である。他は clone のまま使う。
-
-全プロジェクトで 1 枚を共有する形も `KARAKURI_PROD_COMPOSE` として残してあるが、その場合は
-イメージの更新が全プロジェクトへ一斉に適用される。分けておくと更新のタイミングをプロジェクト
-ごとに選べる。`karakuri-check-image <tag>` は、ディレクトリ運用のとき中の全ファイルを検査
-するので、どのプロジェクトが古い digest のままかは一覧で分かる。
-
-**この置き場所は git リポジトリにしてよい。ただしどの devcontainer にも mount しないこと。**
-このファイルは prod の防御（`read_only`・tmpfs の記法・`cap_drop`・`init: true`）を宣言して
-いる当のもので、エージェントが到達できる場所へ置けば、防御そのものが書き換え対象になる。
-git 管理の目的は改竄検知ではなく、digest をいつ上げたかの履歴を残すことにある — 到達不能で
-あれば検知は要らない。
-
-逆に、mount した時点でこの構成は「書き換えられないもの」から「書き換えられたら diff に出る
-もの」へ落ちる。`git diff` は後から見れば分かるという性質であって、書き換えを止めはしない。
-エージェントが書き換えて commit すれば、人間がレビューしない限り正当な変更に見える。
-
-### prod でコマンドを実行する
-
-`compose.prod.yaml` は名前だけ見ると「プロジェクトのリポジトリに置くもの」に見えるが、
-`host-tools/` に入っているのが正しい。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、
-下記の起動コマンド例のとおりホストの固定パス（`~/.config/<project>/`）に置く。これは
-clone から `~/.config/<project>/` へコピーする（`image:` の digest を差し替えるため、
-ここだけは編集を伴うコピーになる）。
-
-`karakuri.sh` を source していれば、下の生の呼び出しは `karakuri-prod-run` が組み立てる。
-以下は、その下で実際に何が渡っているかを示したものである。
-
-```sh
-PROD_COMPOSE_FILE=~/.config/acme/compose.prod.yaml \
-PROD_BROKER="$HOME/.local/bin/acme-broker" \
-BROKER_KEYCHAIN_SERVICE=acme-prod-env \
-GIT_REPO=https://github.com/acme/app.git \
-GIT_REF=<40 桁の commit sha> \
-~/.local/bin/prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy
-```
-
-**`dotenvx` を最上位に置くこと。** `prod-run.sh pnpm deploy` の形にすると、`pnpm run` が
-`node_modules/.bin` を PATH 先頭に積んでローカルの dotenvx が shim に勝ち、鍵が注入されない
-（上の「`pnpm run` の内側では効かない」を参照）。
-
-### `GIT_REF` は完全な commit sha を強制する
-
-40 桁 hex 以外は **entrypoint が拒否**する。ラッパー側でも早期に落とすが、権威は entrypoint
-にある（ラッパーを迂回しても効く）。
-
-危険を理解した上でブランチ運用を選ぶなら、明示的に外す。
-
-```sh
-PROD_ALLOW_MUTABLE_REF=1 GIT_REF=main ... prod-run.sh ...
-```
-
-既定を拒否にしている理由は、**失敗の性質が違う**こと。
-
-- **ブランチ名** — 押した瞬間に何をデプロイしたか分からず、main が動くので後から再現もできない。
-  事故は「見たことのないものを流した」になる
-- **sha** — 古いかもしれないが既知で再現可能。事故は「一度は見たものの古い版を流した」になる
-
-dev が書いたコードを prod が実行する経路の唯一のゲートは deploy 前の人間のレビューで、
-その前提は「レビューした対象と流したものが一致する」こと。ブランチ名はその一致を切る。
-
-**解決済みの commit sha は必ず記録される。**
-
-```
-prod-entrypoint: GIT_REF=main resolved to 4f3a9c2b8e1d7a05...
-```
-
-同じ内容が `/run/prod-ref` にも書かれる（tmpfs、sha は秘匿情報ではないので 0644）。
-可変 ref を許した場合、これが「何をデプロイしたか」の唯一の記録になる。`logging: driver: none`
-なので `docker logs` では取れないが、アタッチしている手元には出る。対話二段構えで
-`docker exec` して入った場合は `cat /run/prod-ref` で読む。
-
-署名タグは検証機構が未実装なので、現状はリスクだけが増える。実装するまで `PROD_ALLOW_MUTABLE_REF`
-が唯一の逃げ道で、これは検証を伴わない。
-
-依存インストールはコマンド側の責務になる。`clean -xdff` が `node_modules` も消すため。
-
-```sh
-... prod-run.sh sh -c 'pnpm install --frozen-lockfile \
-      && dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy'
-```
-
-`sh -c` で複数コマンドを繋ぐ場合も、`dotenvx` は `pnpm` の外側に置く。
-
-> **`pnpm install` の後に `git clean -xdff` を打たないこと。** store は `/src/.pnpm-store` に
-> あるので `clean` の対象になり、`node_modules` ごと消える。後続の処理が依存を失って失敗する。
-> entrypoint 内の順序（checkout → clean → コマンド）は正しいので、**利用者が渡すコマンドの
-> 中で `clean` を挟んだ場合だけ**の話。復旧は `pnpm install` のやり直しだが、store の
-> 再ダウンロードが要る。
-
-### 環境変数を確認する
-
-```sh
-... prod-run.sh dotenvx get -f .env.prod
-... prod-run.sh sh -c 'dotenvx run --strict --no-armor -f .env.prod -- printenv | sort'
-```
-
-いずれもファイルを作らない。dev container からは書けるが読めない（値の追加は
-`dotenvx set FOO bar -f .env.prod` で秘密鍵なしに行える）。
-
-### 対話シェルが要る場合
-
-stdin が secret の搬送路なので、`run` の対話 TTY とは両立しない。必要な場合は二段構えにする。
-
-```sh
-<broker> | docker compose -f compose.prod.yaml run -dT --rm prod sleep infinity
-docker exec -it <container> bash
-```
-
-entrypoint 完了後なので `/run/secrets` は注入済み。退出後の `docker stop` 忘れが運用上の
-唯一のリスクになる。
-
----
-
-## broker
-
-秘密鍵を保管し、認可を経て dotenv 形式で stdout に出すコマンド。**契約さえ満たせば実装は問わない。**
-
-1. dotenv 形式（`KEY=value` 行）を stdout に出力する
-2. 保管中の実体が不揮発ストレージ上で平文でない（OS キーチェーン等の暗号化ストアに置く）。
-   **復号鍵そのものが平文でローカルに常駐する方式は契約違反**
-3. 取得時に OS レベルの認可（パスワード / Touch ID プロンプト）が働く
-4. 非対話環境で認可を得られない場合は非ゼロ終了する
-
-参照実装は [`host-tools/broker-macos-keychain.sh`](../../host-tools/broker-macos-keychain.sh)（macOS の
-`security` CLI）。セットアップ手順はファイル冒頭のコメントにある。Windows 側の標準は未決で、
-1Password / Bitwarden CLI への統一も候補に残っている。stdin 注入方式なので、broker はコマンド
-1 個の差し替えで移行でき、compose と entrypoint は無変更で済む。
-
-**鍵束は git 管理しない。** 束の中身（`GH_TOKEN` / `CLOUDFLARE_API_TOKEN` 等）は運用者ごとに
-異なる個人資格情報であり、リポジトリ共有物ではない。git 管理する暗号化物は `.env.prod`
-（dotenvx、プロジェクト共有）だけ。プロジェクト共有の `DOTENV_PRIVATE_KEY_PROD` は各運用者が
-自分の鍵束に格納し、運用者間の受け渡しはチームのパスワードマネージャで行う。
-
-> **Keychain の「常に許可」について。** 一度許可すると以降は無確認でアクセスできるようになるが、
-> その状態では**同一ホストユーザーの権限で走る任意のプロセス**が認証プロンプトなしに秘密鍵を
-> 取り出せる。dev container からは直接呼べない（Docker socket が無く、コンテナ内 UID もホスト
-> ユーザーとは別）が、コンテナ脱獄・ホスト連携機能の突破・dev が書いたホスト側スクリプトの
-> いずれかを越えれば決定的な穴になる。可能な限り「常に許可」は避け、都度確認または Touch ID
-> を選ぶこと。
-
-### `pipefail` は必須
-
-broker が認可失敗で非ゼロ終了しても、パイプの最終要素（docker）が 0 を返せばパイプ全体が
-成功扱いになる。secret が一切注入されないまま prod コマンドが走る、という最悪のケースを起動前に
-止めるため、起動ラッパーは `set -o pipefail` を必須とする。`zsh` は既定で有効だが、`sh` / `bash`
-では明示が要る。
-
-原因の切り分けには SIGPIPE を考慮する必要がある。docker が先に失敗して stdin を閉じると broker
-は書き込み中に SIGPIPE を受けて 141 で終了するため、素朴に「broker を先に見る」実装は真の原因を
-隠して「broker failed」と誤報告する。`prod-run.sh` はこれを区別している。
+ホスト側ツール（broker・`karakuri.sh` の関数群・`dock.sh`・prod の起動ラッパー）の入手と使い方は [`host-tools/README.md`](../../host-tools/README.md) にある。
 
 ---
 

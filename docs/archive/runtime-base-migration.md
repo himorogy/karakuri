@@ -151,7 +151,7 @@ rm ~/.config/<project>/.env.container
 broker を dev workspace の**外**へ置く。`templates/host/` にホストの固定パスへ置くものが
 まとまっているが、ここから個別にファイルをコピーするのではなく、karakuri をタグ指定で
 clone し、その中の `templates/host/` をそのまま使う。入手方法の詳細は
-[README の「ホスト側ツールを入手する」](./README.md#ホスト側ツールを入手する)を参照
+[host-tools/README.md](../../host-tools/README.md) の「入手」を参照
 （ここでは繰り返さない）。
 
 ```sh
