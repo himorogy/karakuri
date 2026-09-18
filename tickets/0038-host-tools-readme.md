@@ -1,5 +1,5 @@
 ---
-status: draft
+status: open
 type: docs
 base: main
 targets:
@@ -115,6 +115,7 @@ dev の節は現状 `example/README.md` と `PORT-FORWARDING.md` が散文を持
 877〜889 行（解決済み sha の記録）と 900〜904 行（`pnpm install` の後の `clean`）は entrypoint の話なので、「prod-entrypoint.sh」の節の下へ内容を変えずに寄せる。
 見出しは実行者に委ねる。
 この 2 段落の圧縮は runtime-base の束で行う。
+寄せ方に異論があれば PR レビューのインラインコメントで議論する。
 
 ### 参照の付け替え
 
@@ -138,7 +139,7 @@ dev の節は現状 `example/README.md` と `PORT-FORWARDING.md` が散文を持
 - `docs/conventions.md` の編集（追加する規則は無い。参照規則は既存の 2 段で足りる）
 - `docs/guarantees.md` の編集（README から台帳への片方向参照のみ）
 - `host-tools/` のコメント整理（0039 / 0040）。この枚で触るのは参照の 2 行だけ
-- `broker-macos-keychain.sh` / `broker-macos-keychain-set.sh` のテスト作成。台帳の未検証の約束に載っており、README には書かない。テストを足すかは裁可で決める
+- `broker-macos-keychain.sh` / `broker-macos-keychain-set.sh` のテスト作成。台帳の未検証の約束に載っており、README には書かない。テストを足すかは PR レビューで議論する
 - `example/README.md` と `PORT-FORWARDING.md` の本文の圧縮（それぞれの束）
 - runtime-base README に残す 2 段落の圧縮（runtime-base の束）
 - host-tools のタグの打ち直し（着地後に人間が行う）
