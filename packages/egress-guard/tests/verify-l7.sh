@@ -17,7 +17,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/.devcontainer/docker-compose.yaml"
-PROXY_TEMPLATE_DIR="$REPO_ROOT/packages/egress-guard/templates/proxy"
 PTR_HARNESS_SCRIPT="$SCRIPT_DIR/ptr-spoof-harness.py"
 
 # COMPOSE_FILE 自身の `name: karakuri-dev` と named volume (karakuri-claude-config
@@ -269,13 +268,14 @@ check_proxy_stop_breaks_egress() {
 }
 
 check_acl_absent_in_dev() {
-	# squid.conf 自体は探さない。egress-guard の package.json の files は
-	# templates を含み、runtime-base はグローバル install を消さないため、dev には
-	# $(npm root -g) 配下に templates/proxy/squid.conf (雛形そのもの) が存在
-	# しうる。この雛形の ACL は allowed-domains.txt という別ファイルへの参照で
-	# しかなく、そのファイル自体は proxy イメージのビルド時にしか作られない
-	# (templates/proxy/Dockerfile の acl ステージ) ので、dev には無い。ここで
-	# 確認したいのは、その生成物 (allowed-domains.txt) が dev から見えないこと。
+	# squid.conf 自体は探さない。squid.conf と allowed-domains.txt はどちらも
+	# images/egress-proxy/ 発のファイルで、egress-guard の npm パッケージの
+	# files (templates 配下は *.json だけ) には含まれないため、dev の
+	# $(npm root -g) 配下には元から現れない。ここで確認したいのは、
+	# firewall.json から egress-proxy-bake (images/egress-proxy/bin/
+	# egress-proxy-bake) が焼く allowed-domains.txt —— egress-proxy のイメージ
+	# ビルド時にしか作られない生成物 —— が、別コンテナである dev から見えない
+	# こと。
 	echo "== dev (エージェントのコンテナ) のファイルシステムに ACL (allowed-domains.txt) が無いか =="
 	if dc exec -T dev sh -c \
 		"find / -xdev -iname 'allowed-domains.txt' 2>/dev/null | grep -q ."; then
@@ -329,14 +329,25 @@ check_acl_needs_rebuild() {
 		return
 	fi
 
+	# egress-proxy の FROM は compose 自身から読む。ここで別に版を持たない。
+	local proxy_from
+	proxy_from="$(grep -o 'FROM ghcr.io/himorogy/egress-proxy:[^ ]*' "$COMPOSE_FILE" | head -n1)"
+	if [ -z "$proxy_from" ]; then
+		skip "ACL再ビルド" "$COMPOSE_FILE から egress-proxy の FROM 行を読めなかった"
+		return
+	fi
+
 	jq --arg d ".$marker" '.allowDomains += [$d]' \
 		"$REPO_ROOT/.devcontainer/firewall.json" >"$tmp_ctx/firewall.json"
-	mkdir "$tmp_ctx/proxy"
-	cp "$PROXY_TEMPLATE_DIR/squid.conf" "$tmp_ctx/proxy/squid.conf"
+	cat >"$tmp_ctx/Dockerfile" <<DOCKERFILE
+$proxy_from
+COPY firewall.json /firewall.json
+RUN egress-proxy-bake /firewall.json
+DOCKERFILE
 
 	local image="egress-guard-verify-l7-rebuild-check"
 	local build_out
-	if ! build_out="$(docker build -q -f "$PROXY_TEMPLATE_DIR/Dockerfile" -t "$image" "$tmp_ctx" 2>&1)"; then
+	if ! build_out="$(docker build -q -f "$tmp_ctx/Dockerfile" -t "$image" "$tmp_ctx" 2>&1)"; then
 		ng "変更後の firewall.json でのビルドが失敗した"
 		echo "$build_out" >&2
 		return
@@ -378,8 +389,27 @@ check_config_fail_closed() {
 	echo "== 設定が壊れていると fail-closed で起動しないか =="
 	local broken
 	broken="$(mktemp)"
+	# ソースの squid.conf ではなく、pin した版のイメージから直接取り出す —
+	# ソースは pin した版と一致するとは限らない。stderr は分ける — 混ざると
+	# compose 自身の警告・進捗が squid.conf の中身に入り、後段の破壊が
+	# 効いているのか元の内容が壊れているだけなのか区別できなくなる。
+	local err_file
+	err_file="$(mktemp)"
+	local base_conf
+	if ! base_conf="$(dc run -T --rm --entrypoint cat egress-proxy /etc/squid/squid.conf 2>"$err_file")"; then
+		ng "egress-proxy イメージから squid.conf を取り出せなかった"
+		cat "$err_file" >&2
+		rm -f "$broken" "$err_file"
+		return
+	fi
+	rm -f "$err_file"
+	if ! printf '%s\n' "$base_conf" | grep -q '^http_port 3128$'; then
+		ng "取り出した内容が squid.conf に見えない"
+		rm -f "$broken"
+		return
+	fi
 	{
-		cat "$PROXY_TEMPLATE_DIR/squid.conf"
+		printf '%s\n' "$base_conf"
 		echo "this_is_not_a_valid_squid_directive"
 	} >"$broken"
 	local out
@@ -440,7 +470,7 @@ wait_for_proxy_v6() {
 
 check_ptr_spoof() {
 	# design.md §2.23 必須要件2 (名前ベースACLにIPリテラルを持ち込ませない)。
-	# egress-proxy と同じ Dockerfile / squid.conf / firewall.json から、DNS の
+	# egress-proxy と同じビルド済みイメージ ($PROJECT-egress-proxy) から、DNS の
 	# 向き先だけ ptr-spoof-harness にした egress-proxy-v6 を、この検証のためだけの
 	# overlay で追加する (private レンジだと `deny to_private` が dstdomain の
 	# 判定より先に効いてしまい偽陽性になるため TEST-NET-3 を使う)。
@@ -460,9 +490,7 @@ check_ptr_spoof() {
 	cat >"$overlay" <<EOF
 services:
   egress-proxy-v6:
-    build:
-      context: $REPO_ROOT/.devcontainer
-      dockerfile: proxy/Dockerfile
+    image: ${PROJECT}-egress-proxy
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     user: "13:13"
@@ -499,7 +527,7 @@ EOF
 		docker compose -f "$COMPOSE_FILE" -f "$ISOLATION_OVERLAY" -f "$overlay" -p "$PROJECT" "$@"
 	}
 
-	if ! dcv6 up -d --build egress-proxy-v6 ptr-spoof-harness; then
+	if ! dcv6 up -d egress-proxy-v6 ptr-spoof-harness; then
 		ng "PTR偽装検証用のサービスを起動できなかった"
 		dcv6 logs --no-log-prefix egress-proxy-v6 ptr-spoof-harness >&2 2>&1 || true
 	else

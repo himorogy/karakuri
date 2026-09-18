@@ -1,5 +1,13 @@
 # @himorogy/egress-guard
 
+## 0.5.0
+
+### Minor Changes
+
+- **L7 sidecar の雛形 `templates/proxy/Dockerfile` と `templates/proxy/squid.conf` を削除した。** sidecar は配布イメージ `ghcr.io/himorogy/egress-proxy` になり、利用側は雛形をコピーする代わりに `dockerfile_inline` で `FROM ghcr.io/himorogy/egress-proxy:1` を書いて `egress-proxy-bake` を呼ぶ。配布物が減るため Minor とする。
+
+  **移行手順:** `templates/proxy/` をコピーして使っている場合、README の「L7 sidecar を用意する」節を参照して `dockerfile_inline` へ切り替える。
+
 ## 0.4.0
 
 ### Minor Changes
