@@ -27,7 +27,7 @@
 #
 #   bw 本体の取得手順（native 版を推奨する理由、GitHub Releases からの入手と
 #   ハッシュ照合、PATH の外への固定パス配置）は karakuri リポジトリの
-#   images/runtime-base/README.md にある「broker 本体（bw）を用意する」節が
+#   host-tools/README.md にある「bw 本体を用意する」節が
 #   正典であり、ここでは繰り返さない。同じ手順を二箇所に書くと、どちらかを
 #   直したときにもう片方だけ古いまま残るということが起きる。
 #

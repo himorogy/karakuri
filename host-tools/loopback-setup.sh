@@ -74,7 +74,7 @@ HOSTS_BAK="/etc/hosts.karakuri.bak"
 CONF_BAK="${CONF}.bak"
 
 # 対応 OS は macOS と Windows(Git Bash) の 2 つで、Linux は対象にしない
-# （images/runtime-base/README.md）。非対応の Linux を含めないので、
+# （host-tools/README.md）。非対応の Linux を含めないので、
 # 「Darwin かどうか」の二値だけで足り、非 Darwin は Windows だけになる。
 #
 # lo0 の alias と、それに依存する /etc/hosts の管理ブロックは macOS 固有の
