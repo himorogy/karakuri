@@ -72,6 +72,7 @@ allowlist の変更をエージェントに頼むときは
 
 ## 使い始める
 
+- **devcontainer をホストで使う** — [`DEVCONTAINER.md`](./DEVCONTAINER.md) にホスト側のセットアップからコンテナ起動までの手順があります
 - **新しいプロジェクトに入れる** — [`images/devcontainer-base/examples/`](./images/devcontainer-base/examples)  
 の 4 ファイルを `.devcontainer/` にコピーし、`firewall.json` を書く
 - **既存の devcontainer を載せ替える** — [`docs/archive/devcontainer-base-migration.md`](./docs/archive/devcontainer-base-migration.md)。

@@ -19,7 +19,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
 ホストの固定パス（`~/.config/<project>/`）に置く。
 
 `host-tools/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
-（詳細は [`host-tools/README.md`](../host-tools/README.md) の「入手」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
+（詳細は [`host-tools/README.md`](../host-tools/README.md) の「初回インストール」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
 手段が無くなるためで、clone なら手を加えれば `git status` に出る。
 
 ```

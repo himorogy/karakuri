@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: docs
 base: main
 targets:
@@ -11,6 +11,9 @@ targets:
   - host-tools/broker-bitwarden.sh
   - host-tools/loopback-setup.sh
   - docs/archive/runtime-base-migration.md # 拡張: 移す節を指す参照がここにも残っていた
+  - host-tools/karakuri.sh # 拡張: PR レビューの指示で alias の例を README へ移す
+  - DEVCONTAINER.md # 拡張: PR レビュー中に人間が新設した devcontainer のセットアップ手順
+  - README.md # 拡張: DEVCONTAINER.md へのリンクを 1 行足す（PR レビューの指示）
 verify:
   - pnpm test
   - ~/.claude/skills/kuda/scripts/kuda-md-reflow --check host-tools/README.md
@@ -105,9 +108,13 @@ verify:
 | broker 950〜955（Keychain「常に許可」） | 落とす | keychain 固有。正本 `broker-macos-keychain.sh` 冒頭が同文を持つ |
 | pipefail 957〜968 | 節ごと落とす | broker 失敗で全体が非ゼロ、SIGPIPE の切り分けは `dev-inject.test.sh` / `prod-run.test.sh` が固定。起動ラッパーは配布物であり利用者は書かない |
 
-節の組み立て: 冒頭に「何のために」を 1 段落（host-tools が打ち消すもの = workspace 内に置いたラッパーをエージェントが書き換える経路と、コピーの版ずれ）→ 入手（clone・PATH・source・Windows・更新・`karakuri-help`）→ 機能の節: broker（契約 5 項・bw の用意・項目名）/ `karakuri-run` / `_dotenvx`（shim と CI）/ prod（compose の配置・`karakuri-prod-run` と `karakuri-prod-exec`・対話の二段構え・digest）/ dev（`karakuri-dev-inject` / `karakuri-dock` / `karakuri-port-forward` / `karakuri-loopback`）→ リリース（`host-tools-v*` タグを打つ。どのワークフローのトリガにも一致しないので CI は動かない）。
-各節は「何のために」→「どう動くか」（判定表で残すとした行だけ）→「保証」。
-dev の節は現状 `example/README.md` と `PORT-FORWARDING.md` が散文を持つので、ここでは 3 要素の最小形に留める（後の束がそちらの散文を落とすときの行き先になる）。
+節の組み立て（PR レビューの裁定で変更）: 4 部構成にする。
+(1) これは何か——host-tools が何であるか（ホストで動く配布単位で、鍵の搬送路とコンテナへの入口を担う）を先に述べ、置き場所の注意はその後に置く。
+(2) 同梱されているコマンドの概説——`karakuri-help` より少し説明的に、各コマンドが何を担うかを 1〜2 文ずつ。
+(3) 推奨の使い方——入手（clone・PATH・source・Windows・更新）と、alias の例（`karakuri.sh` 末尾の「推奨する alias の例」をここへ移し、`karakuri.sh` 側は README への参照 1 行にする）、bw の用意、prod と dev の手順。
+(4) 仕組みの概説と応用方法——broker の考え方（karakuri は Bitwarden CLI を標準の broker として採用しており、その利点を先に述べてから、契約を満たせば実装は問わないことと契約 5 項へ繋ぐ）、`_dotenvx` と CI、compose の置き場所と digest。
+各機能の説明は 3 要素（何のために → どう動くか → 保証）を保つ。
+dev の説明は現状 `example/README.md` と `PORT-FORWARDING.md` が散文を持つので、ここでは 3 要素の最小形に留める（後の束がそちらの散文を落とすときの行き先になる）。
 見出しの語と文体は実行者に委ねる。
 
 ### runtime-base README 側

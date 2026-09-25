@@ -1506,40 +1506,4 @@ FUNCS
 	return 0
 }
 
-# --- 推奨する alias の例 ---------------------------------------------------------
-#
-# 短い名前は利用者の側で付ける。下をそのまま .zshrc / .bashrc へ写せば、
-# これまでの短い名前のまま使える（alias は関数にも効き、引数もそのまま渡る）。
-#
-#   alias pf='karakuri-port-forward'
-#   alias dev-inject='karakuri-dev-inject'
-#   alias prod-run='karakuri-prod-run'
-#   alias prod-exec='karakuri-prod-exec'
-#   alias prod-base='karakuri-prod-base'
-#   alias prod-shell='karakuri-prod-shell'
-#
-# karakuri-dock は compose project 名・broker アイテムキー・ssh Host 別名・
-# service 名・workspace を引数で受け取るだけで、`<project>-dev` のような
-# 規約を組み立てない（この点だけは alias ではなく短い関数にする。alias は
-# 引数をそのまま渡す口しか持たず、`-p "$1-dev"` のような組み立てができない）。
-# 配らないのは、汎用的な `dock` という名前を利用者のシェルへ勝手に持ち込ま
-# ないため:
-#
-#   dock() { karakuri-dock -p "$1-dev" -b "$1" -H "devc-$1-dev" -w "/workspaces/$1" "${@:2}"; }
-#
-# bash に貼る場合、閉じ括弧の前の `;` は省略できない（zsh は省略できる）。
-#
-# 環境変数の設定例:
-#
-#   export KARAKURI_BW_BIN="$HOME/.dev-broker/bw"
-#   export KARAKURI_ORG=acme
-#   export KARAKURI_PROD_COMPOSE_DIR="$HOME/.config/acme/compose"   # <repo>.yaml を並べる
-#
-# 全プロジェクトで 1 枚を共有していた頃の書き方も残してある:
-#
-#   export KARAKURI_PROD_COMPOSE="$HOME/.config/acme/compose.prod.yaml"
-#
-# 各変数の意味・必須/任意・現在値は karakuri-help を実行して見ること
-# （ここに説明文を書くと、karakuri-help の説明文と 2 箇所を直す羽目になる。
-# KARAKURI_ORG の「複数 org を横断するなら設定しない」という注意も含めて
-# karakuri-help 側に一本化した）。
+# 推奨する alias の例と環境変数の設定例は host-tools/README.md にある。
