@@ -315,6 +315,8 @@
 - broker と下位の終了コードの扱いは `§15` と同一である（broker 単独失敗で全体が非ゼロ、SIGPIPE は症状として扱い、両方失敗なら両方の値を出す）
 - ref が40桁 hex でないとき、既定では docker を一度も起動せずに非ゼロ終了し、脱出口の環境変数を名指しする。権威は起動経路側にあるが、迂回されても閉じた側に倒れる形での早期フィードバックとして二重に検査している（テスト: "docker was not invoked when GIT_REF was rejected before launch"）
 - 脱出口を明示したときは、同じ ref でも警告を出したうえで実行を続け、成功時は 0 を返す
+- broker を呼ぶ前に、起動するイメージの取得を一度試みる。取得の出力が broker の認可プロンプトと同じ端末で重ならないようにするためである（テスト: "pull runs once, before the broker"）
+- その取得の失敗だけでは起動を止めない。起動できるかどうかは後続の起動が決める（テスト: "a failed pull does not stop the run"）
 
 ### 17. `host-tools/tests/broker-bitwarden.test.sh` — `host-tools/broker-bitwarden.sh`
 
