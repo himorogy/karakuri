@@ -16,7 +16,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
 `images/runtime-base/templates/project/` はプロジェクトのリポジトリへ置くもの。
 `compose.prod.yaml` は名前だけ見るとプロジェクトのリポジトリに置くものに見えるが、
 `host-tools/` にある。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、下記のとおり
-ホストの固定パス（`~/.config/<project>/`）に置く。
+ホストの固定パス（`~/.config/prod-compose/`）に置く。
 
 `host-tools/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
 （詳細は [`host-tools/README.md`](../host-tools/README.md) の「初回インストール」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる

@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: refactor
 base: main
 targets:
@@ -39,10 +39,11 @@ example 側は「読んだ人がそのまま写して起動できる実 digest�
 ### 変えるもの
 
 1. `example/Dockerfile` / `example/docker-compose.yaml` / `example/docker-compose.prod.yaml` を削除する
-2. `example/README.md` が削除する 3 ファイルを指している箇所を、正本のパスへ向け直す。該当は 3 箇所
+2. `example/README.md` が削除する 3 ファイルを指している箇所を、正本のパスへ向け直す。該当は 3 箇所。あわせて、prod の compose の置き場所を古い書き方で残している 1 箇所を推奨配置にそろえる（PR レビューで追加）
    - 冒頭の対応表（9〜11 行付近）。「本ディレクトリ」の列が成り立たなくなるので、正本・コピー先・役割の 3 列にする。dev のイメージと compose の正本は `images/devcontainer-base/examples/`、prod の compose の正本は `host-tools/compose.prod.yaml`
    - 「`docker-compose.prod.yaml` に設定済み」（131 行付近。`init: true` の所在）→ `host-tools/compose.prod.yaml`
    - 「本ディレクトリの `docker-compose.yaml` に反映済み」（184 行付近）→ `images/devcontainer-base/examples/docker-compose.yaml`
+   - 「推奨配置」節の本文「ホストの固定パス（`~/.config/<project>/`）に置く」（19 行付近）→ 同じ README の配置図と対応表に合わせて `~/.config/prod-compose/`
 3. `images/runtime-base/tests/template-sync.test.sh` を `images/runtime-base/tests/prod-compose-template.test.sh` へ改名し、中身をテンプレート側の検査だけに縮める
    - 残すのは「`host-tools/compose.prod.yaml` の image がプレースホルダのまま」の検査。テスト名 "テンプレートの image はプレースホルダのまま" は変えない
    - この検査に検知能力があることを否定対照（実 digest を持つ版をその場で作って落ちることを確かめる）で持つ
@@ -62,7 +63,7 @@ example 側は「読んだ人がそのまま写して起動できる実 digest�
 
 ### やらないこと
 
-- `example/README.md` の本文の圧縮・文体の整理（root / example の束）。このチケットで触るのは上の 3 箇所だけ
+- `example/README.md` の本文の圧縮・文体の整理（root / example の束）。このチケットで触るのは上の 4 箇所だけ
 - `DEVCONTAINER.md` と `example/README.md` の役割の整理。両者は相互リンクなしに並存しており、重なりは「dev の起動」付近だけ（root / example の束）
 - `example/` のディレクトリ名の変更
 - `images/devcontainer-base/examples/` と `host-tools/compose.prod.yaml` の中身
