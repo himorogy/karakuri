@@ -26,6 +26,6 @@ bash "$SCRIPT_DIR/shipped-symbols.test.sh"
 
 bash "$SCRIPT_DIR/distributed-file-modes.test.sh"
 
-# example/ の compose と配布テンプレートの compose が一致することの検査。
-# 二枚が別々に存在するのは意図的だが、片方だけを直せてしまう。
-bash "$SCRIPT_DIR/template-sync.test.sh"
+# 配布テンプレート (host-tools/compose.prod.yaml) の image 指定が
+# プレースホルダのままであることの検査。
+bash "$SCRIPT_DIR/prod-compose-template.test.sh"
