@@ -144,6 +144,13 @@ if ! [[ "$GIT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
 	fi
 fi
 
+# --- 取得（broker を呼ぶ前に済ませる） ------------------------------------------
+# compose の pull 進捗の描画が broker の認可プロンプトの行を上書きするため
+# （実機観測、Docker Compose v5.3.1）、broker を呼ぶより前にここで取得する。
+# 終了コードは見ない。取得は進捗を出し切らせるための前段であり、失敗しても
+# 後続の run が同じ取得を試みてそこで正しく失敗する。
+docker compose -f "$PROD_COMPOSE_FILE" pull prod || true
+
 # --- 起動 ---------------------------------------------------------------------
 # secret は broker の stdout → パイプ → `docker compose run` の stdin →
 # entrypoint という経路だけを流れる。ここでは一切 echo せず、secret の

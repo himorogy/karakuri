@@ -37,8 +37,17 @@ mkdir -p "$FAKE_BIN_DIR"
 # そのまま 1 行にするので、スペースを含む引数が誤って分割されていないかを
 # 行の内容そのもので確認できる）。標準入力はまるごとファイルへ落とす。
 # 終了コードは FAKE_DOCKER_EXIT_CODE で制御する。実 docker には一切触れない。
+#
+# `pull` の回は記録先を分ける。既存の argv / stdin / env の記録が
+# 起動の回だけを指す前提を保つため。
 cat >"$FAKE_BIN_DIR/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
+if [ "${4:-}" = "pull" ]; then
+	echo "pull" >>"${FAKE_CALL_LOG_FILE:?}"
+	printf '%s\n' "$@" >"${FAKE_DOCKER_PULL_ARGV_FILE:?}"
+	exit "${FAKE_DOCKER_PULL_EXIT_CODE:-0}"
+fi
+echo "run" >>"${FAKE_CALL_LOG_FILE:?}"
 printf '%s\n' "$@" >"${FAKE_DOCKER_ARGV_FILE:?}"
 printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_DOCKER_ENV_FILE:?}"
 cat >"${FAKE_DOCKER_STDIN_FILE:?}"
@@ -47,10 +56,14 @@ FAKE_DOCKER
 chmod +x "$FAKE_BIN_DIR/docker"
 
 # --- フェイク broker ------------------------------------------------------------
+# いずれも呼ばれたこと自体を FAKE_CALL_LOG_FILE へ追記する。取得
+# （フェイク docker の `pull` の回）との呼び出し順序をこの1つのログで見る。
+#
 # 成功ケース: 決まった dotenv ペイロードを出力して 0 で終了する。
 BROKER_OK="$WORKDIR/broker-ok"
 cat >"$BROKER_OK" <<'FAKE_BROKER_OK'
 #!/usr/bin/env bash
+echo "broker" >>"${FAKE_CALL_LOG_FILE:?}"
 printf 'FOO=bar\nBAZ=qux\n'
 FAKE_BROKER_OK
 chmod +x "$BROKER_OK"
@@ -59,6 +72,7 @@ chmod +x "$BROKER_OK"
 BROKER_FAIL="$WORKDIR/broker-fail"
 cat >"$BROKER_FAIL" <<'FAKE_BROKER_FAIL'
 #!/usr/bin/env bash
+echo "broker" >>"${FAKE_CALL_LOG_FILE:?}"
 echo "fake broker: authorization denied" >&2
 exit 7
 FAKE_BROKER_FAIL
@@ -71,6 +85,7 @@ chmod +x "$BROKER_FAIL"
 BROKER_141="$WORKDIR/broker-141"
 cat >"$BROKER_141" <<'FAKE_BROKER_141'
 #!/usr/bin/env bash
+echo "broker" >>"${FAKE_CALL_LOG_FILE:?}"
 echo "fake broker: killed by SIGPIPE (simulated)" >&2
 exit 141
 FAKE_BROKER_141
@@ -96,6 +111,9 @@ reset_env() {
 	export FAKE_DOCKER_ARGV_FILE="$WORKDIR/argv.$$.$_case_seq"
 	export FAKE_DOCKER_STDIN_FILE="$WORKDIR/stdin.$$.$_case_seq"
 	export FAKE_DOCKER_ENV_FILE="$WORKDIR/env.$$.$_case_seq"
+	export FAKE_DOCKER_PULL_EXIT_CODE=0
+	export FAKE_DOCKER_PULL_ARGV_FILE="$WORKDIR/pull-argv.$$.$_case_seq"
+	export FAKE_CALL_LOG_FILE="$WORKDIR/calls.$$.$_case_seq"
 }
 
 # run_case <argv...> — 現在 export 済みの環境と、PATH 先頭のフェイク docker
@@ -271,6 +289,52 @@ else
 	ng "docker did not receive MSYS_NO_PATHCONV=1 (got: $(cat "$FAKE_DOCKER_ENV_FILE" 2>/dev/null))"
 fi
 
+# --- 取得: broker より先に 1 回だけ呼ばれる -------------------------------------
+echo "pull runs once, before the broker"
+reset_env
+run_case true
+
+calls="$(cat "$FAKE_CALL_LOG_FILE" 2>/dev/null)"
+pull_count="$(printf '%s\n' "$calls" | grep -cx 'pull')"
+first_call="$(printf '%s\n' "$calls" | head -n1)"
+if [ "$pull_count" -eq 1 ] && [ "$first_call" = "pull" ]; then
+	ok "pull runs once, before the broker"
+else
+	ng "pull runs once, before the broker (log: $calls)"
+fi
+
+if [ -f "$FAKE_DOCKER_PULL_ARGV_FILE" ]; then
+	for expected in compose -f "$BASE_COMPOSE_FILE" pull prod; do
+		if grep -qxF -- "$expected" "$FAKE_DOCKER_PULL_ARGV_FILE"; then
+			ok "pull argv contains '$expected'"
+		else
+			ng "pull argv is missing '$expected'"
+		fi
+	done
+else
+	ng "pull was never invoked (no pull argv file)"
+fi
+
+# --- 取得の失敗は起動を止めない -------------------------------------------------
+echo "a failed pull does not stop the run"
+reset_env
+export FAKE_DOCKER_PULL_EXIT_CODE=1
+
+run_case true
+
+if [ "$CASE_RC" -eq 0 ]; then
+	ok "a failed pull does not stop the run"
+else
+	ng "a failed pull does not stop the run (exit $CASE_RC, stderr: $CASE_STDERR)"
+fi
+
+calls="$(cat "$FAKE_CALL_LOG_FILE" 2>/dev/null)"
+if printf '%s\n' "$calls" | grep -qx 'broker' && printf '%s\n' "$calls" | grep -qx 'run'; then
+	ok "broker and docker run still execute after a failed pull"
+else
+	ng "broker or docker run did not execute after a failed pull (log: $calls)"
+fi
+
 # --- GIT_REF が 40 桁 hex でない (既定): 早期に拒否される ---------------------
 #     entrypoint 側が権威であり拒否するようになったため、ラッパー側も
 #     docker を起動する前に同じ既定で早期に落とす。
@@ -291,7 +355,7 @@ case "$CASE_STDERR" in
 *) ng "rejection message did not mention PROD_ALLOW_MUTABLE_REF (stderr: $CASE_STDERR)" ;;
 esac
 
-if [ -f "$FAKE_DOCKER_ARGV_FILE" ]; then
+if [ -f "$FAKE_DOCKER_ARGV_FILE" ] || [ -s "$FAKE_CALL_LOG_FILE" ]; then
 	ng "docker was invoked even though GIT_REF was rejected before launch"
 else
 	ok "docker was not invoked when GIT_REF was rejected before launch"
