@@ -2,13 +2,13 @@
 
 dev container には LLM エージェントが常駐するため信頼しない。prod container は人間が明示的に起動し、prod の秘匿情報は broker → stdin → コンテナ内 tmpfs の経路だけを流れる（設計の全体像は `docs/archive/prod-secret-isolation-design.md`）。
 
-本ディレクトリのファイルとコピー先の対応:
+正本とコピー先の対応:
 
-| 本ディレクトリ | コピー先 | 役割 |
+| 正本 | コピー先 | 役割 |
 | --- | --- | --- |
-| `Dockerfile` | `<repo>/.devcontainer/Dockerfile` | dev イメージ（devcontainer-base + egress-guard 設定） |
-| `docker-compose.yaml` | `<repo>/.devcontainer/docker-compose.yaml` | dev container の定義 |
-| `docker-compose.prod.yaml` | `~/.config/<project>/compose.prod.yaml` | prod container の定義（配布テンプレートのコピー） |
+| [`images/devcontainer-base/examples/Dockerfile`](../images/devcontainer-base/examples/Dockerfile) | `<repo>/.devcontainer/Dockerfile` | dev イメージ（devcontainer-base + egress-guard 設定） |
+| [`images/devcontainer-base/examples/docker-compose.yaml`](../images/devcontainer-base/examples/docker-compose.yaml) | `<repo>/.devcontainer/docker-compose.yaml` | dev container の定義 |
+| [`host-tools/compose.prod.yaml`](../host-tools/compose.prod.yaml) | `~/.config/prod-compose/<repo>.yaml` | prod container の定義（配布テンプレート） |
 
 ## 推奨配置
 
@@ -16,7 +16,7 @@ dev container には LLM エージェントが常駐するため信頼しない�
 `images/runtime-base/templates/project/` はプロジェクトのリポジトリへ置くもの。
 `compose.prod.yaml` は名前だけ見るとプロジェクトのリポジトリに置くものに見えるが、
 `host-tools/` にある。`prod-run.sh` の `PROD_COMPOSE_FILE` が指す先であり、下記のとおり
-ホストの固定パス（`~/.config/<project>/`）に置く。
+ホストの固定パス（`~/.config/prod-compose/`）に置く。
 
 `host-tools/` 側はファイルを個別にコピーせず、karakuri をタグ指定で clone してそのまま使う
 （詳細は [`host-tools/README.md`](../host-tools/README.md) の「初回インストール」）。コピーが増えるほど「手元のものが正本と同じか」を確かめる
@@ -128,7 +128,7 @@ karakuri-prod-shell app
 
 entrypoint 完了後に exec するため `/run/secrets` は注入済み。1 回の注入・clone でセッションを維持でき、その中で dryrun と適用を続けられる。退出後は端末 1 の Ctrl-C で終了・回収（`--rm`）。`sleep infinity` ではなく時間を切っておくと、stop 忘れがそのまま放置されない。
 
-土台を `run -d`（detach）で起動してはならない。stdin パイプをコンテナへ中継しているのは compose クライアント自身なので、detach した瞬間に搬送路が消える — broker は Broken pipe で死に、entrypoint は EOF を待って取込の行で永久に停止する（実測）。また Ctrl-C / `docker stop` が効くのは compose の `init: true`（`docker-compose.prod.yaml` に設定済み）が前提 — 無いと pid 1 = `sleep` がシグナルを無視する。
+土台を `run -d`（detach）で起動してはならない。stdin パイプをコンテナへ中継しているのは compose クライアント自身なので、detach した瞬間に搬送路が消える — broker は Broken pipe で死に、entrypoint は EOF を待って取込の行で永久に停止する（実測）。また Ctrl-C / `docker stop` が効くのは compose の `init: true`（`host-tools/compose.prod.yaml` に設定済み）が前提 — 無いと pid 1 = `sleep` がシグナルを無視する。
 
 ## dev の起動
 
@@ -181,7 +181,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
    影響しない）。狙いと外し方は
    [`images/runtime-base/README.md`](../images/runtime-base/README.md) の「git の認証（github.com）」
 
-dev compose 側の前提（本ディレクトリの `docker-compose.yaml` に反映済み）:
+dev compose 側の前提（`images/devcontainer-base/examples/docker-compose.yaml` に反映済み）:
 
 - `/run` が tmpfs（`tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]`）。**これが無いと `/run/secrets` はコンテナの writable layer = ホスト側の不揮発ディスクへ書かれ、平文廃止の意味が消える。** オプション無しの短縮形は root:root 所有になり node ユーザーが `/run/secrets` を作れない点も prod と同じ
 - `GIT_ASKPASS` と `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` / `GIT_CONFIG_VALUE_0` /
