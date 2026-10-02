@@ -645,9 +645,9 @@ karakuri-dev-inject() {
 # （PORT-FORWARDING.md 参照）ため、両方を渡すのは呼び出し側の役目である。
 #
 # `dock.sh` を対話シェルなしで 2 回呼ぶのは、コンテナの起動状態を変えずに
-# secret の有無だけを見る `--secrets-ok` と、起動だけを行う
-# `--ensure-running` の役目が分かれているため（`dock.sh` 冒頭のコメント
-# 参照）。
+# secret の有無だけを見る `--secrets-ok` と、project 全体の起動・
+# firewall 適用までを担う `--ensure-running` の役目が分かれているため
+# （`dock.sh` 冒頭のコメント参照）。
 #
 # port forwarding を張るかどうかは `ssh -G <host>` の実効設定に
 # `localforward` があるかで決める。config を自分で読み直さないので、

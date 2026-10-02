@@ -28,9 +28,15 @@ export MSYS_NO_PATHCONV=1
 #
 #   --stdio           ~/.ssh/config の ProxyCommand から呼ばれ、コンテナ内の
 #                      sshd を inetd モードで起動して stdin/stdout を SSH の
-#                      トランスポートにする（下の CONTRACT を参照）。secret
-#                      が未注入なら fail closed で exit 1 にする。
-#   --ensure-running   対象コンテナを起動して終了する。stdout に何も出さない。
+#                      トランスポートにする（下の CONTRACT を参照）。停止中、
+#                      または secret が未注入なら fail closed で exit 1 に
+#                      し、コンテナは起動しない（起動は --ensure-running の
+#                      役目）。
+#   --ensure-running   対象サービスと同じ compose project の全コンテナを
+#                      起動済み・firewall 適用済みの状態にする。揃っていな
+#                      ければ project 全体を再起動し、対象サービスへ
+#                      egress-guard の firewall を適用してから終了する。
+#                      stdout に何も出さない。
 #   --secrets-ok       secret が注入済みかを判定して exit 0 / 1 を返す。
 #                      stdout・stderr は空。コンテナの起動状態は変えない
 #                      （判定を打っただけで起動するのは呼び出し側から見て
@@ -107,9 +113,15 @@ Options:
 
 Modes:
   (default)         Open an interactive zsh session in the dev container.
+                    Fails (exit 1, no stdout) if the container is stopped --
+                    start it first with 'karakuri-dock -p <project> up'.
   --stdio           Run sshd over stdin/stdout for SSH ProxyCommand. Fails
-                    closed (exit 1, no stdout) when secrets are not injected.
-  --ensure-running  Start the container if it is not running, then exit.
+                    closed (exit 1, no stdout) when the container is
+                    stopped or secrets are not injected.
+  --ensure-running  Make the whole compose project ready: start every
+                    container in it, then apply the egress-guard firewall
+                    to the target service. No-op if everything is already
+                    up and injected.
   --secrets-ok      Exit 0 if secrets are injected, 1 otherwise. Never
                     starts the container and never prints anything.
 EOF
@@ -233,17 +245,97 @@ case "$mode" in
         ;;
 
     ensure-running)
-        if [[ "$running" != "true" ]]; then
-            docker start "$container" >/dev/null
+        # 対象サービスだけでなく、同じ compose project の全コンテナ
+        # （サービスラベルを問わない）を見る。sidecar が落ちていれば、
+        # 対象サービスだけ動いていても firewall 越しの経路が成立しない。
+        all_cids="$(docker ps -a -q \
+            --filter "label=com.docker.compose.project=${project}")" || {
+            echo "dock: 'docker ps' failed" >&2
+            exit 1
+        }
+
+        siblings=()
+        while IFS= read -r cid; do
+            [[ -n "$cid" && "$cid" != "$container" ]] || continue
+            siblings+=("$cid")
+        done <<<"$all_cids"
+
+        ready=0
+        if [[ "$running" == "true" ]]; then
+            ready=1
+            if [[ "${#siblings[@]}" -gt 0 ]]; then
+                sibling_states="$(docker inspect -f '{{.State.Running}}' "${siblings[@]}")" || {
+                    echo "dock: 'docker inspect' failed for the project's other containers" >&2
+                    exit 1
+                }
+                while IFS= read -r state; do
+                    [[ -n "$state" ]] || continue
+                    if [[ "$state" != "true" ]]; then
+                        ready=0
+                        break
+                    fi
+                done <<<"$sibling_states"
+            fi
         fi
+
+        if [[ "$ready" -eq 1 ]]; then
+            if ! docker exec -u root "$container" test -f /run/secrets/SSH_AUTHORIZED_KEYS >/dev/null 2>&1; then
+                ready=0
+            fi
+        fi
+
+        if [[ "$ready" -eq 1 ]]; then
+            exit 0
+        fi
+
+        # project 全体を止めてから作り直す。対象サービスを先に止めるのは、
+        # sidecar 無しで対象サービスだけが動く時間を作らないため。
+        docker stop "$container" >/dev/null || {
+            echo "dock: 'docker stop' failed for '${container}'" >&2
+            exit 1
+        }
+        if [[ "${#siblings[@]}" -gt 0 ]]; then
+            docker stop "${siblings[@]}" >/dev/null || {
+                echo "dock: 'docker stop' failed for the project's other containers" >&2
+                exit 1
+            }
+        fi
+
+        # 起動順はサービス名を決め打ちせず「対象サービス以外 → 対象
+        # サービス」で決める（host-tools はコンテナ名・サービス名を組み立
+        # てない方針）。
+        if [[ "${#siblings[@]}" -gt 0 ]]; then
+            docker start "${siblings[@]}" >/dev/null || {
+                echo "dock: 'docker start' failed for the project's other containers" >&2
+                exit 1
+            }
+        fi
+        docker start "$container" >/dev/null || {
+            echo "dock: 'docker start' failed for '${container}'" >&2
+            exit 1
+        }
+
+        # devcontainer.json の postStartCommand と同じスクリプトを同じ
+        # 条件（root・引数なし）で呼ぶ。再実行を想定した設計なので、CLI が
+        # 既に適用済みの上から重ねても害はない。
+        if ! docker exec -u root "$container" /usr/local/bin/init-project-firewall.sh >&2; then
+            echo "dock: applying the egress-guard firewall to '${container}' failed" >&2
+            exit 1
+        fi
+
         exit 0
         ;;
 
     # fd 1 IS the SSH transport -- see CONTRACT at the top of this file.
     # Anything printed to stdout here breaks the connection.
     stdio)
+        # 停止中のコンテナは起動しない。起動は --ensure-running
+        # （karakuri-dock up から呼ばれる）の役目にする。ここで
+        # `docker start` を呼ぶと、firewall 適用も secret 注入も伴わない
+        # dev container が起きてしまう。
         if [[ "$running" != "true" ]]; then
-            docker start "$container" >/dev/null
+            echo "dock: dev container for '${project}' is not running. Start it on the host with 'karakuri-dock -p ${project} up' (plus your usual -b/-H/-w), then reconnect" >&2
+            exit 1
         fi
 
         # Fail closed: 素通しすると sshd がパスワード認証へフォールバック
@@ -251,7 +343,7 @@ case "$mode" in
         # しない（非対話の ssh 接続の裏で黙って認可を求めると応答できない
         # まま固まる）。
         if ! docker exec -u root "$container" test -f /run/secrets/SSH_AUTHORIZED_KEYS >/dev/null 2>&1; then
-            echo "dock: secrets are not injected into '${container}'. Run 'karakuri-dock up -p ${project} -b <broker-key>' on the host, then reconnect" >&2
+            echo "dock: secrets are not injected into dev container for '${project}'. Run 'karakuri-dock -p ${project} up' on the host (plus your usual -b/-H/-w), then reconnect" >&2
             exit 1
         fi
 
@@ -282,9 +374,11 @@ case "$mode" in
         ;;
 
     shell)
+        # 停止中のコンテナは起動しない（--stdio と同じ理由。上のコメント
+        # 参照）。
         if [[ "$running" != "true" ]]; then
-            echo "Starting $container..." >&2
-            docker start "$container" >/dev/null
+            echo "dock: dev container for '${project}' is not running. Start it on the host with 'karakuri-dock -p ${project} up' (plus your usual -b/-H/-w), then reconnect" >&2
+            exit 1
         fi
 
         if [[ -n "$workspace" ]]; then
