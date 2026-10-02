@@ -1,5 +1,5 @@
 ---
-status: draft
+status: open
 type: feat
 base: main
 targets:
@@ -65,7 +65,7 @@ host-tools の公開面を縮め、互換性を壊す変更をまとめて `host
     「`dotenvx` は `pnpm` の外側に置く」の1行は、「scripts では `_dotenvx` と書く」に置き換える。
   - 「compose ファイルの置き場所と digest」の「`karakuri-image-digest <tag>` が貼り付け用の行を出す」を、「digest は配布元のレジストリで確かめて貼る」に置き換える。見出しはそのまま残す。
 - `example/README.md`
-  - デプロイ例（:86-97）を、package.json の scripts に `_dotenvx run --strict --no-armor -f .env.prod -- <cmd>` を書き、`karakuri-prod-run app <sha> <task>` で呼ぶ形に書き換える。
+  - デプロイ例（:86-94）を、package.json の scripts に `_dotenvx run --strict --no-armor -f .env.prod -- <cmd>` を書き、`karakuri-prod-run app <sha> <task>` で呼ぶ形に書き換える。
   - 「挙動と制約」の「dotenvx は `pnpm` の外側に置く」（:108）を、「scripts の中では `_dotenvx` と書く。素の `dotenvx` はプロジェクトのローカル版に負けて shim を通らない」に書き換える。
 
 ### やらないこと
