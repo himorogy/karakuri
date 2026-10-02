@@ -82,18 +82,23 @@ export KARAKURI_ORG=acme
 リポジトリは `<org>/<repo>` の 1 引数で渡せるので、org を毎回明示すれば済む。設定するのは
 「ほとんどの場合これ」という org がある場合だけで、その場合もスラッシュ付きで渡せば上書きできる。
 
-```sh
-karakuri-prod-exec app 1234567890abcdef1234567890abcdef12345678 \
-  sh -c 'pnpm install --frozen-lockfile && dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy'
+`package.json` の `scripts` に dotenvx 経由のタスクを用意する。
+
+```json
+"scripts": {
+  "deploy": "_dotenvx run --strict --no-armor -f .env.prod -- pnpm run deploy:task"
+}
 ```
 
-`karakuri-prod-exec` はタスクランナーを挟まず、渡した引数をそのまま prod へ渡す。install と
-dotenvx をまとめて 1 コマンドにしているのは、`dotenvx` を `pnpm` の外側に置く必要があるため
-（下記「挙動と制約」を参照 — `pnpm <task>` は `node_modules/.bin` を PATH の先頭に積むため、
-その内側で dotenvx を呼ぶと shim が素通りされる）。install をタスクランナー任せにしてよい
-（dotenvx を挟まない）タスクなら `karakuri-prod-run app <sha> <task>` が
-`pnpm install --frozen-lockfile && pnpm <task>` を組み立てる（既定のタスクランナーは pnpm、
-`KARAKURI_PROD_INSTALL` / `KARAKURI_PROD_RUN` で上書きできる）。
+```sh
+karakuri-prod-run app 1234567890abcdef1234567890abcdef12345678 deploy
+```
+
+`karakuri-prod-run app <sha> <task>` は install を挟んでからタスクランナー経由で `<task>` を
+実行し、`pnpm install --frozen-lockfile && pnpm <task>` を組み立てる（既定のタスクランナーは
+pnpm、`KARAKURI_PROD_INSTALL` / `KARAKURI_PROD_RUN` で上書きできる）。scripts の中で dotenvx を
+呼ぶときは `_dotenvx` と書く（下記「挙動と制約」を参照 — `pnpm <task>` は `node_modules/.bin` を
+PATH の先頭に積むため、素の `dotenvx` はプロジェクトのローカル版に負けて shim を通らない）。
 
 broker の標準は Bitwarden CLI（`host-tools/broker-bitwarden.sh`）。bw 本体は native ビルドを GitHub Releases から取得し、SHA-256 照合の上 `~/.dev-broker/bw` のような PATH の外の固定パスに配置する（手順は [`host-tools/README.md`](../host-tools/README.md) の「bw 本体を用意する」。これは karakuri の配布物ではないので clone には含まれない）。鍵束は Secure Note に dotenv 全文で格納し、チーム共有分（DOTENV_PRIVATE_KEY_PROD 等）は共有コレクションの項目、個人分（fine-scoped GH_TOKEN 等）は個人の項目に分ける。
 
@@ -105,7 +110,7 @@ broker は差し替え可能というのが契約（各テンプレート冒頭�
 
 - `GIT_REF` は完全な 40 桁 commit sha が必須（ブランチ名・タグは既定で拒否。`PROD_ALLOW_MUTABLE_REF=1` で警告付き続行）。
 - コンテナは `run --rm` で起動され、コマンド終了とともに削除される。名前付けや後始末は不要。
-- dotenvx は `pnpm` の外側に置く。`prod-run.sh pnpm deploy` の形だと `pnpm run` が `node_modules/.bin` を PATH 先頭に積み、ローカルの dotenvx がイメージの shim に勝って鍵が注入されない。
+- scripts の中では `_dotenvx` と書く。素の `dotenvx` はプロジェクトのローカル版に負けて shim を通らない。
 - `--strict --no-armor` は必須（復号失敗の顕在化と、外部サービスへの経路の遮断）。
 - GH_TOKEN は entrypoint が clone に使ったあと checkout 完了時点で破棄される。以降のコマンドから認証付きの git / gh 操作はできない（「決定した論点」3 参照）。
 - `/src` は tmpfs で、起動のたびに `GIT_REF` から clone し直す。実行結果はコンテナ削除とともに消える（成果物は deploy 先か `/out` へ）。
