@@ -161,7 +161,7 @@ listen ソケットを持たない経路なので、egress-guard の `firewall.j
 
 上の設定例に `StrictHostKeyChecking no` を入れているのはこのためです。通常は勧められない設定ですが、ここではトランスポートが `docker exec` のローカルパイプで、そもそもネットワーク経路が存在しません。接続先のすり替えには Docker へのアクセス権が必要で、それを持たれた時点でホスト鍵検証の有無は結果を変えません。
 
-### 公開鍵は dev-inject で注入する
+### 公開鍵は karakuri-dock up で注入する
 
 公開鍵はイメージに焼けません（個人の鍵であり、全利用者共通の base に置くものではありません）。sshd は認可鍵を次の 2 か所から読みます（イメージの sshd_config で設定済み）。
 
@@ -169,9 +169,9 @@ listen ソケットを持たない経路なので、egress-guard の `firewall.j
 AuthorizedKeysFile /run/secrets/SSH_AUTHORIZED_KEYS .ssh/authorized_keys
 ```
 
-標準の経路は 1 つ目です。broker の個人アイテムに `SSH_AUTHORIZED_KEYS` キーとして公開鍵を持たせれば、GH_TOKEN 等の secret と同じ dev-inject 1 回で注入されます。専用の注入スクリプトは要りません。具体的な手順 — アイテムの命名（全プロジェクト共通の個人アイテム `env/_common/dev`）・値の形式・`BROKER_BW_ITEM` のマージ順 — は [example/README.md](../../example/README.md) の「dev の起動」を参照してください。
+標準の経路は 1 つ目です。broker の個人アイテムに `SSH_AUTHORIZED_KEYS` キーとして公開鍵を持たせれば、GH_TOKEN 等の secret と同じ `karakuri-dock up` 1 回で注入されます。専用の注入スクリプトは要りません。具体的な手順 — アイテムの命名（全プロジェクト共通の個人アイテム `env/_common/dev`）・値の形式・`BROKER_BW_ITEM` のマージ順 — は [example/README.md](../../example/README.md) の「dev の起動」を参照してください。
 
-公開鍵は秘密情報ではありません。broker に載せるのは秘匿のためではなく、搬送と再注入のタイミング規律を secret と 1 本にまとめるためです。tmpfs なのでコンテナ停止で消えますが、消える条件も再注入の作法も secret と同じで、覚えることが増えません。dev-inject を忘れると git 認証も同時に失敗するため、SSH だけが静かに壊れることもありません。
+公開鍵は秘密情報ではありません。broker に載せるのは秘匿のためではなく、搬送と再注入のタイミング規律を secret と 1 本にまとめるためです。tmpfs なのでコンテナ停止で消えますが、消える条件も再注入の作法も secret と同じで、覚えることが増えません。`karakuri-dock up` を忘れると git 認証も同時に失敗するため、SSH だけが静かに壊れることもありません。
 
 2 つ目の `~/.ssh/authorized_keys` は、broker を使わない導入形態（devcontainer-base を別の注入手段と組み合わせる場合）向けに残してあります。こちらはコンテナを作り直すと消えるため、都度の再投入が必要です。
 
@@ -208,7 +208,7 @@ ssh devc-win-<your-project>                     # 既存の master に相乗り�
 
 `karakuri-port-forward` は渡した名前をそのまま ssh へ渡すので、`devc-win-<your-project>` もそのまま渡せます。新しい仕組みは要りません。
 
-secret の注入は Windows 側で行います。`dev-inject` は broker をコンテナから到達不能な場所に置くためにホスト側で実行する設計であり、コンテナが Windows 上の docker で動く以上、注入できるのは Windows ホストだけです。mac から接続する前に、Windows 側で次を実行して注入を済ませてください。
+secret の注入は Windows 側で行います。`karakuri-dock up` は broker をコンテナから到達不能な場所に置くためにホスト側で実行する設計であり、コンテナが Windows 上の docker で動く以上、注入できるのは Windows ホストだけです。mac から接続する前に、Windows 側で次を実行して注入を済ませてください。
 
 ```
 karakuri-dock -p <your-project>-dev -b <your-project> up

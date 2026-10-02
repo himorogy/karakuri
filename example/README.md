@@ -139,10 +139,10 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 1. dev 鍵束を Bitwarden に用意する。個人分は `env/<project>/dev`、チーム共有分は共有コレクションの `env/<project>/shared/dev`、**全プロジェクト共通の個人分は `env/_common/dev`**（`_` 接頭辞はプロジェクト名との衝突回避。プロジェクト slug は kebab-case とし、`_` 始まりのプロジェクトを作らない）
 
    `env/_common/dev` に置くものの代表が **`SSH_AUTHORIZED_KEYS`**（値 = 自分の SSH 公開鍵 1 行、`ssh-ed25519 AAAA... user@host` の形そのまま）。devcontainer-base v2 の sshd が `/run/secrets/SSH_AUTHORIZED_KEYS` を認可鍵として直接読むため、これだけで SSH port forwarding のログインが有効になる（[PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)）。受託案件などプロジェクト単位で別の鍵を使う場合は `env/<project>/dev` に同名キーを置けば後勝ちで上書きされる
-2. コンテナ起動後、ホストで `karakuri-dev-inject` を実行する。broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプし、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く。
+2. ホストで `karakuri-dock -p app-dev -b app up` を実行し、起動と注入を済ませる。未起動なら起動し、secret が未注入なら broker の出力を `docker exec -i` 経由でコンテナ内の取込スクリプトへパイプして、鍵を `/run/secrets/<VAR 名>`（tmpfs、umask 077）へ書く。`up` を付けると port forwarding まで済ませたところで止まり、対話シェルは開かない。
 
    ```sh
-   karakuri-dev-inject -p app-dev -b app
+   karakuri-dock -p app-dev -b app up
    ```
 
    項目名を「共有 → 共通個人 → プロジェクト個人」の順に並べるのは `karakuri.sh` が引き受ける（同名キーは後勝ち = 右ほど強い。プロジェクト個人が共通個人を上書きする）。以前はこの組み立てを `.zshrc` の関数として手で書いていた
@@ -159,7 +159,7 @@ dev 鍵（`DOTENV_PRIVATE_KEY_LOCAL` / `_DEVELOPMENT`、dev 用の fine-scoped G
 
    bash（`~/.bash_profile`）に貼る場合、閉じ括弧の前の `;` は省略できない（zsh は省略できる。この違いを踏んで `syntax error: unexpected end of file` を実機で踏んだ）。
 
-   `-p` と `-b` と `-H` は別物。`-p` は compose project 名（`<project>-dev`）、`-b` は broker アイテムキー（素のプロジェクト名。`karakuri-dev-inject` が引くのと同じ `env/<project>/...`）、`-H` は完全な ssh Host 名（省略時は `-p` の値。`~/.ssh/config` の Host 別名を compose project 名と別にしたい場合に指定する。`devc-` のような接頭辞は補われないので、渡すのは `~/.ssh/config` に書いた Host 名そのもの）で、`karakuri-dock` はどれも一方から他方を組み立てない。
+   `-p` と `-b` と `-H` は別物。`-p` は compose project 名（`<project>-dev`）、`-b` は broker アイテムキー（素のプロジェクト名。`karakuri-dock` が注入時に引くのと同じ `env/<project>/...`）、`-H` は完全な ssh Host 名（省略時は `-p` の値。`~/.ssh/config` の Host 別名を compose project 名と別にしたい場合に指定する。`devc-` のような接頭辞は補われないので、渡すのは `~/.ssh/config` に書いた Host 名そのもの）で、`karakuri-dock` はどれも一方から他方を組み立てない。
 
    `dock app` で「起動 → 未注入なら注入 → port forwarding → 対話シェル」まで 1 コマンドで済む。`dock app up` を付けると、対話シェルを開く手前（起動・注入・port forwarding まで）で止まる。いずれも手順は [PORT-FORWARDING.md](../images/devcontainer-base/PORT-FORWARDING.md)
 
@@ -194,7 +194,7 @@ dev compose 側の前提（`images/devcontainer-base/examples/docker-compose.yam
   `postStartCommand` を飛ばすため egress-guard が適用されない
 - `env_file` 節は使わない
 
-注入を忘れた場合は下流の認証失敗として顕在化する（shim は不在なら素通し。ただし dotenvx だけは `--strict` が無いと復号失敗が沈黙する）。`/run` は tmpfs なので、コンテナの再作成だけでなく停止 → 再起動でも消える。**コンテナを起動するたびに、起動後 dev-inject を 1 回**が運用になる（dev-inject は起動ラッパーではない — 起動は従来どおり IDE が行う）。
+注入を忘れた場合は下流の認証失敗として顕在化する（shim は不在なら素通し。ただし dotenvx だけは `--strict` が無いと復号失敗が沈黙する）。`/run` は tmpfs なので、コンテナの再作成だけでなく停止 → 再起動でも消える。**コンテナの起動は `karakuri-dock -p app-dev -b app up`（または devcontainer CLI）で行う**運用になる。未注入なら `up` が起動と同じ呼び出しの中で注入まで済ませる。
 
 この方式は dev container 内のエージェントから鍵を隠すためのものではない。エージェントは同一 UID で動くため `/run/secrets` を直接読めるし、shim 経由でツールも使える — 原理的に隠せない。守れるのは、ホスト上の保管状態（恒久平文の廃止）と、environ 常駐に伴う意図しない書き出し面（`docker inspect` の `Config.Env`・コアダンプ・Node diagnostic report・全子プロセスへの無差別継承）である。
 

@@ -105,14 +105,14 @@ services:
     # （= ホストの不揮発ディスク）へ書かれてしまう。uid=/gid= の指定が無いと
     # root 所有で作られ、node ユーザーが /run/secrets を作れず書けない。
     # tmpfs はコンテナを停止 → 再起動するだけでも消えるので、起動のたびに
-    # ホスト側の dev-inject スクリプトを実行し直すこと。
+    # ホストで `karakuri-dock ... up` を実行し直すこと。
     tmpfs: ["/run:uid=1000,gid=1000,mode=0755"]
 
     # dev 鍵（dotenvx の local / dev 復号キーや dev 用のトークン）は env_file では
     # 注入しない。env_file はホスト上に恒久的な平文ファイルを要求し、コンテナの
     # environ にも常駐して docker inspect や全子プロセスから見えてしまう。
-    # かわりに、コンテナ起動後にホスト側の dev-inject スクリプトで上の tmpfs
-    # （/run/secrets）へ注入する。
+    # かわりに、コンテナ起動後にホストで `karakuri-dock ... up` を実行して上の
+    # tmpfs（/run/secrets）へ注入する。
 
     # ports: は置かない。
     #

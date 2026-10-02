@@ -64,7 +64,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
   更新チェック無効。根拠と上書き方法は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - `openssh-server` + `/usr/local/sbin/sshd-inetd`（ホストからの SSH port forwarding 用。
   listen する sshd は起動せず、`docker exec` の ProxyCommand から inetd モードで使う。
-  ホスト鍵は初回接続時にコンテナごとに生成。認可鍵は dev-inject が注入する
+  ホスト鍵は初回接続時にコンテナごとに生成。認可鍵は karakuri-dock up が注入する
   `/run/secrets/SSH_AUTHORIZED_KEYS` と `~/.ssh/authorized_keys` の両対応。
   [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - `GIT_ASKPASS=/usr/local/bin/git-askpass` と、github.com の credential helper をイメージ自前の
