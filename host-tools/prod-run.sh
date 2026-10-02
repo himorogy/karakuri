@@ -79,9 +79,11 @@ Example:
   GIT_REF=1234567890abcdef1234567890abcdef12345678 \
   prod-run.sh dotenvx run --strict --no-armor -f .env.prod -- pnpm deploy
 
-dotenvx は pnpm の外側に置くこと。`pnpm run` は node_modules/.bin を
-PATH の先頭に積むため、プロジェクトがローカルに dotenvx を持っていると
-script 内の dotenvx がイメージの shim に勝ち、鍵が注入されない。
+package.json の scripts の中で dotenvx を呼ぶときは `_dotenvx` と書くこと。
+`pnpm run` は node_modules/.bin を PATH の先頭に積むため、プロジェクトが
+ローカルに dotenvx を持っていると script 内の素の dotenvx がイメージの
+shim に勝ち、鍵が注入されない。上の例のように pnpm の外側に置くなら素の
+dotenvx でよい。
 
 --strict と --no-armor は必須:
   --strict    dotenvx は復号に失敗しても非ゼロ終了せず、暗号文をその
