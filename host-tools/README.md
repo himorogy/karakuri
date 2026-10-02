@@ -27,7 +27,7 @@ workspace の中に置くと、そこに常駐する LLM エージェントが�
 
 - `karakuri-dock ... up` — dev container を起動し、未注入なら鍵を注入して、入室の手前で止まる（注入先が tmpfs なので、起動はこれで行う）
 - `karakuri-run` — コンテナを経由せず、ホストで実行するコマンドへ鍵を渡す
-- `karakuri-prod-run` / `karakuri-prod-exec` — 使い捨ての prod コンテナで、指定した commit sha へ復元したコードを実行する（前者は依存の install を挟み、後者は渡したコマンドをそのまま走らせる）
+- `karakuri-prod-run` — 使い捨ての prod コンテナで、指定した commit sha へ復元したコードに対してタスクランナー経由でタスクを実行する（依存の install を挟む）
 - `karakuri-prod-base` / `karakuri-prod-shell` — 対話 prod 作業の土台を起動し、別の端末からそこへ入る
 
 **コンテナへ入る**
@@ -39,11 +39,6 @@ workspace の中に置くと、そこに常駐する LLM エージェントが�
 
 - `karakuri-port-forward` — ssh の転送を張り直す
 - `karakuri-loopback` — `/etc/hosts` と loopback 別名を設定する
-
-**イメージの digest**
-
-- `karakuri-image-digest` — タグから digest を引き、compose へ貼れる `image:` 行を出す
-- `karakuri-check-image` — compose に書かれた digest と、タグの現在の digest を照合する
 
 このほかに `shims/_dotenvx`（ホスト側の dotenvx shim）と `compose.prod.yaml`（prod コンテナの定義のひな形）が入っている。
 `dev-inject.sh` / `prod-run.sh` / `host-run.sh` / `loopback-setup.sh` は上の関数が呼ぶ下位スクリプトで、直接打つ必要はない。
@@ -82,7 +77,6 @@ alias は関数にも効き、引数もそのまま渡るので、下をその�
 ```sh
 alias pf='karakuri-port-forward'
 alias prod-run='karakuri-prod-run'
-alias prod-exec='karakuri-prod-exec'
 alias prod-base='karakuri-prod-base'
 alias prod-shell='karakuri-prod-shell'
 ```
@@ -155,11 +149,13 @@ dev が書いたコードを prod が実行する経路の唯一のゲートは 
 
 先に compose ファイルを置く（下記「compose ファイルの置き場所と digest」）。
 
+`package.json` の `scripts` に `_dotenvx get -f .env.prod` を書いたタスク（例: `get-secrets`）を用意し、`karakuri-prod-run` で呼ぶ。
+
 ```sh
-karakuri-prod-exec acme/app <sha> dotenvx get -f .env.prod
+karakuri-prod-run acme/app <sha> get-secrets
 ```
 
-`dotenvx` は `pnpm` の外側に置く（理由は `prod-run.sh` の usage）。
+scripts の中では `_dotenvx` と書く（理由は `images/runtime-base/Dockerfile` の shim の節）。
 
 **対話シェルが要る場合**
 stdin が secret の搬送路なので、`docker compose run` の対話 TTY とは両立しない。
@@ -264,7 +260,7 @@ mount した時点で、この構成は「書き換えられないもの」か�
 ```
 
 [`compose.prod.yaml`](./compose.prod.yaml) をこの名前でコピーし、`image:` の digest を実在のものへ差し替える。
-`karakuri-image-digest <tag>` が貼り付け用の行を出す。
+digest は配布元のレジストリで確かめて貼る。
 
 全プロジェクトで 1 枚を共有する `KARAKURI_PROD_COMPOSE` も残してあるが、その場合はイメージの更新が全プロジェクトへ一斉に適用される。
 
