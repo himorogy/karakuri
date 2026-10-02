@@ -25,7 +25,7 @@ workspace の中に置くと、そこに常駐する LLM エージェントが�
 
 **鍵を渡す**
 
-- `karakuri-dev-inject` — 起動済みの dev container へ鍵を注入する（注入先が tmpfs なので、コンテナを起動するたびに 1 回要る）
+- `karakuri-dock ... up` — dev container を起動し、未注入なら鍵を注入して、入室の手前で止まる（注入先が tmpfs なので、起動はこれで行う）
 - `karakuri-run` — コンテナを経由せず、ホストで実行するコマンドへ鍵を渡す
 - `karakuri-prod-run` / `karakuri-prod-exec` — 使い捨ての prod コンテナで、指定した commit sha へ復元したコードを実行する（前者は依存の install を挟み、後者は渡したコマンドをそのまま走らせる）
 - `karakuri-prod-base` / `karakuri-prod-shell` — 対話 prod 作業の土台を起動し、別の端末からそこへ入る
@@ -81,7 +81,6 @@ alias は関数にも効き、引数もそのまま渡るので、下をその�
 
 ```sh
 alias pf='karakuri-port-forward'
-alias dev-inject='karakuri-dev-inject'
 alias prod-run='karakuri-prod-run'
 alias prod-exec='karakuri-prod-exec'
 alias prod-base='karakuri-prod-base'
@@ -132,7 +131,7 @@ broker が呼ぶ実体は `KARAKURI_BW_BIN` で絶対パスを名指しする（
 
 **何のために**
 dev container の `/run/secrets` は tmpfs で、コンテナを起動するたびに空になる。
-起動のたびに broker から注入し直す経路を `karakuri-dev-inject` が、注入まで含めた入室を `karakuri-dock` が持つ。
+起動のたびに broker から注入し直す経路も、注入まで含めた入室も `karakuri-dock` が持つ（`up` を付けると入室の手前、注入が済んだところで止まる）。
 
 **どう動くか**
 SSH port forwarding（`karakuri-port-forward`）を使う場合は、`~/.ssh/config` の設定と、初回 1 回の `karakuri-loopback install` が要る。

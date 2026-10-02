@@ -668,11 +668,11 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 	# --- dev-inject ---------------------------------------------------------------
 	echo "[$s] dev-inject builds the item list, and -p reaches DEV_COMPOSE_PROJECT verbatim"
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles-dev -b dotfiles
+	run_case _karakuri_dev_inject -p dotfiles-dev -b dotfiles
 
 	assert_rc_zero "[$s] dev-inject succeeds"
 	assert_env_has "DEV_COMPOSE_PROJECT=dotfiles-dev" \
-		"[$s] karakuri-dev-inject passes -p through to DEV_COMPOSE_PROJECT verbatim"
+		"[$s] dev-inject passes -p through to DEV_COMPOSE_PROJECT verbatim"
 	assert_env_has "BROKER_BW_ITEM=env/dotfiles/shared/dev,env/_common/dev,env/dotfiles/dev" \
 		"[$s] dev broker items are ordered shared, common, personal, keyed by -b"
 	if [ -n "$(cat "$FAKE_ARGV_FILE" 2>/dev/null)" ]; then
@@ -683,21 +683,21 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 
 	echo "[$s] dev-inject defaults the broker key to the -p value"
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles
+	run_case _karakuri_dev_inject -p dotfiles
 
 	assert_rc_zero "[$s] dev-inject succeeds without -b"
 	assert_env_has "DEV_COMPOSE_PROJECT=dotfiles" \
 		"[$s] DEV_COMPOSE_PROJECT is the bare -p value when it has no '-dev' suffix"
 	assert_env_has "BROKER_BW_ITEM=env/dotfiles/shared/dev,env/_common/dev,env/dotfiles/dev" \
-		"[$s] karakuri-dev-inject defaults the broker key to the -p value"
+		"[$s] dev-inject defaults the broker key to the -p value"
 
 	echo "[$s] dev-inject -s sets DEV_SERVICE; omitting -s leaves it unset"
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles -s worker
+	run_case _karakuri_dev_inject -p dotfiles -s worker
 	assert_env_has "DEV_SERVICE=worker" "[$s] -s reaches DEV_SERVICE"
 
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles
+	run_case _karakuri_dev_inject -p dotfiles
 	if grep -q '^DEV_SERVICE=' "$FAKE_ENV_FILE" 2>/dev/null; then
 		ng "[$s] DEV_SERVICE is left unset when -s is omitted"
 	else
@@ -706,64 +706,64 @@ karakuri-prod-run acme/app "$1" deploy' karakuri-test "$BASE_SHA" >"$out" 2>"$er
 
 	echo "[$s] dev-inject rejects a -p or -b value containing '/'"
 	reset_env
-	run_case karakuri-dev-inject -p acme/dotfiles
+	run_case _karakuri_dev_inject -p acme/dotfiles
 	assert_rc_nonzero "[$s] dev-inject rejects a -p value containing '/'"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed -p value"
 
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles -b acme/dotfiles
+	run_case _karakuri_dev_inject -p dotfiles -b acme/dotfiles
 	assert_rc_nonzero "[$s] dev-inject rejects a -b value containing '/'"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a malformed -b value"
 
 	echo "[$s] dev-inject rejects _common as the broker key"
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles -b _common
+	run_case _karakuri_dev_inject -p dotfiles -b _common
 	assert_rc_nonzero "[$s] -b _common fails"
 	assert_stderr_has "_common" "[$s] the error names _common"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked when -b is _common"
 
 	reset_env
-	run_case karakuri-dev-inject -p _common
+	run_case _karakuri_dev_inject -p _common
 	assert_rc_nonzero "[$s] -p _common fails when -b is omitted, since the broker key then defaults to _common"
 	assert_stderr_has "_common" "[$s] the error names _common"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked when the broker key defaults to _common"
 
 	echo "[$s] dev-inject rejects the old single positional-argument form"
 	reset_env
-	run_case karakuri-dev-inject dotfiles
+	run_case _karakuri_dev_inject dotfiles
 	assert_rc_nonzero "[$s] a bare positional argument fails"
 	assert_stderr_has "Usage:" "[$s] a bare positional argument prints usage"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] dev-inject.sh is not invoked for a positional argument"
 
 	echo "[$s] dev-inject requires -p"
 	reset_env
-	run_case karakuri-dev-inject
+	run_case _karakuri_dev_inject
 	assert_rc_nonzero "[$s] dev-inject with no arguments fails"
 	assert_stderr_has "Usage:" "[$s] dev-inject with no arguments prints usage"
 
 	reset_env
-	run_case karakuri-dev-inject -b dotfiles
+	run_case _karakuri_dev_inject -b dotfiles
 	assert_rc_nonzero "[$s] dev-inject fails when -p is omitted even if -b is given"
 	assert_stderr_has "Usage:" "[$s] omitting -p prints usage"
 
 	echo "[$s] dev-inject argument errors: missing values and unknown options"
 	reset_env
-	run_case karakuri-dev-inject -p
+	run_case _karakuri_dev_inject -p
 	assert_rc_nonzero "[$s] -p without a value fails"
 	assert_stderr_has "-p requires a value" "[$s] the error names -p"
 
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles -b
+	run_case _karakuri_dev_inject -p dotfiles -b
 	assert_rc_nonzero "[$s] -b without a value fails"
 	assert_stderr_has "-b requires a value" "[$s] the error names -b"
 
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles -s
+	run_case _karakuri_dev_inject -p dotfiles -s
 	assert_rc_nonzero "[$s] -s without a value fails"
 	assert_stderr_has "-s requires a value" "[$s] the error names -s"
 
 	reset_env
-	run_case karakuri-dev-inject -p dotfiles --bogus
+	run_case _karakuri_dev_inject -p dotfiles --bogus
 	assert_rc_nonzero "[$s] an unknown argument fails"
 	assert_stderr_has "Usage:" "[$s] an unknown argument prints usage"
 
@@ -1100,7 +1100,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	assert_stderr_has "Usage:" "[$s] an unknown argument prints usage"
 
 	# -p の '/' 検査は、secret が注入済みで --secrets-ok が素通りする経路
-	# （karakuri-dev-inject を経由しない）でも掛かることを固定する。
+	# （_karakuri_dev_inject を経由しない）でも掛かることを固定する。
 	reset_env
 	run_case karakuri-dock -p acme/app
 	assert_rc_nonzero "[$s] -p containing '/' fails even when secrets are already ok"
@@ -1697,7 +1697,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	assert_rc_zero "[$s] karakuri-help succeeds"
 	assert_not_invoked "$FAKE_ARGV_FILE" "[$s] karakuri-help does not call prod-run.sh / dev-inject.sh / broker"
 
-	for fn in karakuri-port-forward karakuri-loopback karakuri-dev-inject \
+	for fn in karakuri-port-forward karakuri-loopback \
 		karakuri-dock karakuri-run karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image karakuri-help; do
@@ -1748,7 +1748,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	# --- 関数が全部定義されていること --------------------------------------------------
 	echo "[$s] every documented function is defined"
 	reset_env
-	for fn in karakuri-port-forward karakuri-loopback karakuri-dev-inject \
+	for fn in karakuri-port-forward karakuri-loopback \
 		karakuri-dock karakuri-run karakuri-prod-run \
 		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
 		karakuri-image-digest karakuri-check-image \
