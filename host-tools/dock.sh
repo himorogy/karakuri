@@ -19,12 +19,11 @@ export MSYS_NO_PATHCONV=1
 # 名の付け方・workspace のパス）は呼び出し側の仕事にする。karakuri の
 # 配布物には規約を仮定する薄いラッパーは含めない。
 #
-#   dock.sh -p <compose-project> [-s <service>] [-w <workspace>] [<mode>]
+#   dock.sh -p <compose-project> [-s <service>] --stdio
 #
-# <service> の既定は "dev"。<workspace> を省略すると docker exec に -w を
-# 渡さず、コンテナの WORKDIR に従う。
+# <service> の既定は "dev"。
 #
-# モード（省略時は対話 zsh）:
+# モード:
 #
 #   --stdio           ~/.ssh/config の ProxyCommand から呼ばれ、コンテナ内の
 #                      sshd を inetd モードで起動して stdin/stdout を SSH の
@@ -32,15 +31,9 @@ export MSYS_NO_PATHCONV=1
 #                      または secret が未注入なら fail closed で exit 1 に
 #                      し、コンテナは起動しない（起動は --ensure-running の
 #                      役目）。
-#   --ensure-running   対象サービスと同じ compose project の全コンテナを
-#                      起動済み・firewall 適用済みの状態にする。揃っていな
-#                      ければ project 全体を再起動し、対象サービスへ
-#                      egress-guard の firewall を適用してから終了する。
-#                      stdout に何も出さない。
-#   --secrets-ok       secret が注入済みかを判定して exit 0 / 1 を返す。
-#                      stdout・stderr は空。コンテナの起動状態は変えない
-#                      （判定を打っただけで起動するのは呼び出し側から見て
-#                      予想外である）。
+#
+#   対話シェル（引数なし・-w <workspace> を取る）・--ensure-running・
+#   --secrets-ok は `karakuri-dock` が使う内部の部品で、直接打つ前提ではない。
 #
 # 判定は /run/secrets/SSH_AUTHORIZED_KEYS の有無で行い、root で実行する。
 # /run/secrets の所有と mode を決めるのは注入側であり、既定ユーザーで読める
@@ -100,30 +93,20 @@ export MSYS_NO_PATHCONV=1
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  dock.sh -p <compose-project> [-s <service>] [-w <workspace>]
   dock.sh -p <compose-project> [-s <service>] --stdio
-  dock.sh -p <compose-project> [-s <service>] --ensure-running
-  dock.sh -p <compose-project> [-s <service>] --secrets-ok
 
 Options:
   -p <compose-project>  compose project label to match (required)
   -s <service>          compose service label to match (default: dev)
-  -w <workspace>        docker exec -w value (default: container's WORKDIR;
-                        used by the default mode only)
 
 Modes:
-  (default)         Open an interactive zsh session in the dev container.
-                    Fails (exit 1, no stdout) if the container is stopped --
-                    start it first with 'karakuri-dock -p <project> up'.
   --stdio           Run sshd over stdin/stdout for SSH ProxyCommand. Fails
                     closed (exit 1, no stdout) when the container is
                     stopped or secrets are not injected.
-  --ensure-running  Make the whole compose project ready: start every
-                    container in it, then apply the egress-guard firewall
-                    to the target service. No-op if everything is already
-                    up and injected.
-  --secrets-ok      Exit 0 if secrets are injected, 1 otherwise. Never
-                    starts the container and never prints anything.
+
+  The default mode (-w <workspace> optional), --ensure-running, and
+  --secrets-ok are internal plumbing that 'karakuri-dock' uses -- not meant
+  to be run directly.
 EOF
 }
 

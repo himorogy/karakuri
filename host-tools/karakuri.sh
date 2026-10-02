@@ -55,8 +55,6 @@
 #
 #   karakuri-port-forward <host>                    port forwarding を張り直す
 #   karakuri-loopback <install|add|remove|list> [args...]   /etc/hosts と loopback alias の設定（sudo が要る）
-#   karakuri-dev-inject -p <compose-project> [-b <broker-key>] [-s <service>]
-#                                                    dev container へ鍵を注入
 #   karakuri-dock -p <compose-project> [-b <broker-key>] [-H <ssh-host>] [-s <service>] [-w <workspace>] [up]
 #                                                    dev container を使える状態にしてから入る
 #                                                    （起動 → 未注入なら注入 → port forwarding → 対話シェル）
@@ -531,35 +529,36 @@ karakuri-loopback() {
 	local setup
 	setup="$(_karakuri_tool loopback-setup.sh)" || return 1
 
-	# 環境変数は渡さない。karakuri-dev-inject などと違って broker も compose も
+	# 環境変数は渡さない。_karakuri_dev_inject などと違って broker も compose も
 	# 関与せず、このスクリプトが読むのは自分の引数と /etc の状態だけである。
 	"$setup" "$@"
 }
 
 # --- dev ------------------------------------------------------------------------
 
-# karakuri-dev-inject -p <compose-project> [-b <broker-key>] [-s <service>] —
+# _karakuri_dev_inject -p <compose-project> [-b <broker-key>] [-s <service>] —
 # 起動済みの dev container へ鍵を注入する。
 #
-# コンテナ内の /run/secrets は tmpfs なので、コンテナを起動するたびに 1 回
-# 実行する（再実行は上書きなので、迷ったら打ち直してよい）。
+# 内部関数（`karakuri-dock` だけが呼ぶ）。コンテナ内の /run/secrets は tmpfs
+# なので、コンテナを起動するたびに 1 回実行される。再実行は上書きである。
 #
 # `-p` は compose project 名、`-b` は broker アイテムキーで、どちらも
 # `karakuri-dock` の同名オプションと同じ語彙・同じ既定（`-b` 省略時は `-p` の
 # 値を使う）。DEV_COMPOSE_PROJECT には `-p` の値をそのまま渡し、`-dev` のような
 # 組み立ては行わない（`<project>-dev` の規約は呼び出し側の関数に委ねる）。
 #
-# 旧来の単一位置引数 `karakuri-dev-inject <project>` は受けない。位置引数を
-# 渡すと下の `case` の `*)` に落ちて usage で失敗する。
-karakuri-dev-inject() {
-	local usage="Usage: karakuri-dev-inject -p <compose-project> [-b <broker-key>] [-s <service>]"
+# エラーメッセージの接頭辞は `karakuri-dock:` にそろえてある。利用者が打つのは
+# 常に `karakuri-dock` であり、ここで失敗しても利用者が打ったコマンド名で
+# 出す。
+_karakuri_dev_inject() {
+	local usage="Usage: karakuri-dock -p <compose-project> [-b <broker-key>] [-H <ssh-host>] [-s <service>] [-w <workspace>] [up]"
 	local project="" broker_key="" service=""
 
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		-p)
 			if [ "$#" -lt 2 ]; then
-				echo "karakuri-dev-inject: -p requires a value" >&2
+				echo "karakuri-dock: -p requires a value" >&2
 				echo "$usage" >&2
 				return 1
 			fi
@@ -568,7 +567,7 @@ karakuri-dev-inject() {
 			;;
 		-b)
 			if [ "$#" -lt 2 ]; then
-				echo "karakuri-dev-inject: -b requires a value" >&2
+				echo "karakuri-dock: -b requires a value" >&2
 				echo "$usage" >&2
 				return 1
 			fi
@@ -577,7 +576,7 @@ karakuri-dev-inject() {
 			;;
 		-s)
 			if [ "$#" -lt 2 ]; then
-				echo "karakuri-dev-inject: -s requires a value" >&2
+				echo "karakuri-dock: -s requires a value" >&2
 				echo "$usage" >&2
 				return 1
 			fi
@@ -589,7 +588,7 @@ karakuri-dev-inject() {
 			return 0
 			;;
 		*)
-			echo "karakuri-dev-inject: unexpected argument: $1" >&2
+			echo "karakuri-dock: unexpected argument: $1" >&2
 			echo "$usage" >&2
 			return 1
 			;;
@@ -604,7 +603,7 @@ karakuri-dev-inject() {
 	[ -n "$broker_key" ] || broker_key="$project"
 	_karakuri_plain_name "broker key" "$broker_key" || return 1
 	if [ "$broker_key" = "_common" ]; then
-		echo "karakuri-dev-inject: broker key '_common' is reserved — env/_common/dev already holds the personal secrets shared by every project, so using it as a project-specific key would read the same item twice" >&2
+		echo "karakuri-dock: broker key '_common' is reserved — env/_common/dev already holds the personal secrets shared by every project, so using it as a project-specific key would read the same item twice" >&2
 		return 1
 	fi
 
@@ -748,7 +747,7 @@ karakuri-dock() {
 		local -a inject_argv
 		inject_argv=(-p "$project" -b "$broker_key")
 		[ -z "$service" ] || inject_argv+=(-s "$service")
-		karakuri-dev-inject "${inject_argv[@]}" || return 1
+		_karakuri_dev_inject "${inject_argv[@]}" || return 1
 	fi
 
 	local host
@@ -779,8 +778,8 @@ karakuri-dock() {
 # コンテナ経由の受け渡しを持たない、ホストでしかビルドできないプロジェクト
 # 向け。
 #
-# `-b` は必須で、`karakuri-dev-inject` / `karakuri-dock` の `-p` のような
-# 既定の供給元へは落ちない。この関数は compose プロジェクトを持たないため。
+# `-b` は必須で、`karakuri-dock` の `-p` のような既定の供給元へは落ちない。
+# この関数は compose プロジェクトを持たないため。
 #
 # `-e` は既定 `dev`。broker の項目名の組み立ては既存の
 # `karakuri-broker-command` / `karakuri-broker-env` をそのまま使うので、
@@ -1437,8 +1436,6 @@ karakuri.sh が提供する関数:
       port forwarding を張り直す
   karakuri-loopback <install|add|remove|list> [args...]
       /etc/hosts と loopback alias を設定する（alias は macOS のみ。この関数だけ sudo が要る）
-  karakuri-dev-inject -p <compose-project> [-b <broker-key>] [-s <service>]
-      起動済みの dev container へ鍵を注入する
   karakuri-dock -p <compose-project> [-b <broker-key>] [-H <ssh-host>] [-s <service>] [-w <workspace>] [up]
       dev container を使える状態にしてから入る（起動 → 未注入なら注入 → port forwarding → 対話シェル。up で入る手前で止まる）
       ssh の ProxyCommand には dock.sh の絶対パスが要る（同じファイルの --stdio モード）
