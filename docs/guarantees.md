@@ -272,10 +272,11 @@
 - モードを指定するオプションを2つ同時に渡すと、コンテナ探索より前に非ゼロ終了し、衝突した両方の名前を出す
 - secret の確認モードは、注入済みで 0、未注入で 1 を返し、いずれの場合も stdout と stderr を完全に空に保つ。判定に使う下位コマンド自身の出力も外へ漏らさない。結果は終了コードだけで伝える契約である
 - secret の確認モードはコンテナの起動状態を変えない。停止中のコンテナに対しては起動もせず 1 を返す。secret の置き場は再起動をまたいで残らないため、停止していれば未注入が確定する（テスト: "--secrets-ok exits 1 when the container is not running (secrets cannot survive a stop)"）
-- 起動確認モードは、停止中なら起動して 0、起動済みなら起動せずに 0 を返す。どちらも stdout は空である
-- 標準入出力モードは secret 未注入のとき 1 で止まり、stdout に1バイトも出さず、sshd を起動しない。stderr の案内には、ホスト側で打つべきコマンドと broker のキーを別引数として示す（テスト: "--stdio does not exec sshd-inetd when secrets are missing"）
+- 停止中のコンテナに対する標準入出力モードと既定モードは、起動せずに非ゼロで終わり、stdout に何も出さず、stderr にホスト側で打つ起動コマンドを示す（テスト: "--stdio does not start a stopped container"、"the default mode does not start a stopped container"）
+- 標準入出力モードは secret 未注入のとき 1 で止まり、stdout に1バイトも出さず、sshd を起動しない。stderr の案内にはホスト側で打つ起動コマンドを示す（テスト: "--stdio does not exec sshd-inetd when secrets are missing"）
 - 標準入出力モードは secret 注入済みのとき、絶対パスで sshd を起動する。フォールバック先の候補は持たない。見つからなければ明示的に失敗する方が、別の sshd が起動して原因の遠いエラーになるより良いという判断である
-- 標準入出力モードは停止中のコンテナを secret 判定の前に起動し、その起動が出す stdout を外へ漏らさない。標準出力が接続そのものであり、1バイトでも混ざると壊れるため（テスト: "--stdio does not leak the 'docker start' stdout of a stopped container"）
+- 起動確認モードは、対象サービスと同じ project の全コンテナが起動中で secret が注入済みなら、どのコンテナも停止・起動せずに 0 を返す（テスト: "--ensure-running leaves a ready project untouched"）
+- 起動確認モードは、上の条件が揃わなければ project の全コンテナを停止し、対象サービス以外を先に、対象サービスを最後に起動し、対象サービスに egress-guard の firewall を適用してから 0 を返す。適用に失敗すれば非ゼロで終わる。いずれも stdout は空である（テスト: "--ensure-running restarts the whole project and applies the firewall"、"--ensure-running fails when the firewall cannot be applied"）
 - secret 判定を行う下位コマンドは、Windows 経路のための環境変数を受け取る
 - 既定モードは対話シェルを開き、作業ディレクトリの指定があるときだけそれを下位へ渡す。省略時は付けず、コンテナ側の設定に従う
 - 引数なし・未知のオプションは非ゼロ終了し、stdout は空で、使い方を stderr に出す

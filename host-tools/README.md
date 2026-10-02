@@ -138,6 +138,12 @@ dev container の `/run/secrets` は tmpfs で、コンテナを起動するた�
 SSH port forwarding（`karakuri-port-forward`）を使う場合は、`~/.ssh/config` の設定と、初回 1 回の `karakuri-loopback install` が要る。
 設定の書き方と、`ProxyCommand` に `dock.sh` の絶対パスを書く理由は [`images/devcontainer-base/PORT-FORWARDING.md`](../images/devcontainer-base/PORT-FORWARDING.md) にある。
 
+停止は自由だが、起動は `karakuri-dock up`（または devcontainer CLI）で行う。
+それ以外で起動した dev は、次の `up` で再起動される。
+
+devcontainer CLI がコンテナを作成している最中（`postCreateCommand` の実行中）に `up` しない。
+secret 未注入なので再起動になり、`postCreateCommand` が途中で止まる（firewall は `up` が適用するので健全性には影響しない。止まった `postCreateCommand` は再作成でやり直す）。
+
 **保証**
 [`tests/dev-inject.test.sh`](./tests/dev-inject.test.sh)、[`tests/dock.test.sh`](./tests/dock.test.sh)、[`tests/loopback-setup.test.sh`](./tests/loopback-setup.test.sh)、[`tests/karakuri.test.sh`](./tests/karakuri.test.sh)。
 

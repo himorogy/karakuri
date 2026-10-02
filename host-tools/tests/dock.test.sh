@@ -5,8 +5,13 @@
 # docker daemon なしで走る（dev container に docker socket は無い）。`docker`
 # を PATH 先頭のフェイクスクリプトへ差し替え、dock.sh 自身のロジック
 # （引数の解決・コンテナ特定の失敗系・モードの排他・secrets-ok の判定・
-# --stdio の fail closed）だけを検証する。実際の docker の挙動はここでは
-# 見ない。
+# --stdio の fail closed・--ensure-running の project 全体の再起動と
+# firewall 適用）だけを検証する。実際の docker の挙動はここでは見ない。
+#
+# フェイク docker は stop / 複数コンテナの ps・inspect もサポートする。
+# どの docker 呼び出しも $FAKE_INVOKE_LOG へ1行ずつ追記するので、
+# --ensure-running のように複数回 docker を呼ぶシナリオでは、呼び出しの
+# 順序を assert_order で検証できる。
 #
 set -uo pipefail
 
@@ -33,40 +38,81 @@ FAKE_BIN_DIR="$WORKDIR/bin"
 mkdir -p "$FAKE_BIN_DIR"
 
 # --- フェイク docker -----------------------------------------------------------
-# dock.sh が docker を呼ぶのは 4 箇所: コンテナ特定 (ps -a -q --filter
-# label=...)、起動状態の確認 (inspect -f '{{.State.Running}}')、起動
-# (start)、secrets の判定・sshd の起動・対話シェル (exec) の 3 用途。
+# dock.sh が docker を呼ぶのは 5 種類: コンテナ特定 (ps -a -q
+# --filter label=...)、起動状態の確認 (inspect -f '{{.State.Running}}')、
+# 起動 (start)、停止 (stop)、secrets の判定・firewall 適用・sshd の
+# 起動・対話シェル (exec) である。
 #
-# 各サブコマンドの呼び出しは、そのテストケース内で高々 1 回しか起きない
-# ので、記録先は都度 reset_env が作り直す 1 ファイルずつでよい。
+# ps と inspect は複数コンテナを一度に扱える（dock.sh が project 全体の
+# 状態を1回の inspect でまとめて読むため）。ps は渡されたフィルタに
+# service ラベルが含まれるかどうかで、対象コンテナだけの一覧
+# ($FAKE_PS_STDOUT) か project 全体の一覧 ($FAKE_PS_ALL_STDOUT、未設定なら
+# $FAKE_PS_STDOUT にフォールバック) かを出し分ける。inspect はコンテナ ID
+# ごとに $FAKE_RUNNING__<cid> を見て、無ければ $FAKE_RUNNING にフォール
+# バックする。
 cat >"$FAKE_BIN_DIR/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
+log_invoke() {
+	printf '%s\n' "$1" >>"${FAKE_INVOKE_LOG:?}"
+}
+
 case "${1:-}" in
 ps)
-	printf '%s\n' "$@" >"${FAKE_PS_ARGV_FILE:?}"
-	if [ -n "${FAKE_PS_STDOUT:-}" ]; then
-		printf '%s\n' "$FAKE_PS_STDOUT"
+	log_invoke "$*"
+	printf '%s\n' "$@" >>"${FAKE_PS_ARGV_FILE:?}"
+	case " $* " in
+	*"label=com.docker.compose.service="*)
+		out="${FAKE_PS_STDOUT:-}"
+		;;
+	*)
+		out="${FAKE_PS_ALL_STDOUT-$FAKE_PS_STDOUT}"
+		;;
+	esac
+	if [ -n "$out" ]; then
+		printf '%s\n' "$out"
 	fi
 	exit "${FAKE_PS_EXIT_CODE:-0}"
 	;;
 inspect)
-	printf '%s\n' "$@" >"${FAKE_INSPECT_ARGV_FILE:?}"
-	printf '%s\n' "${FAKE_RUNNING:-true}"
+	log_invoke "$*"
+	printf '%s\n' "$@" >>"${FAKE_INSPECT_ARGV_FILE:?}"
+	shift
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		-f)
+			shift 2
+			;;
+		*)
+			var="FAKE_RUNNING__$1"
+			val="${!var:-}"
+			[ -n "$val" ] || val="${FAKE_RUNNING:-true}"
+			printf '%s\n' "$val"
+			shift
+			;;
+		esac
+	done
 	exit "${FAKE_INSPECT_EXIT_CODE:-0}"
 	;;
 start)
-	printf '%s\n' "$*" >"${FAKE_START_ARGV_FILE:?}"
+	log_invoke "$*"
+	printf '%s\n' "$*" >>"${FAKE_START_ARGV_FILE:?}"
 	if [ -n "${FAKE_START_STDOUT:-}" ]; then
 		printf '%s\n' "$FAKE_START_STDOUT"
 	fi
 	exit "${FAKE_START_EXIT_CODE:-0}"
 	;;
+stop)
+	log_invoke "$*"
+	printf '%s\n' "$*" >>"${FAKE_STOP_ARGV_FILE:?}"
+	exit "${FAKE_STOP_EXIT_CODE:-0}"
+	;;
 exec)
+	log_invoke "$*"
 	shift
 	case " $* " in
 	*" test -f /run/secrets/SSH_AUTHORIZED_KEYS "*)
-		printf '%s\n' "$*" >"${FAKE_SECRETS_CHECK_ARGV_FILE:?}"
-		printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_SECRETS_CHECK_ENV_FILE:?}"
+		printf '%s\n' "$*" >>"${FAKE_SECRETS_CHECK_ARGV_FILE:?}"
+		printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >>"${FAKE_SECRETS_CHECK_ENV_FILE:?}"
 		if [ -n "${FAKE_SECRETS_CHECK_STDOUT:-}" ]; then
 			printf '%s\n' "$FAKE_SECRETS_CHECK_STDOUT"
 		fi
@@ -75,8 +121,18 @@ exec)
 		fi
 		exit "${FAKE_SECRETS_EXIT_CODE:-0}"
 		;;
+	*"init-project-firewall.sh"*)
+		printf '%s\n' "$*" >>"${FAKE_FIREWALL_ARGV_FILE:?}"
+		if [ -n "${FAKE_FIREWALL_STDOUT:-}" ]; then
+			printf '%s\n' "$FAKE_FIREWALL_STDOUT"
+		fi
+		if [ -n "${FAKE_FIREWALL_STDERR:-}" ]; then
+			printf '%s\n' "$FAKE_FIREWALL_STDERR" >&2
+		fi
+		exit "${FAKE_FIREWALL_EXIT_CODE:-0}"
+		;;
 	*)
-		printf '%s\n' "$*" >"${FAKE_EXEC_ARGV_FILE:?}"
+		printf '%s\n' "$*" >>"${FAKE_EXEC_ARGV_FILE:?}"
 		if [ -n "${FAKE_EXEC_STDOUT:-}" ]; then
 			printf '%s\n' "$FAKE_EXEC_STDOUT"
 		fi
@@ -93,6 +149,7 @@ FAKE_DOCKER
 chmod +x "$FAKE_BIN_DIR/docker"
 
 BASE_CID="cafe0123deadbeef"
+SIDECAR_CID="face0123deadbeef"
 
 # --- 走らせる --------------------------------------------------------------------
 
@@ -106,20 +163,29 @@ reset_env() {
 	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$_case_seq"
 	export FAKE_INSPECT_ARGV_FILE="$WORKDIR/inspect-argv.$$.$_case_seq"
 	export FAKE_START_ARGV_FILE="$WORKDIR/start-argv.$$.$_case_seq"
+	export FAKE_STOP_ARGV_FILE="$WORKDIR/stop-argv.$$.$_case_seq"
 	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$_case_seq"
+	export FAKE_FIREWALL_ARGV_FILE="$WORKDIR/firewall-argv.$$.$_case_seq"
 	export FAKE_SECRETS_CHECK_ARGV_FILE="$WORKDIR/secrets-check-argv.$$.$_case_seq"
 	export FAKE_SECRETS_CHECK_ENV_FILE="$WORKDIR/secrets-check-env.$$.$_case_seq"
+	export FAKE_INVOKE_LOG="$WORKDIR/invoke-log.$$.$_case_seq"
+	: >"$FAKE_INVOKE_LOG"
 
 	export FAKE_PS_STDOUT="$BASE_CID"
+	unset FAKE_PS_ALL_STDOUT
 	export FAKE_PS_EXIT_CODE=0
 	export FAKE_INSPECT_EXIT_CODE=0
 	export FAKE_RUNNING=true
+	unset "FAKE_RUNNING__${BASE_CID}" "FAKE_RUNNING__${SIDECAR_CID}"
 	export FAKE_START_EXIT_CODE=0
 	unset FAKE_START_STDOUT
+	export FAKE_STOP_EXIT_CODE=0
 	export FAKE_SECRETS_EXIT_CODE=0
 	unset FAKE_SECRETS_CHECK_STDOUT FAKE_SECRETS_CHECK_STDERR
 	export FAKE_EXEC_EXIT_CODE=0
 	unset FAKE_EXEC_STDOUT
+	export FAKE_FIREWALL_EXIT_CODE=0
+	unset FAKE_FIREWALL_STDOUT FAKE_FIREWALL_STDERR
 }
 
 # run_case <args...> — dock.sh を実行する。結果は CASE_RC / CASE_STDOUT /
@@ -218,6 +284,32 @@ assert_secrets_check_env() {
 	fi
 }
 
+# assert_order <description> <needle...> — $FAKE_INVOKE_LOG の中に、渡した
+# 各 needle を含む行がこの順番で（間に他の行が挟まってもよい）現れること
+# を見る。--ensure-running のように docker を何度も呼ぶモードの、呼び出し
+# 順序の検証に使う。
+assert_order() {
+	local desc="$1"
+	shift
+	local file="$FAKE_INVOKE_LOG"
+	local after=0 needle line found=1
+	for needle in "$@"; do
+		line="$(awk -v after="$after" -v needle="$needle" '
+			NR > after && index($0, needle) { print NR; exit }
+		' "$file" 2>/dev/null)"
+		if [ -z "$line" ]; then
+			found=0
+			break
+		fi
+		after="$line"
+	done
+	if [ "$found" -eq 1 ]; then
+		ok "$desc"
+	else
+		ng "$desc (log: $(cat "$file" 2>/dev/null))"
+	fi
+}
+
 # --- --secrets-ok ------------------------------------------------------------
 echo "--secrets-ok reports whether secrets are injected without side effects"
 
@@ -275,27 +367,97 @@ assert_stdout_empty "--secrets-ok swallows stdout even when the check fails and 
 assert_stderr_empty "--secrets-ok swallows stderr even when the check fails and prints"
 
 # --- --ensure-running ---------------------------------------------------------
-echo "--ensure-running starts the container if needed and prints nothing"
+echo "--ensure-running leaves an already-up, already-injected project untouched"
+
+reset_env
+FAKE_PS_ALL_STDOUT="$(printf '%s\n%s' "$BASE_CID" "$SIDECAR_CID")"
+export FAKE_PS_ALL_STDOUT
+export FAKE_RUNNING=true
+export FAKE_RUNNING__${SIDECAR_CID}=true
+export FAKE_SECRETS_EXIT_CODE=0
+run_case -p proj --ensure-running
+
+assert_rc_zero "--ensure-running leaves a ready project untouched"
+assert_stdout_empty "--ensure-running prints nothing on stdout when the project is already ready"
+assert_not_invoked "$FAKE_STOP_ARGV_FILE" "--ensure-running does not stop anything when the project is already ready"
+assert_not_invoked "$FAKE_START_ARGV_FILE" "--ensure-running does not start anything when the project is already ready"
+assert_not_invoked "$FAKE_FIREWALL_ARGV_FILE" "--ensure-running does not re-apply the firewall when the project is already ready"
+
+echo "--ensure-running restarts the whole project and applies the firewall when anything is missing"
+
+# シナリオ1: sidecar だけが停止している。
+#
+# FAKE_START_STDOUT と FAKE_FIREWALL_STDOUT を実際に何か出させるのが要点:
+# フェイクが何も出さない作りのままだと、dock.sh 側が `docker start` /
+# firewall 実行のリダイレクトを外しても assert_stdout_empty が素通りして
+# しまう（実際の `docker start` はコンテナ ID を stdout に出すので、この
+# 握り込みの検査が無いと漏れに気づけない）。firewall の出力は stderr へ
+# 回る契約なので、その出力がここに出ていることも合わせて確かめる。
+reset_env
+FAKE_PS_ALL_STDOUT="$(printf '%s\n%s' "$BASE_CID" "$SIDECAR_CID")"
+export FAKE_PS_ALL_STDOUT
+export FAKE_RUNNING=true
+export FAKE_RUNNING__${SIDECAR_CID}=false
+export FAKE_SECRETS_EXIT_CODE=0
+export FAKE_START_STDOUT="$BASE_CID"
+export FAKE_FIREWALL_STDOUT="fw-out"
+run_case -p proj --ensure-running
+
+assert_rc_zero "--ensure-running restarts the project when the sidecar is stopped"
+assert_stdout_empty "--ensure-running prints nothing on stdout when restarting because the sidecar is stopped"
+assert_stderr_has "fw-out" "--ensure-running sends the firewall script's output to stderr"
+assert_order "--ensure-running restarts the whole project and applies the firewall" \
+	"stop ${BASE_CID}" "stop ${SIDECAR_CID}" "start ${SIDECAR_CID}" "start ${BASE_CID}" "init-project-firewall.sh"
+
+# シナリオ2: 対象サービス自身が停止している。
+reset_env
+FAKE_PS_ALL_STDOUT="$(printf '%s\n%s' "$BASE_CID" "$SIDECAR_CID")"
+export FAKE_PS_ALL_STDOUT
+export FAKE_RUNNING=false
+export FAKE_RUNNING__${SIDECAR_CID}=true
+export FAKE_SECRETS_EXIT_CODE=0
+run_case -p proj --ensure-running
+
+assert_rc_zero "--ensure-running restarts the project when the target service is stopped"
+assert_order "--ensure-running restarts the whole project and applies the firewall" \
+	"stop ${BASE_CID}" "stop ${SIDECAR_CID}" "start ${SIDECAR_CID}" "start ${BASE_CID}" "init-project-firewall.sh"
+
+# シナリオ3: 全コンテナは起動中だが secret が未注入。
+reset_env
+FAKE_PS_ALL_STDOUT="$(printf '%s\n%s' "$BASE_CID" "$SIDECAR_CID")"
+export FAKE_PS_ALL_STDOUT
+export FAKE_RUNNING=true
+export FAKE_RUNNING__${SIDECAR_CID}=true
+export FAKE_SECRETS_EXIT_CODE=1
+run_case -p proj --ensure-running
+
+assert_rc_zero "--ensure-running restarts the project when secrets are missing even though everything is running"
+assert_order "--ensure-running restarts the whole project and applies the firewall" \
+	"stop ${BASE_CID}" "stop ${SIDECAR_CID}" "start ${SIDECAR_CID}" "start ${BASE_CID}" "init-project-firewall.sh"
+
+echo "--ensure-running fails when the firewall cannot be applied"
 
 reset_env
 export FAKE_RUNNING=false
+export FAKE_FIREWALL_EXIT_CODE=1
 run_case -p proj --ensure-running
 
-assert_rc_zero "--ensure-running succeeds when the container was stopped"
-assert_stdout_empty "--ensure-running prints nothing on stdout when it starts the container"
-if has_line "$FAKE_START_ARGV_FILE" "start ${BASE_CID}"; then
-	ok "--ensure-running starts the stopped container"
-else
-	ng "--ensure-running starts the stopped container (recorded: $(cat "$FAKE_START_ARGV_FILE" 2>/dev/null))"
-fi
+assert_rc_nonzero "--ensure-running fails when the firewall cannot be applied"
+assert_stdout_empty "--ensure-running prints nothing on stdout when the firewall application fails"
+
+# --- --stdio: stopped container -------------------------------------------------
+echo "--stdio does not start a stopped container"
 
 reset_env
-export FAKE_RUNNING=true
-run_case -p proj --ensure-running
+export FAKE_RUNNING=false
+run_case -p proj --stdio
 
-assert_rc_zero "--ensure-running succeeds when the container is already running"
-assert_stdout_empty "--ensure-running prints nothing on stdout when the container is already running"
-assert_not_invoked "$FAKE_START_ARGV_FILE" "--ensure-running does not start an already-running container"
+assert_rc_nonzero "--stdio does not start a stopped container"
+assert_stdout_empty "--stdio prints nothing on stdout when the container is stopped"
+assert_stderr_has "karakuri-dock -p proj up" "--stdio tells the caller to run karakuri-dock up on the host when stopped"
+assert_not_invoked "$FAKE_START_ARGV_FILE" "--stdio does not call docker start on a stopped container"
+assert_not_invoked "$FAKE_SECRETS_CHECK_ARGV_FILE" "--stdio does not check secrets on a stopped container"
+assert_not_invoked "$FAKE_EXEC_ARGV_FILE" "--stdio does not exec into a stopped container"
 
 # --- --stdio: fail closed -------------------------------------------------------
 echo "--stdio fails closed when secrets are not injected"
@@ -306,8 +468,7 @@ run_case -p proj --stdio
 
 assert_rc_eq 1 "--stdio exits 1 when secrets are not injected"
 assert_stdout_empty "--stdio prints nothing on stdout when it fails closed"
-assert_stderr_has "karakuri-dock up" "--stdio tells the caller to run karakuri-dock up on the host"
-assert_stderr_has "-b <broker-key>" "--stdio's hint names the broker key as a separate argument"
+assert_stderr_has "karakuri-dock -p proj up" "--stdio tells the caller to run karakuri-dock up on the host when secrets are missing"
 assert_not_invoked "$FAKE_EXEC_ARGV_FILE" "--stdio does not exec sshd-inetd when secrets are missing"
 
 reset_env
@@ -321,20 +482,6 @@ if has_line "$FAKE_EXEC_ARGV_FILE" "-i -u root ${BASE_CID} /usr/local/sbin/sshd-
 	ok "--stdio execs the sshd-inetd wrapper by absolute path"
 else
 	ng "--stdio execs the sshd-inetd wrapper by absolute path (recorded: $(cat "$FAKE_EXEC_ARGV_FILE" 2>/dev/null))"
-fi
-
-reset_env
-export FAKE_RUNNING=false
-export FAKE_SECRETS_EXIT_CODE=0
-export FAKE_START_STDOUT="$BASE_CID"
-run_case -p proj --stdio
-
-assert_rc_zero "--stdio starts a stopped container before checking secrets"
-assert_stdout_empty "--stdio does not leak the 'docker start' stdout of a stopped container"
-if has_line "$FAKE_START_ARGV_FILE" "start ${BASE_CID}"; then
-	ok "--stdio really did start the container"
-else
-	ng "--stdio really did start the container (recorded: $(cat "$FAKE_START_ARGV_FILE" 2>/dev/null))"
 fi
 
 # --- モードの排他 -----------------------------------------------------------------
@@ -415,6 +562,19 @@ if has_line "$FAKE_EXEC_ARGV_FILE" "-it ${BASE_CID} zsh"; then
 else
 	ng "omitting -w leaves docker exec without -w (recorded: $(cat "$FAKE_EXEC_ARGV_FILE" 2>/dev/null))"
 fi
+
+# --- default mode: stopped container --------------------------------------------
+echo "the default mode does not start a stopped container"
+
+reset_env
+export FAKE_RUNNING=false
+run_case -p proj
+
+assert_rc_nonzero "the default mode does not start a stopped container"
+assert_stdout_empty "the default mode prints nothing on stdout when the container is stopped"
+assert_stderr_has "karakuri-dock -p proj up" "the default mode tells the caller to run karakuri-dock up on the host"
+assert_not_invoked "$FAKE_START_ARGV_FILE" "the default mode does not call docker start on a stopped container"
+assert_not_invoked "$FAKE_EXEC_ARGV_FILE" "the default mode does not exec into a stopped container"
 
 # --- 引数の誤り -------------------------------------------------------------------
 echo "argument errors print usage and nothing on stdout"
