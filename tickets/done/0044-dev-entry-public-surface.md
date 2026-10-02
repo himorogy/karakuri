@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: feat
 base: main
 targets:
