@@ -23,7 +23,21 @@ verify:
 
 ## 内容
 
-### 束の全体像
+束: 0052-proxy-log-vault → 0046-egress-guard-from-source → 0047-retire-egress-guard-npm → 0049-proxy-logformat → 0048-firewall-l7-without-external-dns → 0050-template-internal-network → 0051-karakuri-internal-network
+
+egress-guard と egress-proxy の配布・記録・経路を見直す束で、3つの流れからなる。
+
+- egress-guard の配布をイメージだけにする（0046 / 0047）。各イメージが npm を経由せず、このリポジトリのソースから焼く
+- egress-proxy のアクセスログを、LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を後から照会できる記録にする（0052 / 0049）。拒否された宛先の判定はこのリポジトリの外の監査側が持ち、ここでは保管庫とその契約までを提供する
+- dev から DNS で外へデータを持ち出す経路を、dev を internal ネットワークだけに載せて塞ぐ（0048 / 0050 / 0051）。issue `#83` が起点で、`#83` は 0051 の close で閉じる
+
+順序の依存は次のとおり。
+0052 は他に依存しない。
+0049 と 0048 は 0046 を待つ（0049 は 0046 と同じファイルに触るため、0048 は npm の新版を出さないので 0046 が無いと改修がイメージへ届かないため）。
+0050 は 0048 入りの devcontainer-base のタグを待つ。
+0051 は 0050 の着地と、0048 入りの devcontainer-base・0049 入りの egress-proxy のタグを待ち、karakuri の pin をまとめて上げる。
+
+### egress-guard の配布の流れ（0046 / 0047）
 
 `@himorogy/egress-guard` の npm への公開をやめ、`init-project-firewall.sh` と雛形の配布経路をイメージだけにする。
 現在は runtime-base と egress-proxy の2つのイメージが、それぞれ `ARG EGRESS_GUARD_VERSION=0.4.0` で npm から同じパッケージを取得している。
@@ -33,8 +47,7 @@ pin が2本あるため、dev 側と proxy 側が別の版で同じ `firewall.js
 runtime-base を使わない利用者（例えば受託先のコンテナ）は、public な egress-proxy イメージからスクリプトと雛形を取り出す。
 l7 を使うならどのみち egress-proxy を sidecar として pull するので、proxy とスクリプトを同じ digest で固定できる。
 
-家族: 0046 イメージがソースから焼く → 0047 npm への公開をやめる。
-karakuri 自身の pin の更新は、この2枚の後に人間が runtime-base → devcontainer-base → egress-proxy のタグを打ってから、別チケットで起票する。
+karakuri 自身の pin の更新は、人間が runtime-base → devcontainer-base → egress-proxy のタグを打ったあと、0051 がまとめて行う。
 
 ### この枚の変更
 
@@ -68,7 +81,7 @@ karakuri 自身の pin の更新は、この2枚の後に人間が runtime-base 
 
 - `packages/egress-guard/package.json` の公開設定、release 経路、パッケージ README の導入手順、台帳の B 節（0047）
 - `packages/egress-guard` ディレクトリの移動。置き場所は変えない
-- 各イメージのタグを打つことと、karakuri の pin の更新（別チケット）
+- 各イメージのタグを打つことと、karakuri の pin の更新（0051）
 - runtime-base の `/usr/local/bin` に雛形を置くこと。runtime-base は今も雛形を持っていない（利用側は自分の `firewall.json` を `COPY` する）ので、変えない
 
 ## 保証
