@@ -10,6 +10,7 @@ targets:
   - docs/archive/egress-guard-spec.md
   - docs/archive/egress-guard-design.md
   - docs/guarantees.md
+  - docs/conventions.md
 verify:
   - pnpm lint:sh
   - pnpm lint
@@ -86,6 +87,17 @@ issue `#83` の実測で、この構成でも壊れないと確かめたもの: 
 - 0048 が足した警告（外部名が引けたら適用ログに出る）の意味
 
 `images/devcontainer-base/README.md` が雛形の compose の構成を説明している箇所があれば、同じ内容に揃える（無ければ触らない）。
+
+### conventions
+
+`docs/conventions.md` の末尾に「発見しにくい事実」の節を新設し、次を書く（節がすでにあればそこに足す）。
+
+- internal ネットワークだけに載ったコンテナでは、Docker 内蔵の resolver は外部名を転送しない。これは Docker の設計で、外へ転送していた振る舞いは CVE-2024-29018 として修正された（Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降。moby の advisory GHSA-mq39-4gv4-mvpx）
+- 外向きのネットワークに1本でも載っていると転送は戻る
+- この性質に依っている箇所（雛形と karakuri の compose、`verify-l7.sh` の DNS の検査、egress-guard の L7 の生存確認）
+
+参照する箇所が複数あり、コードからもコマンドの出力からも読めない環境の事実なので、conventions に置く。
+compose のコメントと README は、この性質を説明し直さずに conventions を参照する。
 
 ### archive の注記
 
