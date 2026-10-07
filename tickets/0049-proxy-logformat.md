@@ -16,7 +16,19 @@ verify:
 
 ## 内容
 
-束: 0052-proxy-log-vault → 0049-proxy-logformat
+束: 0052-proxy-log-vault → 0046-egress-guard-from-source → 0047-retire-egress-guard-npm → 0049-proxy-logformat → 0048-firewall-l7-without-external-dns → 0050-template-internal-network → 0051-karakuri-internal-network
+
+egress-guard と egress-proxy の配布・記録・経路を見直す束で、3つの流れからなる。
+
+- egress-guard の配布をイメージだけにする（0046 / 0047）。各イメージが npm を経由せず、このリポジトリのソースから焼く
+- egress-proxy のアクセスログを、LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を後から照会できる記録にする（0052 / 0049）。拒否された宛先の判定はこのリポジトリの外の監査側が持ち、ここでは保管庫とその契約までを提供する
+- dev から DNS で外へデータを持ち出す経路を、dev を internal ネットワークだけに載せて塞ぐ（0048 / 0050 / 0051）。issue `#83` が起点で、`#83` は 0051 の close で閉じる
+
+順序の依存は次のとおり。
+0052 は他に依存しない。
+0049 と 0048 は 0046 を待つ（0049 は 0046 と同じファイルに触るため、0048 は npm の新版を出さないので 0046 が無いと改修がイメージへ届かないため）。
+0050 は 0048 入りの devcontainer-base のタグを待つ。
+0051 は 0050 の着地と、0048 入りの devcontainer-base・0049 入りの egress-proxy のタグを待ち、karakuri の pin をまとめて上げる。
 
 egress-proxy のアクセスログを、LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を後から照会できる記録として扱えるようにする束である。
 悪性パッケージは公表が数週〜数か月遅れるので、「その期間にその宛先へ通信したか」を1年遡って引けることが要になる。
@@ -25,7 +37,7 @@ egress-proxy のアクセスログを、LLM を通らない経路（パッケー
 
 ### 前提
 
-別の束の 0046（egress-guard をソースから焼く）が `images/egress-proxy/` と `verify-l7.sh` に触るので、0046 の着地後に着手する。
+0046（egress-guard をソースから焼く）が `images/egress-proxy/` と `verify-l7.sh` に触るので、0046 の着地後に着手する。
 0046 の targets に `squid.conf` は入っていない。
 
 ### 変えるもの
@@ -72,7 +84,7 @@ access_log /var/log/squid/access.log karakuri
 ### タグと pin
 
 このチケットはイメージを変えるだけで、`egress-proxy-v*` のタグを打つことと karakuri の pin を上げることは含まない。
-タグは着地後に打ち、karakuri の pin は別の束の 0051 がまとめて上げる。
+タグは着地後に打ち、karakuri の pin は 0051 がまとめて上げる。
 
 ### やらないこと
 
