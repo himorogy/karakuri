@@ -2,7 +2,6 @@
 status: draft # draft → open → close
 type: feat
 base: main
-issue: 83
 targets:
   - packages/egress-guard/scripts/init-project-firewall.sh
   - packages/egress-guard/tests/firewall-rules.test.sh
@@ -17,14 +16,30 @@ verify:
 
 ## 内容
 
-束: 0048-firewall-l7-without-external-dns → 0050-template-internal-network → 0051-karakuri-internal-network
+束: 0052-proxy-log-vault → 0046-egress-guard-from-source → 0047-retire-egress-guard-npm → 0049-proxy-logformat → 0048-firewall-l7-without-external-dns → 0050-template-internal-network → 0051-karakuri-internal-network
+
+egress-guard と egress-proxy の配布・記録・経路を見直す束で、3つの流れからなる。
+
+- egress-guard の配布をイメージだけにする（0046 / 0047）。各イメージが npm を経由せず、このリポジトリのソースから焼く
+- egress-proxy のアクセスログを、LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を後から照会できる記録にする（0052 / 0049）。拒否された宛先の判定はこのリポジトリの外の監査側が持ち、ここでは保管庫とその契約までを提供する
+- dev から DNS で外へデータを持ち出す経路を、dev を internal ネットワークだけに載せて塞ぐ（0048 / 0050 / 0051）。issue `#83` が起点で、`#83` は 0051 の close で閉じる
+
+順序の依存は次のとおり。
+0052 は他に依存しない。
+0049 と 0048 は 0046 を待つ（0049 は 0046 と同じファイルに触るため、0048 は npm の新版を出さないので 0046 が無いと改修がイメージへ届かないため）。
+0050 は 0048 入りの devcontainer-base のタグを待つ。
+0051 は 0050 の着地と、0048 入りの devcontainer-base・0049 入りの egress-proxy のタグを待ち、karakuri の pin をまとめて上げる。
 
 dev コンテナから DNS で外へデータを持ち出す経路を塞ぐ束である。
 dev は Docker 内蔵の resolver（127.0.0.11）にだけ問い合わせられるが、内蔵 resolver は外部名を再帰的に転送するので、`<data>.attacker.example` のような問い合わせで外へ出られる。
 proxy のログにも firewall の記録にも残らない唯一の経路で、インストールスクリプト型のマルウェアがよく使う手段でもある。
 dev を `internal: true` のネットワークだけに載せ、egress-proxy を internal と外向きの両方に載せると、内蔵 resolver は外部名を転送しなくなる（issue `#83` に実測がある）。
+これは偶然の挙動ではなく Docker の設計である。
+moby の advisory GHSA-mq39-4gv4-mvpx（CVE-2024-29018。GitHub API で原文を確認）は、internal ネットワークだけに載ったコンテナは上流の resolver で外部名を解決できないことを設計として述べ、ホストの loopback の resolver を経由して外へ転送していた振る舞いを、データ持ち出しにつながる脆弱性として修正した（Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降）。
+同 advisory は、Docker の文書が `--internal` を「ネットワーク外との通信から完全に隔離する」と述べていることを修正の根拠に挙げている。
+退行すれば Docker 側の脆弱性として扱われる種類の振る舞いであり、こちらでは 0050 が verify-l7.sh に足す検査が常設で見張る。
 0048 が egress-guard をその構成で動くようにし、0050 が雛形と検収の構成を移し、0051 が karakuri 自身を移す。
-0048 は別の束の 0046（egress-guard をソースから焼く）の着地後に着手する。npm 0.5.0 を出さないので、0046 が無いとこの改修がイメージへ届かない。
+0048 は0046（egress-guard をソースから焼く）の着地後に着手する。npm 0.5.0 を出さないので、0046 が無いとこの改修がイメージへ届かない。
 
 ### 現状と壊れ方
 
