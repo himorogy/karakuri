@@ -168,3 +168,9 @@ volumes:
     name: karakuri-codex-config
   karakuri-proxy-log:
     name: karakuri-proxy-log
+    # host-tools/proxy-log-setup.sh が書き出し対象を見つけるための印。
+    # 値は保管庫のディレクトリ名になる（host-tools/README.md「egress-proxy
+    # のアクセスログを保管庫へ書き出す」）。既存のボリュームに後から付かない
+    # ——付け直すとそれまでのログが消える。
+    labels:
+      karakuri.egress-log: karakuri
