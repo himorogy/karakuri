@@ -1,5 +1,5 @@
 ---
-status: draft
+status: open
 type: refactor
 base: main
 targets:
