@@ -227,9 +227,7 @@ jobs:
           # pnpm・dotenvx・wrangler・node はいずれも base image に焼かれており、
           # プロジェクト側から差し替えられない。上げるレバーは runtime-base の
           # ARG / FROM しかないため、上げ忘れると全プロジェクトが古い版のまま
-          # 動き続ける。egress-guard はここに含まれない。ビルド元コミットの
-          # packages/egress-guard をそのまま焼くため、追従すべき別版という
-          # ものが無い。
+          # 動き続ける。
           RUNTIME_BASE_DOCKERFILE="images/runtime-base/Dockerfile"
 
           if [ -f "$RUNTIME_BASE_DOCKERFILE" ]; then

@@ -58,7 +58,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
 - `vim-tiny`（`git commit` / `rebase -i` がエディタ不在で失敗しないための最小保険）
 - egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `dnsutils` / `aggregate`
   （`curl` と `jq` は上の行と `node:24` に含まれる）
-- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`packages/egress-guard`、ビルド元コミットのソースそのもの。npm は経由しない）と
+- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`packages/egress-guard`、ビルド元コミットのソースそのもの）と
   `/etc/sudoers.d/node-firewall`
 - `crit`（bind は crit 既定の `127.0.0.1` のまま。`CRIT_PORT=4588` をイメージが固定、
   更新チェック無効。根拠と上書き方法は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）

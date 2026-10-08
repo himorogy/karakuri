@@ -11,7 +11,7 @@ ghcr.io/himorogy/egress-proxy:1
 ## 何を焼いてあるか
 
 - `squid`（`/etc/squid/squid.conf`。CONNECT と絶対 URI の HTTP だけを扱い、TLS は終端しない）
-- `/usr/local/bin/init-project-firewall.sh` — `packages/egress-guard`（このリポジトリ、ビルド元コミットのソースそのもの）から named build context 経由で取得。npm は経由しない
+- `/usr/local/bin/init-project-firewall.sh` — `packages/egress-guard`（このリポジトリ、ビルド元コミットのソースそのもの）から named build context 経由で取得
 - `/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` — 同じく `packages/egress-guard` の雛形。実行可能ではない
 - `/usr/local/bin/egress-proxy-bake` — 利用側が呼ぶ焼き込みコマンド
 - `USER proxy`（uid 13）で起動する `ENTRYPOINT`

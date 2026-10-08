@@ -8,7 +8,7 @@
 #
 # 単一ステージ。init-project-firewall.sh と templates/ は packages/egress-guard
 # (このリポジトリ、ビルド元コミットのソースそのもの) から named build context
-# `egress-guard` で受け取る。npm は経由しない。
+# `egress-guard` で受け取る。
 
 FROM debian:bookworm-slim
 
@@ -29,7 +29,7 @@ RUN apt-get update \
 RUN mkdir -p /var/spool/squid /var/log/squid /run
 
 # init-project-firewall.sh and the three firewall.json templates come from
-# packages/egress-guard in this repo, not from npm. The build context is
+# packages/egress-guard in this repo. The build context is
 # images/egress-proxy, so they're supplied as a named build context (same
 # shape as runtime-base's env-guard context): pass
 # `--build-context egress-guard=packages/egress-guard` (GitHub Actions:
