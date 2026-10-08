@@ -11,6 +11,15 @@ targets:
   - docs/archive/egress-guard-design.md
   - docs/guarantees.md
   - docs/conventions.md
+bundle:
+  - 0052-proxy-log-vault
+  - 0052a-proxy-log-interval
+  - 0046-egress-guard-from-source
+  - 0047-retire-egress-guard-npm
+  - 0049-proxy-logformat
+  - 0048-firewall-l7-without-external-dns
+  - 0050-template-internal-network
+  - 0051-karakuri-internal-network
 verify:
   - pnpm lint:sh
   - pnpm lint
@@ -20,8 +29,6 @@ verify:
 # 雛形の compose で dev を internal ネットワークだけに載せ、DNS の持ち出し経路を塞ぐ
 
 ## 内容
-
-束: 0052-proxy-log-vault → 0052a-proxy-log-interval → 0046-egress-guard-from-source → 0047-retire-egress-guard-npm → 0049-proxy-logformat → 0048-firewall-l7-without-external-dns → 0050-template-internal-network → 0051-karakuri-internal-network
 
 egress-guard と egress-proxy の配布・記録・経路を見直す束で、3つの流れからなる。
 
