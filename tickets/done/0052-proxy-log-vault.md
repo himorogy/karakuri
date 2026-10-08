@@ -1,5 +1,5 @@
 ---
-status: open # draft → open → close
+status: close
 type: feat
 base: main
 targets:
@@ -97,7 +97,7 @@ for vol in label karakuri.egress-log を持つボリューム:
         if 前回の実行が残した退避ファイルがある:
             先にそれを書き出す（下の書き出しと同じ手順）
         docker exec running で access.log を退避ファイル名へ mv する
-        docker exec running で squid -k rotate を送る      # squid が新しい access.log を作って開き直す
+        running へ SIGUSR1 を送る（docker kill --signal=USR1）  # squid が新しい access.log を作って開き直す
         退避ファイルを docker exec running 越しに読み、保管庫へ gzip で書く（一時名に書いてから rename）
         書き終えたら docker exec running で退避ファイルを消す
     else:
@@ -106,7 +106,7 @@ for vol in label karakuri.egress-log を持つボリューム:
             書き出さず「読めるコンテナが無い」と状態に記録して次へ
         img から使い捨てのコンテナを起こし（ネットワーク無し、uid 13、エントリポイントを sh に差し替え、ボリュームを mount）、
             残っている退避ファイルと access.log を、上と同じ手順で書き出して消す
-        # 書き手がいないので squid -k rotate は要らない
+        # 書き手がいないので rotate（SIGUSR1）は要らない
 保管庫の各プロジェクトで、365日を超えたファイルを消す
 状態ファイルを書く（一時名に書いてから rename）
 ```
@@ -120,9 +120,12 @@ for vol in label karakuri.egress-log を持つボリューム:
 停止後に起動した squid が `access.log` の無いディレクトリでファイルを作り直すこと、egress-proxy のイメージに `sh` / `mv` / `rm` があることは**未確認**である。
 
 退避は logrotate の create 方式である。
-`mv` のあと `-k rotate` までの間に来た行は、squid が開いたままのファイル（退避ファイル）に入り、`-k rotate` のあとの行は新しい `access.log` に入る。
+`mv` のあと rotate までの間に来た行は、squid が開いたままのファイル（退避ファイル）に入り、rotate のあとの行は新しい `access.log` に入る。
 この手順で行が欠けないこと、`logfile_rotate` を書かない設定のままで成り立つことは、squid 5.7 を直接起動して実測した（`mv` → CONNECT → `-k rotate` → CONNECT を2周し、全行がどちらかのファイルに1回ずつ入った）。
 `squid -k rotate` は squid と同じ uid から送れば root も capability も要らない（同じく実測。別の uid からは未確認）。
+ただし egress-proxy のイメージでは squid が `squid -N` で PID 1 として動き、pid ファイルの値が 1 になるので、`squid -k rotate` は `Bad PID file ... unreasonably small PID value: 1` で拒否される（ホスト検収で実測）。
+`squid -k rotate` がしているのは squid の pid へ SIGUSR1 を送ることだけなので、ジョブは `docker kill --signal=USR1` でコンテナの PID 1（squid）へ直接送る。
+これで squid が新しい `access.log` を作って開き直し、その後の行が新しいファイルへ入ることも同じ検収で実測した。
 コンテナの中で `docker exec` が uid 13 として動き、`mv` と `rm` がイメージに入っていて、`read_only` のルートと `cap_drop: [ALL]` の下でもボリューム上で通ることは**未確認**である（この開発環境には docker が無い）。
 実装者は docker のスタブでテストを組み、実機での確認は検収に回す。
 
@@ -138,7 +141,7 @@ for vol in label karakuri.egress-log を持つボリューム:
 そのときの状態ファイルの記録が実際とずれることは受け入れる。
 docker の操作が失敗したと分かっている場合は、その失敗を別の状態（読めるコンテナが無い、label が不正など）に読み替えず、失敗として記録する。
 
-`squid -k rotate` を送ってから squid が新しい `access.log` を開き直すまでには間がありうる。
+rotate（SIGUSR1）を送ってから squid が新しい `access.log` を開き直すまでには間がありうる。
 退避ファイルを読んで消すのは、開き直したと確かめてからにする。
 
 保管庫のファイル名は、書き出した時刻（UTC）を入れた `access-<YYYYMMDDTHHMMSSZ>.log.gz` とする。
@@ -204,7 +207,7 @@ Docker に繋がらない場合も、状態ファイルは `failed` として書
 - 保管庫のファイル名は `access-<YYYYMMDDTHHMMSSZ>.log.gz`（書き出した時刻、UTC）である。状態ファイルは最終実行の開始時刻・終了時刻・全体の結果（`ok` / `partial` / `failed`）と、ボリューム名をキーにしたボリュームごとの結果（書き出した行数、読めるコンテナが無い、label が不正、など）を持つ（テスト: 新設）
 - docker が見つからないとき、`proxy-log-setup.sh install` は非ゼロで終わり、何も配置しない（テスト: 新設）
 - `proxy-log-setup.sh install` は2回打っても0で終わり、置かれる内容は変わらない。`uninstall` は保管庫と状態ファイルを残す（テスト: 新設）
-- 実機の Docker と egress-proxy で、書き出しのあいだに来た行が欠けない — `未検証の約束 (テスト困難: ホストの Docker と稼働中の egress-proxy が要る。漏れうるのはコンテナ内での mv と squid -k rotate の権限で、検収で行数の突き合わせを行う)`
+- 実機の Docker と egress-proxy で、書き出しのあいだに来た行が欠けない — `未検証の約束 (テスト困難: ホストの Docker と稼働中の egress-proxy が要る。漏れうるのはコンテナ内での mv の権限と、SIGUSR1 を受けた squid の開き直しで、検収で行数の突き合わせを行う)`
 
 ### 維持する保証
 

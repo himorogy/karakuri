@@ -76,6 +76,18 @@ _dexec() {
 	"$DOCKER_BIN" exec "$cid" sh -c "$script"
 }
 
+# _signal_rotate <cid> — squid に新しい access.log を開き直させる。
+# egress-proxy のイメージは `ENTRYPOINT ["squid", "-N", ...]` で squid を
+# コンテナの PID 1 として動かしており、`squid -k rotate` は pid ファイルの
+# 値が 1 になるため `Bad PID file ... unreasonably small PID value: 1` で
+# 拒否される（ホストでの検収で実測）。`squid -k rotate` がしているのは
+# squid の pid へ SIGUSR1 を送ることだけなので、PID 1 へ直接送る。これで
+# squid が新しい access.log を開き直すことも同じ検収で実測した。
+_signal_rotate() {
+	local cid="$1"
+	"$DOCKER_BIN" kill --signal=USR1 "$cid" >/dev/null 2>&1
+}
+
 # _file_state <cid> <path> — ファイルの有無を標準出力の "present" /
 # "absent" / "unknown" で返す。終了コードは信号として使わない——docker CLI
 # はデーモンに繋がらないときやコンテナが無いときも終了コード 1 で終わり、
@@ -140,7 +152,7 @@ _find_proxy_container() {
 	return 2
 }
 
-# _wait_for_present <cid> <path> — `squid -k rotate` はシグナルを送って戻る
+# _wait_for_present <cid> <path> — rotate（SIGUSR1）はシグナルを送って戻る
 # だけで、squid が実際に新しいファイルを開き直すまでには間がありうる。
 # 開き直したと確かめる前に退避ファイルを読んで消すと、開き直すまでに来た
 # 行を失う。短い上限つきで present になるまで待ち、上限に達したら非ゼロで
@@ -217,9 +229,8 @@ _flush_file() {
 		# docker exec は、コンテナとの接続が切れると、中の rm が実際には
 		# 効いていても非ゼロを返しうる。ここで $dest を無条件に消すと、
 		# 退避ファイルが本当に消えていた場合に、今回の行が保管庫にも
-		# 退避ファイルにも残らず永久に失われる——欠けないという保証の方が
-		# 重複しないという保証より優先する（チケット本文「書き出しの途中で
-		# 失敗して状態がはっきりしないとき」）。rm の成否を _file_state で
+		# 退避ファイルにも残らず永久に失われる——行を失うより、次の実行で
+		# 同じ行が重複する方を受け入れる。rm の成否を _file_state で
 		# 確かめ直し、三つの場合で扱いを分ける。
 		case "$(_file_state "$cid" "$path")" in
 		present)
@@ -286,7 +297,7 @@ _process_running() {
 	# 実際に開き直したと確かめてから読む。
 	case "$(_file_state "$cid" "$stash_path")" in
 	present)
-		_dexec "$cid" "squid -k rotate" >/dev/null 2>&1 || return 1
+		_signal_rotate "$cid" || return 1
 		_wait_for_present "$cid" "$access_path" || return 1
 		;;
 	absent) ;;
@@ -305,10 +316,9 @@ _process_running() {
 
 	_dexec "$cid" "mv '${access_path}' '${stash_path}'" >/dev/null 2>&1 || return 1
 
-	# squid -k rotate は squid と同じ uid から送れば通る（squid 5.7 で実測）。
-	if ! _dexec "$cid" "squid -k rotate" >/dev/null 2>&1; then
+	if ! _signal_rotate "$cid"; then
 		# 失敗の報告を信じて mv を打ち消す前に access.log の有無を確かめる。
-		# rotate も docker exec の報告とは裏腹に実際には効いていることが
+		# rotate も docker 自身の報告とは裏腹に実際には効いていることが
 		# あり、そのときは access.log が新しく存在する。それを確かめずに
 		# 退避ファイルを書き戻すと、rotate 後に squid が書いた分をその場で
 		# 上書きし、次の rotate までの行を消す。absent と確かめられた
@@ -323,7 +333,7 @@ _process_running() {
 	fi
 	# 失敗の報告を信じて mv を打ち消す前に… と同じ理由で、成功の報告を
 	# 信じて即座に読むこともしない——シグナルを送って戻るのと、squid が
-	# 実際に開き直すのとの間には間がありうる（チケット本文）。
+	# 実際に開き直すのとの間には間がありうる。
 	_wait_for_present "$cid" "$access_path" || return 1
 
 	lines="$(_flush_file "$cid" "$stash_path" "$project")" || return 1
@@ -343,7 +353,7 @@ _process_running() {
 # 失敗した場合は 1 を返す。docker run の失敗はイメージを特定できている
 # （直前の inspect が確かめている）ので「読めるコンテナが無い」には
 # 当たらない——docker の操作が失敗したと分かっている場合を、別の想定内の
-# 状態に読み替えない（チケット本文）。これらを main_run 側で区別しないと、
+# 状態に読み替えない。これらを main_run 側で区別しないと、
 # docker 自身の不調や退避ファイルを読めなかった実際の失敗が「読めるコンテナ
 # が無い」という想定内の状態として誤って記録される。
 _process_stopped() {
@@ -405,12 +415,22 @@ _process_stopped() {
 	# 失敗として返す——退避ファイルの書き出し失敗を握りつぶして result=ok
 	# にしない。
 	leftover_lines="$(_flush_file "$twcid" "${SQUID_LOG_DIR}/${STASH_NAME}" "$project")" || stash_rc=1
+	if [ "$stash_rc" -ne 0 ]; then
+		# 退避ファイルの書き出しに失敗したまま access.log も書き出すと、
+		# 保管庫のファイル名（書き出した時刻）の順序と、行が実際に書かれた
+		# 時刻の順序が前後する——退避ファイルの方が古い行を持つはずなのに、
+		# 失敗で後回しにする分、ファイル名は access.log 側より後になる。
+		# 退避ファイルを諦めるときは access.log の書き出しも行わない。
+		"$DOCKER_BIN" rm -f "$twcid" >/dev/null 2>&1 || true
+		return 1
+	fi
+
 	lines="$(_flush_file "$twcid" "${SQUID_LOG_DIR}/access.log" "$project")"
 	rc=$?
 
 	"$DOCKER_BIN" rm -f "$twcid" >/dev/null 2>&1 || true
 
-	[ "$stash_rc" -eq 0 ] && [ "$rc" -eq 0 ] || return 1
+	[ "$rc" -eq 0 ] || return 1
 	printf '%s\n' "$((leftover_lines + lines))"
 	return 0
 }

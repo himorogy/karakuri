@@ -22,17 +22,19 @@
 #   containers/<cid>/fs/...        the container's view; fs/var/log/squid is a
 #                                   symlink to volumes/<name> for containers that
 #                                   actually mount a volume there
-#   containers/<cid>/rotate-fail   if present, a `squid -k rotate` sent to this
-#                                   container fails instead of recreating access.log
+#   containers/<cid>/rotate-fail   if present, a `docker kill --signal=USR1`
+#                                   sent to this container fails instead of
+#                                   recreating access.log
 #   containers/<cid>/rotate-fail-effective
-#                                   if present, a `squid -k rotate` sent to this
-#                                   container really recreates access.log but
-#                                   still reports failure
-#   containers/<cid>/rotate-delay  if present, a `squid -k rotate` sent to this
-#                                   container reports success without
-#                                   recreating access.log (the test creates it
-#                                   later, or never, to model the delay before
-#                                   squid actually reopens its log)
+#                                   if present, a `docker kill --signal=USR1`
+#                                   sent to this container really recreates
+#                                   access.log but still reports failure
+#   containers/<cid>/rotate-delay  if present, a `docker kill --signal=USR1`
+#                                   sent to this container reports success
+#                                   without recreating access.log (the test
+#                                   creates it later, or never, to model the
+#                                   delay before squid actually reopens its
+#                                   log)
 #   containers/<cid>/mv-fail       if present, an `mv` sent to this container
 #                                   fails instead of renaming the file
 #   containers/<cid>/mv-fail-effective
@@ -91,9 +93,9 @@
 #
 # `docker exec <cid> sh -c '<script>'` rewrites the fixed path /var/log/squid
 # in <script> to the container's fake fs root and then really runs it with
-# `sh -c`, so mv/cat/rm/test behave for real against the fixture files. A
-# literal `squid -k rotate` is special-cased to recreate an empty access.log,
-# mirroring what rotate does to a live squid.
+# `sh -c`, so mv/cat/rm/test behave for real against the fixture files.
+# `docker kill <cid>` recreates an empty access.log if the old one was moved
+# away, mirroring what SIGUSR1 does to a live squid.
 #
 set -uo pipefail
 
@@ -256,6 +258,48 @@ ps)
 	done
 	exit 0
 	;;
+kill)
+	# docker kill --signal=USR1 <cid> — squid が egress-proxy のイメージで
+	# PID 1 として動くため、squid -k rotate ではなく SIGUSR1 を直接送る
+	# （karakuri-proxy-log-export の _signal_rotate を参照）。--signal の
+	# 値そのものは見ない——ジョブはこの形でしか呼ばない。
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--signal=*) shift ;;
+		--signal) shift 2 ;;
+		*) break ;;
+		esac
+	done
+	cid="$1"
+	root="$W/containers/$cid/fs"
+	mkdir -p "$root"
+	if [ -e "$W/containers/$cid/rotate-fail" ]; then
+		exit 1
+	fi
+	if [ -e "$W/containers/$cid/rotate-fail-effective" ]; then
+		# docker kill が非ゼロを返しても、コンテナの中の squid は実際には
+		# 開き直していることがある。そのずれを再現するため、本当に
+		# 開き直したうえで失敗を返す。
+		mkdir -p "$root/var/log/squid"
+		[ -e "$root/var/log/squid/access.log" ] || : >"$root/var/log/squid/access.log"
+		exit 1
+	fi
+	if [ -e "$W/containers/$cid/rotate-delay" ]; then
+		# rotate（SIGUSR1）はシグナルを送って戻るだけで、squid が実際に
+		# 新しいファイルを開き直すまでには間があることがある。ここでは
+		# 開き直しをテストが手で起こすまで起こさない——access.log を
+		# 作らずに成功で返す。
+		exit 0
+	fi
+	# access.log を移動してから rotate を送った場合だけ、squid は
+	# そのパスに新しい空ファイルを作る。移動していない（まだ access.log
+	# が存在する）場合、rotate は同じファイルへの書き込みを続けるだけで
+	# 中身は変わらない（squid 5.7 で実測）。ここを無条件に truncate
+	# すると、まだ退避していない内容を rotate のたびに消してしまう。
+	mkdir -p "$root/var/log/squid"
+	[ -e "$root/var/log/squid/access.log" ] || : >"$root/var/log/squid/access.log"
+	exit 0
+	;;
 exec)
 	cid="$1"
 	shift
@@ -264,36 +308,6 @@ exec)
 	if [ "${1:-}" = "sh" ] && [ "${2:-}" = "-c" ]; then
 		script="$3"
 		case "$script" in
-		*"squid -k rotate"*)
-			if [ -e "$W/containers/$cid/rotate-fail" ]; then
-				exit 1
-			fi
-			if [ -e "$W/containers/$cid/rotate-fail-effective" ]; then
-				# docker exec が非ゼロを返しても、コンテナの中の squid は
-				# 実際には開き直していることがある。そのずれを再現する
-				# ため、本当に開き直したうえで失敗を返す。
-				mkdir -p "$root/var/log/squid"
-				[ -e "$root/var/log/squid/access.log" ] || : >"$root/var/log/squid/access.log"
-				exit 1
-			fi
-			if [ -e "$W/containers/$cid/rotate-delay" ]; then
-				# squid -k rotate はシグナルを送って戻るだけで、squid が
-				# 実際に新しい access.log を開き直すまでには間がある
-				# ことがある。ここでは開き直しをテストが手で起こすまで
-				# 起こさない——access.log を作らずに成功で返す。
-				exit 0
-			fi
-			# access.log を移動してから rotate を送った場合だけ、squid は
-			# そのパスに新しい空ファイルを作る。移動していない（まだ
-			# access.log が存在する）場合、rotate は同じファイルへの
-			# 書き込みを続けるだけで中身は変わらない——チケット本文
-			# 「現状」節の実測（squid 5.7）どおり。ここを無条件に
-			# truncate すると、まだ退避していない内容を rotate のたびに
-			# 消してしまう。
-			mkdir -p "$root/var/log/squid"
-			[ -e "$root/var/log/squid/access.log" ] || : >"$root/var/log/squid/access.log"
-			exit 0
-			;;
 		"mv "*)
 			if [ -e "$W/containers/$cid/mv-fail" ]; then
 				exit 1
@@ -886,7 +900,7 @@ touch "$DOCKER_WORLD/containers/c-run-g/rotate-fail-effective"
 run_job
 assert_eq "rotate effective failure: exits non-zero (partial)" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
 assert_true "rotate effective failure: recorded as export-failed" status_has "volume.volG=export-failed:projg"
-# rotate は exec の報告とは裏腹に実際には開き直していたので、access.log は
+# rotate は docker kill の報告とは裏腹に実際には開き直していたので、access.log は
 # 新しい空のファイルのはず。打ち消しの mv で古い内容を上書きしていたら
 # ここが古い内容のままになる。
 assert_eq "rotate effective failure: access.log is the fresh empty file, not rolled back" "$(cat "$DOCKER_WORLD/volumes/volG/access.log")" ""
@@ -1137,6 +1151,11 @@ assert_eq "stopped unreadable stash: exits non-zero (partial)" "$([ "$RC" -ne 0 
 assert_true "stopped unreadable stash: recorded as export-failed, not stopped/ok" status_has "volume.volS=export-failed:projs"
 assert_true "stopped unreadable stash: overall result is partial, not ok" status_has "result=partial"
 assert_true "stopped unreadable stash: the unreadable stash file is left in place" test -e "$DOCKER_WORLD/volumes/volS/access.log.export"
+# 退避ファイルの書き出しを諦めたら access.log の書き出しも行わない——
+# 両方を試みると、保管庫のファイル名（書き出し時刻）の順序と行の時刻の
+# 順序が前後しうる。
+assert_eq "stopped unreadable stash: access.log is left untouched (not read out of order)" "$(cat "$DOCKER_WORLD/volumes/volS/access.log")" "stoppedline"
+assert_false "stopped unreadable stash: nothing was written to the vault" test -d "$SBHOME/.local/state/karakuri/egress-log/projs"
 
 echo "=== karakuri-proxy-log-export: no readable container ==="
 
