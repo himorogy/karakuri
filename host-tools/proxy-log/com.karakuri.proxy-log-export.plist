@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	com.karakuri.proxy-log-export — egress-proxy のアクセスログを日次で
+	ホストの保管庫へ書き出す LaunchAgent。loopback-aliases と違い root は
+	要らない（叩く docker の socket は利用者のもの）ので LaunchAgent にして
+	あり、sudo も使わない。
+
+	__KARAKURI_JOB_PATH__ と __KARAKURI_STDERR_LOG__ はプレースホルダ。
+	proxy-log-setup.sh の install が、利用者の $HOME を含む実際の絶対パスへ
+	sed で置き換えてから ~/Library/LaunchAgents/ へ書く（$HOME は plist の
+	中では展開されないため、配布物のこのファイルを直接コピーしても動かない）。
+
+	一度走って終わるジョブなので KeepAlive は書いていない（理由は
+	com.karakuri.loopback-aliases.plist と同じ）。StandardOutPath も同じ
+	理由で書かない——karakuri-proxy-log-export は正常な経路では標準出力に
+	何も出さない。
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.karakuri.proxy-log-export</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__KARAKURI_JOB_PATH__</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>17</integer>
+	</dict>
+	<key>StandardErrorPath</key>
+	<string>__KARAKURI_STDERR_LOG__</string>
+</dict>
+</plist>

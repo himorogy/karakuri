@@ -455,6 +455,19 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `egress-proxy-bake` は、設定が `--check-config` を通らないとき非ゼロで終わり、ACL を書かない（テスト: "壊れた設定では非ゼロで終わり ACL を作らない"）
 - `egress-proxy-bake` が書く ACL は、同じ設定に対する `init-project-firewall.sh --print-proxy-acl` の出力と一致する。`mode` が `audit` のときだけ、allowlist 外の宛先を通す（テスト: "ACL は --print-proxy-acl の出力と一致する" / "audit では allowlist 外を通す設定になる" / "enforce では拒否のまま"）
 
+### 26. `host-tools/tests/proxy-log.test.sh` — `host-tools/proxy-log-setup.sh` と `host-tools/proxy-log/`
+
+起源: `0052-proxy-log-vault`
+
+- label `karakuri.egress-log` を持ち、mount しているコンテナ（停止中を含む）があるボリュームのアクセスログは、1回の実行ごとにホストの保管庫のそのプロジェクトのディレクトリへ書き出される。書き出した行は保管庫で欠けず、次の実行で重複しない。前回の実行が途中で失敗していても、その分の行は次の実行で書き出される（テスト: "running: the vault holds the original lines without loss" / "running second run: only the new lines are in the new file" / "leftover stash: both the leftover and the fresh lines reached the vault" / "leftover stash: the status line count includes the leftover's lines" / "stopped: the throwaway container's read reaches the vault" / "rm failure: once rm succeeds, each line from the failed run reaches the vault exactly once" / "rm failure: the other line is not duplicated either" / "rm effective failure: the vault file holds the original lines" / "rm effective failure: recorded as a normal successful export" / "unknown recheck: recorded as export-failed, not a false success" / "unknown recheck: the vault file is kept, not deleted on a guess" / "cannot confirm writer: recorded as export-failed, not no-container" / "cannot confirm writer: no throwaway container was spawned (no fallback to the stopped procedure)" / "cannot confirm writer: access.log is untouched" / "rotate effective failure: access.log is the fresh empty file, not rolled back" / "rotate effective failure: the old content is in the stash, not lost" / "mv effective failure: all three lines (including the one written after the failed mv) reached the vault" / "mv effective failure: no line is duplicated" / "ps running failure: access.log is untouched" / "ps -a failure: access.log is untouched" / "inspect failure: access.log is untouched" / "rotate delay: the lines written before the delayed rotate reach the vault" / "rotate timeout: the lines are still in the stash, not lost" / "cannot confirm leftover: the stash file is untouched, not read and removed without rotating" / "cannot confirm leftover: access.log was never created (rotate was never sent)" / "stopped unreadable stash: access.log is left untouched (not read out of order)"）
+- 保管庫の中で365日を超えたファイルは消え、それより新しいファイルは消えない（テスト: "retention: the file older than 365 days is pruned" / "retention: the newer file is kept" / "retention: 365 days and 1 hour old is pruned (just past the boundary)" / "retention: 364 days and 23 hours old is kept (just inside the boundary)"）
+- label の値が不正なボリュームと、値が他と重複するボリュームは保管庫に書き出されず、その旨が状態ファイルに残る。他のボリュームの書き出しは続く（テスト: "invalid label: recorded (empty value)" / "invalid label: recorded (uppercase/underscore)" / "duplicate label: both volumes are recorded" / "invalid/duplicate: the unaffected volume still exports"）
+- 各実行は、最終実行の時刻と結果を状態ファイルに残す。Docker に繋がらないときも、失敗として残す（テスト: "status shape: run_start looks like ISO 8601 UTC" / "status shape: run_end looks like ISO 8601 UTC" / "docker unreachable: status is failed" / "stopped unreadable stash: recorded as export-failed, not stopped/ok" / "stopped unreadable stash: overall result is partial, not ok" / "ps running failure: recorded as export-failed, not no-container" / "ps -a failure: recorded as export-failed, not no-container" / "inspect failure: recorded as export-failed, not no-container" / "cannot confirm leftover: recorded as export-failed" / "docker run failure: recorded as export-failed, not no-container"）
+- `proxy-log-setup.sh` は macOS 以外では、どのサブコマンドも何も配置せず 0 で終わる（テスト: "non-macOS 'install': nothing under HOME was created" / "non-macOS 'uninstall': nothing under HOME was created" / "non-macOS 'run': nothing under HOME was created"）
+- 保管庫のファイル名は `access-<YYYYMMDDTHHMMSSZ>.log.gz`（書き出した時刻、UTC）である。状態ファイルは最終実行の開始時刻・終了時刻・全体の結果（`ok` / `partial` / `failed`）と、ボリューム名をキーにしたボリュームごとの結果（書き出した行数、読めるコンテナが無い、label が不正、など）を持つ（テスト: "running: the vault filename matches access-<YYYYMMDDTHHMMSSZ>.log.gz" / "status shape: run_start looks like ISO 8601 UTC" / "status shape: run_end looks like ISO 8601 UTC" / "status shape: result is ok" / "docker unreachable: status is failed" / "running: status records the volume and line count" / "no container: status records it" / "invalid label: recorded (empty value)" / "duplicate label: both volumes are recorded"）
+- docker が見つからないとき、`proxy-log-setup.sh install` は非ゼロで終わり、何も配置しない（テスト: "install without docker: exits non-zero" / "install without docker: nothing was placed"）
+- `proxy-log-setup.sh install` は2回打っても0で終わり、置かれる内容は変わらない。`uninstall` は保管庫と状態ファイルを残す（テスト: "install twice: second install exits 0" / "install twice: job body unchanged" / "install twice: plist unchanged" / "uninstall: the vault is kept" / "uninstall: the status file is kept" / "uninstall: the status file content is untouched"）
+
 ## Unverified Promises
 
 ### C-2a — `未検証の約束 (テスト困難: CI の runtime-base ワークフローが、push 済みイメージを両アーキで smoke test する)`
@@ -531,6 +544,12 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - イメージは `squid` を非 root（uid 13）で起動する（B-b の同じ文の担い手はこのイメージである）
 
+### G-a — `未検証の約束 (テスト困難: ホストの Docker と稼働中の egress-proxy が要る。漏れうるのはコンテナ内での mv の権限と、SIGUSR1 を受けた squid の開き直しで、検収で行数の突き合わせを行う)`
+
+起源: `0052-proxy-log-vault`
+
+- 実機の Docker と egress-proxy で、書き出しのあいだに来た行が欠けない
+
 ## 境界宣言
 
 ### 免責
@@ -569,6 +588,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `host-tools/dock.sh`、`host-tools/prod-run.sh`、`host-tools/dev-inject.sh`、`host-tools/host-run.sh`
 - `host-tools/broker-bitwarden.sh`、`host-tools/broker-macos-keychain.sh`、`host-tools/broker-macos-keychain-set.sh`
 - `host-tools/loopback-setup.sh` と `host-tools/loopback/` の daemon・plist
+- `host-tools/proxy-log-setup.sh` と `host-tools/proxy-log/` の export job・plist
 - `host-tools/compose.prod.yaml`
 - `host-tools/shims/`（`_dotenvx` と Windows 用ラッパー）
 - `host-tools/tests/` — 配布物に同梱されるテスト一式

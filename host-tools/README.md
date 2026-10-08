@@ -3,7 +3,7 @@
 ## これは何か
 
 karakuri のうち、ホスト側で使用できる utility。
-担うのは 2 つで、broker から鍵を取り出してコンテナの stdin へ流す搬送路と、dev / prod のコンテナへ入る入口である。
+担うのは、broker から鍵を取り出してコンテナの stdin へ流す搬送路、dev / prod のコンテナへ入る入口、そして egress-proxy のアクセスログをホストの保管庫へ保全する仕組みである。
 コンテナの中身（イメージ・entrypoint・コンテナ側の shim）は別の配布物が持ち、こちらはそれを起動する側だけを持つ。
 
 利用側へは `host-tools-v*` タグの clone として渡る。
@@ -42,6 +42,8 @@ workspace の中に置くと、そこに常駐する LLM エージェントが�
 
 このほかに `shims/_dotenvx`（ホスト側の dotenvx shim）と `compose.prod.yaml`（prod コンテナの定義のひな形）が入っている。
 `dev-inject.sh` / `prod-run.sh` / `host-run.sh` / `loopback-setup.sh` は上の関数が呼ぶ下位スクリプトで、直接打つ必要はない。
+
+`proxy-log-setup.sh` と `proxy-log/` は、`karakuri.sh` の関数からは呼ばれない独立したツールで、直接実行する（詳細は下の「egress-proxy のアクセスログを保管庫へ書き出す」）。
 
 ## 推奨の使い方
 
@@ -266,6 +268,37 @@ digest は配布元のレジストリで確かめて貼る。
 
 **保証**
 [`tests/karakuri.test.sh`](./tests/karakuri.test.sh)。
+
+### egress-proxy のアクセスログを保管庫へ書き出す
+
+**何のために**
+LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を、後から照会できる記録として残すため。
+アクセスログは compose の named volume 1本にしかなく、ローテーションも保持期間も無い。
+`docker compose down -v` で消える。
+
+**どう動くか**
+label `karakuri.egress-log` を持つボリュームが対象で、値がそのまま保管庫のディレクトリ名になる。
+`proxy-log-setup.sh install` が macOS の利用者権限 LaunchAgent を登録し、日次で [`proxy-log/karakuri-proxy-log-export`](./proxy-log/karakuri-proxy-log-export) を実行する。
+書き出し先は `~/.local/state/karakuri/egress-log/<project>/`（365日を超えたファイルは消える）で、実行結果は `~/.local/state/karakuri/egress-log/status` に `key=value` 形式で残る。
+
+保管庫のファイル名は `access-<YYYYMMDDTHHMMSSZ>.log.gz`（書き出した時刻、UTC）。
+状態ファイルは `run_start` / `run_end`（ISO 8601、UTC）、`result`（`ok` / `partial` / `failed`）と、ボリュームごとに `volume.<ボリューム名>=<状態>:<プロジェクト名>[:<行数>]` を持つ。
+`<状態>` は `running` / `stopped`（書き出し成功、`<行数>` を伴う）、`no-container` / `export-failed`（失敗、プロジェクト名のみ）、`invalid-label` / `duplicate-label`（プロジェクト名の位置に生の label 値が入る）のいずれかである。
+
+```sh
+proxy-log-setup.sh install    # 初回 1 回（アップグレード後も）
+proxy-log-setup.sh run        # 手動で 1 回だけ走らせる
+proxy-log-setup.sh uninstall  # 保管庫と状態ファイルは残る
+```
+
+macOS 以外ではどのサブコマンドも何もせず 0 で終わる。
+
+既存の compose を使っている場合、ボリュームの定義に label を足しただけでは効かない——ボリューム自体を作り直す必要があり、作り直すとそれまでのログは消える（`docker compose down` → `docker volume rm <vol>` → `up`）。
+行の形式そのものは `images/egress-proxy/squid.conf` の `logformat` が正本で、ここには写さない。
+行の形式（フィールドの並びや意味）は egress-proxy の版によって変わりうる。
+
+**保証**
+[`tests/proxy-log.test.sh`](./tests/proxy-log.test.sh)。
 
 ## リリース
 
