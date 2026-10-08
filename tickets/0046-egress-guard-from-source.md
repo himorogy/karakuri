@@ -14,6 +14,15 @@ targets:
   - README.md
   - packages/egress-guard/tests/verify-l7.sh
   - docs/guarantees.md
+bundle:
+  - 0052-proxy-log-vault
+  - 0052a-proxy-log-interval
+  - 0046-egress-guard-from-source
+  - 0047-retire-egress-guard-npm
+  - 0049-proxy-logformat
+  - 0048-firewall-l7-without-external-dns
+  - 0050-template-internal-network
+  - 0051-karakuri-internal-network
 verify:
   - pnpm lint:sh
   - pnpm test
@@ -22,8 +31,6 @@ verify:
 # runtime-base と egress-proxy が egress-guard をリポジトリのソースから焼く
 
 ## 内容
-
-束: 0052-proxy-log-vault → 0052a-proxy-log-interval → 0046-egress-guard-from-source → 0047-retire-egress-guard-npm → 0049-proxy-logformat → 0048-firewall-l7-without-external-dns → 0050-template-internal-network → 0051-karakuri-internal-network
 
 egress-guard と egress-proxy の配布・記録・経路を見直す束で、3つの流れからなる。
 
