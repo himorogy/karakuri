@@ -510,11 +510,25 @@ run_setup() { # run_setup <argv...> -> sets RC/STDOUT/STDERR
 	rm -f "$out" "$err"
 }
 
-run_job() { # run_job -> sets RC/STDOUT/STDERR; invokes the job source directly
+run_job() { # run_job -> sets RC/STDOUT/STDERR; invokes the job source directly, as the manual `run` does (no --scheduled)
 	local out err
 	out="$(mktemp)"
 	err="$(mktemp)"
 	if HOME="$SBHOME" "$JOB_SRC" >"$out" 2>"$err"; then
+		RC=0
+	else
+		RC=$?
+	fi
+	STDOUT="$(cat "$out")"
+	STDERR="$(cat "$err")"
+	rm -f "$out" "$err"
+}
+
+run_job_scheduled() { # run_job_scheduled -> like run_job, but passes --scheduled as the plist does
+	local out err
+	out="$(mktemp)"
+	err="$(mktemp)"
+	if HOME="$SBHOME" "$JOB_SRC" --scheduled >"$out" 2>"$err"; then
 		RC=0
 	else
 		RC=$?
@@ -529,10 +543,19 @@ install_docker_bin_for_job() {
 	printf '%s' "$FAKE_BIN_DIR/docker" >"$SBHOME/.local/libexec/karakuri/docker-bin"
 }
 
+install_interval_hours_for_job() { # install_interval_hours_for_job <N>
+	mkdir -p "$SBHOME/.local/libexec/karakuri"
+	printf '%s' "$1" >"$SBHOME/.local/libexec/karakuri/interval-hours"
+}
+
 status_file() { printf '%s\n' "$SBHOME/.local/state/karakuri/egress-log/status"; }
 
 status_has() { # status_has <key=value>
 	grep -qxF "$1" "$(status_file)"
+}
+
+status_value() { # status_value <key>
+	awk -F= -v k="$1" '$1 == k { print substr($0, index($0, "=") + 1) }' "$(status_file)"
 }
 
 # _past_ts <秒数> — 現在時刻からその秒数だけ過去の時刻を保管庫のファイル名
@@ -546,6 +569,25 @@ _past_ts() {
 	epoch=$((now - secs_ago))
 	date -u -d "@${epoch}" +%Y%m%dT%H%M%SZ 2>/dev/null ||
 		date -u -r "${epoch}" +%Y%m%dT%H%M%SZ 2>/dev/null
+}
+
+# _past_iso / _future_iso <秒数> — _past_ts と同じ考え方だが、状態ファイルの
+# run_start と同じ ISO 8601 UTC 書式（ジョブ本体の _epoch_from_iso が読む形）
+# で出す。
+_past_iso() {
+	local secs_ago="$1" now epoch
+	now="$(date -u +%s)"
+	epoch=$((now - secs_ago))
+	date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+		date -u -r "${epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
+}
+
+_future_iso() {
+	local secs_ahead="$1" now epoch
+	now="$(date -u +%s)"
+	epoch=$((now + secs_ahead))
+	date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null ||
+		date -u -r "${epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
 }
 
 echo "=== proxy-log-setup.sh: non-macOS ==="
@@ -572,6 +614,7 @@ else
 fi
 assert_eq "install: job body is executable (0755)" "$(stat -c '%a' "$JOB_PATH" 2>/dev/null || stat -f '%Lp' "$JOB_PATH")" "755"
 assert_eq "install: docker-bin resolves the fake docker" "$(cat "$SBHOME/.local/libexec/karakuri/docker-bin")" "$FAKE_BIN_DIR/docker"
+assert_eq "install: interval-hours defaults to 24" "$(cat "$SBHOME/.local/libexec/karakuri/interval-hours")" "24"
 PLIST_PATH="$SBHOME/Library/LaunchAgents/com.karakuri.proxy-log-export.plist"
 assert_true "install: plist is placed" test -f "$PLIST_PATH"
 if grep -qF "__KARAKURI_JOB_PATH__" "$PLIST_PATH" || grep -qF "__KARAKURI_STDERR_LOG__" "$PLIST_PATH"; then
@@ -580,12 +623,48 @@ else
 	ok "install: plist placeholders are substituted"
 fi
 assert_true "install: plist ProgramArguments points at the installed job" grep -qF "$JOB_PATH" "$PLIST_PATH"
+assert_true "install: plist ProgramArguments passes --scheduled" grep -qF -- "--scheduled" "$PLIST_PATH"
+assert_true "install: plist uses StartInterval 3600" bash -c "grep -A1 StartInterval '$PLIST_PATH' | grep -qF 3600"
 assert_true "install: plist StandardErrorPath is under the sandbox HOME" grep -qF "$SBHOME/Library/Logs" "$PLIST_PATH"
 if grep -qxF "bootout gui/$(id -u) ${PLIST_PATH}" "$LAUNCHCTL_LOG" && grep -qxF "bootstrap gui/$(id -u) ${PLIST_PATH}" "$LAUNCHCTL_LOG"; then
 	ok "install: bootout then bootstrap were called"
 else
 	ng "install: bootout then bootstrap were called (log: $(cat "$LAUNCHCTL_LOG"))"
 fi
+
+echo "=== proxy-log-setup.sh: install --interval ==="
+
+new_sandbox
+run_setup install --interval 1
+assert_eq "install --interval 1: exits 0" "$RC" "0"
+assert_eq "install --interval 1: interval file content" "$(cat "$SBHOME/.local/libexec/karakuri/interval-hours")" "1"
+
+new_sandbox
+run_setup install --interval 168
+assert_eq "install --interval 168: exits 0" "$RC" "0"
+assert_eq "install --interval 168: interval file content" "$(cat "$SBHOME/.local/libexec/karakuri/interval-hours")" "168"
+
+new_sandbox
+run_setup install
+assert_eq "install default interval: exits 0" "$RC" "0"
+assert_eq "install default interval: interval file content is 24" "$(cat "$SBHOME/.local/libexec/karakuri/interval-hours")" "24"
+
+for bad in 0 169 abc 1.5 -1 08 010 ""; do
+	new_sandbox
+	run_setup install --interval "$bad"
+	assert_eq "install --interval '$bad': exits non-zero" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
+	assert_false "install --interval '$bad': nothing was placed" test -e "$SBHOME/.local"
+done
+
+new_sandbox
+run_setup install --interval
+assert_eq "install --interval with no value: exits non-zero" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
+assert_false "install --interval with no value: nothing was placed" test -e "$SBHOME/.local"
+
+new_sandbox
+run_setup install --bogus
+assert_eq "install unknown flag: exits non-zero" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
+assert_false "install unknown flag: nothing was placed" test -e "$SBHOME/.local"
 
 echo "=== proxy-log-setup.sh: install without docker ==="
 
@@ -1207,16 +1286,134 @@ ISO_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 if [[ "$RUN_START" =~ $ISO_RE ]]; then ok "status shape: run_start looks like ISO 8601 UTC"; else ng "status shape: run_start looks like ISO 8601 UTC (got '$RUN_START')"; fi
 if [[ "$RUN_END" =~ $ISO_RE ]]; then ok "status shape: run_end looks like ISO 8601 UTC"; else ng "status shape: run_end looks like ISO 8601 UTC (got '$RUN_END')"; fi
 assert_true "status shape: result is ok" status_has "result=ok"
+assert_true "status shape: interval_hours defaults to 24 when no interval file is installed" status_has "interval_hours=24"
 
 echo "=== karakuri-proxy-log-export: docker unreachable ==="
 
 new_sandbox
 install_docker_bin_for_job
+install_interval_hours_for_job 24
 : >"$DOCKER_WORLD/down"
 run_job
-assert_eq "docker unreachable: exits non-zero" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
-assert_true "docker unreachable: status is failed" status_has "result=failed"
-assert_true "docker unreachable: stderr mentions docker" bash -c "printf '%s' \"$STDERR\" | grep -qi docker"
+assert_eq "docker unreachable, manual run: exits non-zero" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
+assert_true "docker unreachable, manual run: stderr mentions docker" bash -c "printf '%s' \"$STDERR\" | grep -qi docker"
+assert_false "docker unreachable, manual run: the status file is not touched" test -e "$(status_file)"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+: >"$DOCKER_WORLD/down"
+run_job_scheduled
+assert_eq "docker unreachable, scheduled run: exits 0" "$RC" "0"
+assert_true "docker unreachable, scheduled run: stderr mentions docker" bash -c "printf '%s' \"$STDERR\" | grep -qi docker"
+assert_false "docker unreachable, scheduled run: the status file is not touched" test -e "$(status_file)"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+: >"$DOCKER_WORLD/down"
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=2020-01-01T00:00:00Z\nrun_end=2020-01-01T00:00:01Z\nresult=ok\n' >"$(status_file)"
+PREV_STATUS="$(cat "$(status_file)")"
+run_job
+assert_eq "docker unreachable, existing status file: exits non-zero" "$([ "$RC" -ne 0 ] && echo nonzero)" "nonzero"
+assert_eq "docker unreachable, existing status file: left untouched" "$(cat "$(status_file)")" "$PREV_STATUS"
+
+echo "=== karakuri-proxy-log-export: scheduled run respects the interval ==="
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=ok\n' "$(_past_iso $((2 * 3600)))" "$(_past_iso $((2 * 3600 - 1)))" >"$(status_file)"
+BEFORE_OK="$(cat "$(status_file)")"
+run_job_scheduled
+assert_eq "scheduled, not due: exits 0" "$RC" "0"
+assert_eq "scheduled, not due: stdout is empty" "$STDOUT" ""
+assert_eq "scheduled, not due: stderr is empty" "$STDERR" ""
+assert_eq "scheduled, not due: the status file is untouched" "$(cat "$(status_file)")" "$BEFORE_OK"
+
+# N=24（既定）だけでは「経過2時間」がどの N でも not due になりうるので、
+# ジョブが実際に interval-hours ファイルを読んでいる（24 に固定されていない）
+# ことを N=1 で確かめる——経過2時間は N=1 では due、N=24 では not due になる。
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 1
+OLD_RUN_START_N1="$(_past_iso $((2 * 3600)))"
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=ok\n' "$OLD_RUN_START_N1" "$OLD_RUN_START_N1" >"$(status_file)"
+run_job_scheduled
+assert_eq "scheduled, due under an install-selected interval of 1 hour: exits 0" "$RC" "0"
+assert_true "scheduled, due under an install-selected interval of 1 hour: run_start advances" bash -c "[ '$(status_value run_start)' != '$OLD_RUN_START_N1' ]"
+assert_true "scheduled, due under an install-selected interval of 1 hour: status records interval_hours=1" status_has "interval_hours=1"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=partial\n' "$(_past_iso $((2 * 3600)))" "$(_past_iso $((2 * 3600 - 1)))" >"$(status_file)"
+BEFORE_PARTIAL="$(cat "$(status_file)")"
+run_job_scheduled
+assert_eq "scheduled, not due (partial counts as success): exits 0" "$RC" "0"
+assert_eq "scheduled, not due (partial counts as success): status untouched" "$(cat "$(status_file)")" "$BEFORE_PARTIAL"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+OLD_RUN_START="$(_past_iso $((25 * 3600)))"
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=ok\n' "$OLD_RUN_START" "$OLD_RUN_START" >"$(status_file)"
+run_job_scheduled
+assert_eq "scheduled, due (elapsed past N hours): exits 0" "$RC" "0"
+assert_true "scheduled, due: run_start advances past the old value" bash -c "[ '$(status_value run_start)' != '$OLD_RUN_START' ]"
+assert_true "scheduled, due: status records interval_hours" status_has "interval_hours=24"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=failed\n' "$(_past_iso 60)" "$(_past_iso 60)" >"$(status_file)"
+run_job_scheduled
+assert_eq "scheduled, last result failed: exits 0 and proceeds" "$RC" "0"
+assert_true "scheduled, last result failed: status is rewritten to ok" status_has "result=ok"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+run_job_scheduled
+assert_eq "scheduled, no status file: exits 0 and proceeds" "$RC" "0"
+assert_true "scheduled, no status file: writes a status file" test -f "$(status_file)"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+mkdir -p "$(dirname "$(status_file)")"
+printf 'garbage\n' >"$(status_file)"
+run_job_scheduled
+assert_eq "scheduled, unreadable status: exits 0 and proceeds" "$RC" "0"
+assert_true "scheduled, unreadable status: status is rewritten with a valid result" status_has "result=ok"
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+FUTURE_TS="$(_future_iso 3600)"
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=ok\n' "$FUTURE_TS" "$FUTURE_TS" >"$(status_file)"
+run_job_scheduled
+assert_eq "scheduled, future run_start: exits 0 and proceeds" "$RC" "0"
+assert_true "scheduled, future run_start: run_start advances rather than staying in the future" bash -c "[ '$(status_value run_start)' != '$FUTURE_TS' ]"
+
+echo "=== karakuri-proxy-log-export: run ignores the interval ==="
+
+new_sandbox
+install_docker_bin_for_job
+install_interval_hours_for_job 24
+mkdir -p "$(dirname "$(status_file)")"
+printf 'run_start=%s\nrun_end=%s\nresult=ok\n' "$(_past_iso 60)" "$(_past_iso 60)" >"$(status_file)"
+OLD_RUN_START_MANUAL="$(status_value run_start)"
+run_job
+assert_eq "run ignores the interval: exits 0" "$RC" "0"
+assert_true "run ignores the interval: run_start is refreshed" bash -c "[ '$(status_value run_start)' != '$OLD_RUN_START_MANUAL' ]"
 
 echo "=== karakuri-proxy-log-export: retention ==="
 

@@ -18,6 +18,8 @@ HOME="${HOME:?proxy-log-setup.sh requires HOME to be set}"
 LIBEXEC_DIR="${HOME}/.local/libexec/karakuri"
 JOB_PATH="${LIBEXEC_DIR}/karakuri-proxy-log-export"
 DOCKER_BIN_FILE="${LIBEXEC_DIR}/docker-bin"
+INTERVAL_FILE="${LIBEXEC_DIR}/interval-hours"
+DEFAULT_INTERVAL_HOURS=24
 
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/com.karakuri.proxy-log-export.plist"
@@ -56,9 +58,12 @@ usage() {
 	cat >&2 <<'EOF'
 Usage: karakuri-proxy-log <command>
 
-  install      Install the LaunchAgent and the export job (run once, then after upgrades)
+  install [--interval <hours>]
+               Install the LaunchAgent and the export job (run once, then after upgrades).
+               <hours> is an integer from 1 to 168; the default is 24. Not carried over
+               across reinstalls — pick it again on every upgrade.
   uninstall    Remove the LaunchAgent and the export job. The vault and status file are kept
-  run          Run one export pass right now, in the foreground
+  run          Run one export pass right now, in the foreground, ignoring the interval
 
 This tool is macOS only. On any other OS it exits immediately without
 touching anything.
@@ -80,7 +85,35 @@ _check_plist_template() {
 }
 
 cmd_install() {
-	[ "$#" -eq 0 ] || usage 1
+	local interval_hours="$DEFAULT_INTERVAL_HOURS"
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+		--interval)
+			[ "$#" -ge 2 ] || _die "--interval requires a value"
+			interval_hours="$2"
+			shift 2
+			;;
+		*)
+			usage 1
+			;;
+		esac
+	done
+
+	case "$interval_hours" in
+	'' | *[!0-9]*)
+		_die "--interval must be an integer between 1 and 168 (got '${interval_hours}') — nothing was placed"
+		;;
+	0[0-9]*)
+		# 先頭0は、ここでの範囲検査（test -lt/-gt）もジョブ本体の算術展開も
+		# 10進ではなく8進として読む。08・09 はそもそも無効な8進数として
+		# 算術エラーになり、010 は黙って8として扱われる——どちらも拒否し、
+		# 先頭0の綴り自体を無効とする。
+		_die "--interval must not have a leading zero (got '${interval_hours}') — nothing was placed"
+		;;
+	esac
+	if [ "$interval_hours" -lt 1 ] || [ "$interval_hours" -gt 168 ]; then
+		_die "--interval must be an integer between 1 and 168 (got '${interval_hours}') — nothing was placed"
+	fi
 
 	# 特権は要らないが、docker の絶対パス解決と配布物の存在確認は実際に
 	# 置く前に済ませる。loopback-setup.sh の「検証は先、変更は後」と同じ順序。
@@ -107,6 +140,12 @@ cmd_install() {
 	mv "$docker_tmp" "$DOCKER_BIN_FILE"
 	printf 'docker: resolved %s\n' "$docker_path"
 
+	local interval_tmp
+	interval_tmp="$(mktemp "${LIBEXEC_DIR}/.interval-hours.XXXXXX")"
+	printf '%s' "$interval_hours" >"$interval_tmp"
+	mv "$interval_tmp" "$INTERVAL_FILE"
+	printf 'interval: %s hour(s)\n' "$interval_hours"
+
 	install -d -m 0755 "$LOG_DIR"
 	install -d -m 0755 "$LAUNCH_AGENTS_DIR"
 
@@ -127,7 +166,7 @@ cmd_install() {
 		return 0
 	fi
 
-	_err "'launchctl bootstrap ${LAUNCHD_DOMAIN} ${PLIST_PATH}' failed. The most likely reason is that the job is already bootstrapped: 'bootout' can return before launchd has finished unloading it. Check with 'launchctl print ${LAUNCHD_SERVICE}'; if it is there, run 'launchctl bootout ${LAUNCHD_SERVICE}' and then 'proxy-log-setup.sh install' again. Everything else above was placed — only the daily schedule is not active"
+	_err "'launchctl bootstrap ${LAUNCHD_DOMAIN} ${PLIST_PATH}' failed. The most likely reason is that the job is already bootstrapped: 'bootout' can return before launchd has finished unloading it. Check with 'launchctl print ${LAUNCHD_SERVICE}'; if it is there, run 'launchctl bootout ${LAUNCHD_SERVICE}' and then 'proxy-log-setup.sh install' again. Everything else above was placed — only the schedule is not active"
 	return 1
 }
 
@@ -151,6 +190,7 @@ cmd_uninstall() {
 	fi
 
 	rm -f "$DOCKER_BIN_FILE"
+	rm -f "$INTERVAL_FILE"
 
 	printf 'the vault and status file are kept — remove them by hand under %s if you want the collected logs gone too\n' "${HOME}/.local/state/karakuri/egress-log"
 	return 0

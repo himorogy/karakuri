@@ -2,8 +2,9 @@
 #
 # karakuri-proxy-log-export — egress-proxy のアクセスログをホストの保管庫へ
 # 書き出す。proxy-log-setup.sh の install がこのファイルを
-# ~/.local/libexec/karakuri/ へ複製し、LaunchAgent が日次で、または
-# `proxy-log-setup.sh run` が手動でこれを直接実行する。
+# ~/.local/libexec/karakuri/ へ複製し、LaunchAgent が1時間ごとに
+# `--scheduled` 付きでこれを呼び、または `proxy-log-setup.sh run` が
+# `--scheduled` なしで手動でこれを直接実行する。
 #
 # 対象は label karakuri.egress-log を持つ named volume である。squid の
 # access_log は images/egress-proxy/squid.conf が /etc/squid/squid.conf に
@@ -27,6 +28,8 @@ HOME="${HOME:?karakuri-proxy-log-export requires HOME to be set}"
 VAULT_DIR="${HOME}/.local/state/karakuri/egress-log"
 STATUS_FILE="${VAULT_DIR}/status"
 DOCKER_BIN_FILE="${HOME}/.local/libexec/karakuri/docker-bin"
+INTERVAL_HOURS_FILE="${HOME}/.local/libexec/karakuri/interval-hours"
+DEFAULT_INTERVAL_HOURS=24
 
 LABEL_KEY="karakuri.egress-log"
 STASH_NAME="access.log.export"
@@ -40,6 +43,14 @@ if [ -r "$DOCKER_BIN_FILE" ]; then
 	DOCKER_BIN="$(cat "$DOCKER_BIN_FILE")"
 else
 	DOCKER_BIN="docker"
+fi
+
+# docker-bin と同じ理由（install を経由しない直接実行のため）で、ファイルが
+# 無ければ install の既定値と同じ 24 を使う。
+if [ -r "$INTERVAL_HOURS_FILE" ]; then
+	INTERVAL_HOURS="$(cat "$INTERVAL_HOURS_FILE")"
+else
+	INTERVAL_HOURS="$DEFAULT_INTERVAL_HOURS"
 fi
 
 _err() {
@@ -451,6 +462,47 @@ _epoch_from_ts() {
 		date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null
 }
 
+# _epoch_from_iso <ISO 8601 UTC> — 状態ファイルの run_start（_write_status と
+# 同じ書式）を epoch へ変換する。
+_epoch_from_iso() {
+	local iso="$1"
+	date -u -d "$iso" +%s 2>/dev/null ||
+		date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null
+}
+
+# _status_value <key> — 状態ファイルから key=value の行を1つ読む。
+_status_value() {
+	local key="$1" line
+	[ -r "$STATUS_FILE" ] || return 1
+	line="$(awk -F= -v k="$key" '$1 == k { print; exit }' "$STATUS_FILE")"
+	[ -n "$line" ] || return 1
+	printf '%s\n' "${line#*=}"
+}
+
+# _scheduled_run_is_not_due — スケジュール実行（--scheduled）だけが呼ぶ。
+# 状態ファイルが読めない・解釈できない場合は、いずれも「まだ早い」側では
+# なく書き出しへ進む側に倒す——読めない側を「まだ早い」に倒すと、壊れた
+# 状態ファイルのまま書き出しが永久に止まる経路を作ってしまう。
+_scheduled_run_is_not_due() {
+	local result run_start run_epoch now_epoch elapsed
+	result="$(_status_value result)" || return 1
+	case "$result" in
+	ok | partial) ;;
+	*) return 1 ;;
+	esac
+	run_start="$(_status_value run_start)" || return 1
+	run_epoch="$(_epoch_from_iso "$run_start")" || return 1
+	[ -n "$run_epoch" ] || return 1
+	now_epoch="$(_now_epoch)"
+	[ "$run_epoch" -le "$now_epoch" ] || return 1
+	elapsed=$((now_epoch - run_epoch))
+	# 10# を付けて10進として読む。付けないと先頭0を8進として読み、08・09
+	# は無効な8進数として算術エラーになり、010 は黙って8として扱われる
+	# （install は先頭0の値をそもそも拒否するが、ここでも同じ読み方の
+	# ずれを踏まないための防御）。
+	[ "$elapsed" -lt "$((10#$INTERVAL_HOURS * 3600))" ]
+}
+
 _prune_project_dir() {
 	local dir="$1" now f base ts epoch age_seconds
 	[ -d "$dir" ] || return 0
@@ -490,19 +542,26 @@ _write_status() {
 		printf 'run_start=%s\n' "$start"
 		printf 'run_end=%s\n' "$end"
 		printf 'result=%s\n' "$result"
+		printf 'interval_hours=%s\n' "$INTERVAL_HOURS"
 		[ -n "$body" ] && printf '%s\n' "$body"
 	} >"$tmp"
 	mv "$tmp" "$STATUS_FILE"
 }
 
 main_run() {
-	local start_ts end_ts result any_bad=0
+	local scheduled="$1" start_ts end_ts result any_bad=0
+
+	if [ "$scheduled" -eq 1 ] && _scheduled_run_is_not_due; then
+		return 0
+	fi
+
 	start_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+	# Docker 不在は、失敗ではなく書き出しを行わなかった回として扱う。だから
+	# 状態ファイルには触れない。
 	if ! "$DOCKER_BIN" version >/dev/null 2>&1; then
-		end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-		_write_status "$start_ts" "$end_ts" "failed" ""
 		_err "cannot reach docker"
+		[ "$scheduled" -eq 1 ] && return 0
 		return 1
 	fi
 
@@ -606,5 +665,9 @@ main_run() {
 	return 1
 }
 
-main_run
+# 起動の経路の区別は、この引数1つだけで行う（plist の ProgramArguments が
+# 付け、`proxy-log-setup.sh run` は付けない）。
+SCHEDULED=0
+[ "${1:-}" = "--scheduled" ] && SCHEDULED=1
+main_run "$SCHEDULED"
 exit $?
