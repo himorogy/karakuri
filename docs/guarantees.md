@@ -226,11 +226,10 @@
 
 起源: `0010-ledger-host-entry`
 
-- prod 系の3コマンドは同じリポジトリ解決を共有し（`karakuri-prod-run` で確認）、リポジトリを1引数で受け、組織名付きの指定からも、既定の組織名で補った裸の指定からもクローン URL を組み立てる。組織名が未設定で補えないときと、区切りを2つ以上含む指定のときは、下位スクリプトを一度も起動せずに非ゼロで終わり、前者のエラーは補うべき環境変数を名指しする
+- prod 系の2コマンドは同じリポジトリ解決を共有し（`karakuri-prod-run` で確認）、リポジトリを1引数で受け、組織名付きの指定からも、既定の組織名で補った裸の指定からもクローン URL を組み立てる。組織名が未設定で補えないときと、区切りを2つ以上含む指定のときは、下位スクリプトを一度も起動せずに非ゼロで終わり、前者のエラーは補うべき環境変数を名指しする（テスト: "repository spec is resolved from one argument"）
 - 2番目の引数はそのまま ref として渡る
-- prod 系の3コマンドはいずれも compose プロジェクト名を `prod-<repo>` として渡す
+- prod 系の2コマンドはいずれも compose プロジェクト名を `prod-<repo>` として渡す（テスト: "COMPOSE_PROJECT_NAME is per repository"）
 - 既定では導入コマンドとタスクをシェル経由の1文字列として連結し、タスク引数は引用符で包む。導入コマンドに空文字を設定したときだけシェルを経由せず、各語が独立した引数として渡り、空白を含む引数は1引数のまま保たれる
-- 任意コマンドの実行は、既定の導入コマンドが設定されていてもシェルを経由せず、区切りを含めて逐語で渡す
 - broker の呼び出しは2つの関数に閉じており、利用者が同名の関数を再定義すると、そちらが下位スクリプトへ渡る環境と broker のパスを決め、既定の broker 固有の環境変数は一切渡らなくなる
 - 既定の broker 項目名は命名規約に従って組み立てられ、prod と dev で異なる並びを持つ。broker の実体を差し替える環境変数は、設定したときだけ下位へ渡る
 - dev 注入は、プロジェクト名を**加工せずそのまま**下位へ渡す。broker の項目キーは明示指定があればそれ、無ければプロジェクト名を使う
@@ -250,9 +249,6 @@
 - prod シェルは compose のラベルでコンテナを引き、compose ファイルを読まない。ref や compose の指定がすべて未設定でも成功する
 - 一致が0件でも複数件でも実行に進まずに失敗する。1件のときだけ対話シェルを開く。区切りを含むリポジトリ名は拒否する（テスト: "[$s] prod-shell fails when no container matches"）
 - compose ファイルはディレクトリ指定から2つの拡張子で探し、ディレクトリ指定が単一ファイル指定に勝つ。両方の拡張子が存在するときも、どちらも無いときも、探したパスを名指しして下位スクリプトを起動せずに止める（テスト: "[$s] a repository with both .yaml and .yml fails"）
-- digest の解決は compose ファイルを書き換えず、解決した結果を1行 stdout に出すだけである。行末のコメントは digest の一部として読まれず、コメント行の指定も拾わない（テスト: "[$s] image-digest leaves the compose file untouched"）
-- ディレクトリ内のファイルがイメージ名で食い違っているときは、食い違うファイルを名指しして止め、レジストリへの問い合わせを行わない（テスト: "[$s] no registry lookup happens while the image name is ambiguous"）
-- digest の検査は全ファイルを名前順に掃引し、**最初の問題で打ち切らない**。打ち切ると後ろのファイルの貼り忘れが永久に見えないためである。一致・不一致・未挿入をそれぞれ区別して報告する
 - ヘルプは下位スクリプトを一切呼ばず、公開している関数の名前と環境変数の現在値を出す。「未設定」と「空文字を設定」を区別して見せ、**broker の項目名は決して出さない**
 - 以上のすべてが bash で成り立ち、zsh が入っている環境では zsh でも同一に成り立つ（zsh が無い環境では zsh 側の検査が skip される）
 - `karakuri-run` は broker の項目キーの明示指定を必須とし、省略・区切りを含む値・共通名を項目キーにする指定・終端子より前の位置引数を、いずれも供給層を一度も起動せずに非ゼロで拒否する（テスト: "否定対照: 項目キーの省略は供給層を起動する前に拒否される"）（起源: `0014-host-secret-run`）
@@ -459,6 +455,23 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `egress-proxy-bake` は、設定が `--check-config` を通らないとき非ゼロで終わり、ACL を書かない（テスト: "壊れた設定では非ゼロで終わり ACL を作らない"）
 - `egress-proxy-bake` が書く ACL は、同じ設定に対する `init-project-firewall.sh --print-proxy-acl` の出力と一致する。`mode` が `audit` のときだけ、allowlist 外の宛先を通す（テスト: "ACL は --print-proxy-acl の出力と一致する" / "audit では allowlist 外を通す設定になる" / "enforce では拒否のまま"）
 
+### 26. `host-tools/tests/proxy-log.test.sh` — `host-tools/proxy-log-setup.sh` と `host-tools/proxy-log/`
+
+起源: `0052-proxy-log-vault`
+
+- label `karakuri.egress-log` を持ち、mount しているコンテナ（停止中を含む）があるボリュームのアクセスログは、書き出しを行う実行ごとにホストの保管庫のそのプロジェクトのディレクトリへ書き出される。書き出した行は保管庫で欠けず、次の書き出しで重複しない。前回の実行が途中で失敗していても、その分の行は次の書き出しで書き出される（テスト: "running: the vault holds the original lines without loss" / "running second run: only the new lines are in the new file" / "leftover stash: both the leftover and the fresh lines reached the vault" / "leftover stash: the status line count includes the leftover's lines" / "stopped: the throwaway container's read reaches the vault" / "rm failure: once rm succeeds, each line from the failed run reaches the vault exactly once" / "rm failure: the other line is not duplicated either" / "rm effective failure: the vault file holds the original lines" / "rm effective failure: recorded as a normal successful export" / "unknown recheck: recorded as export-failed, not a false success" / "unknown recheck: the vault file is kept, not deleted on a guess" / "cannot confirm writer: recorded as export-failed, not no-container" / "cannot confirm writer: no throwaway container was spawned (no fallback to the stopped procedure)" / "cannot confirm writer: access.log is untouched" / "rotate effective failure: access.log is the fresh empty file, not rolled back" / "rotate effective failure: the old content is in the stash, not lost" / "mv effective failure: all three lines (including the one written after the failed mv) reached the vault" / "mv effective failure: no line is duplicated" / "ps running failure: access.log is untouched" / "ps -a failure: access.log is untouched" / "inspect failure: access.log is untouched" / "rotate delay: the lines written before the delayed rotate reach the vault" / "rotate timeout: the lines are still in the stash, not lost" / "cannot confirm leftover: the stash file is untouched, not read and removed without rotating" / "cannot confirm leftover: access.log was never created (rotate was never sent)" / "stopped unreadable stash: access.log is left untouched (not read out of order)"）
+- 保管庫の中で365日を超えたファイルは消え、それより新しいファイルは消えない（テスト: "retention: the file older than 365 days is pruned" / "retention: the newer file is kept" / "retention: 365 days and 1 hour old is pruned (just past the boundary)" / "retention: 364 days and 23 hours old is kept (just inside the boundary)"）
+- label の値が不正なボリュームと、値が他と重複するボリュームは保管庫に書き出されず、その旨が状態ファイルに残る。他のボリュームの書き出しは続く（テスト: "invalid label: recorded (empty value)" / "invalid label: recorded (uppercase/underscore)" / "duplicate label: both volumes are recorded" / "invalid/duplicate: the unaffected volume still exports"）
+- 書き出しを行った各実行は、その時刻と結果を状態ファイルに残す（テスト: "status shape: run_start looks like ISO 8601 UTC" / "status shape: run_end looks like ISO 8601 UTC" / "stopped unreadable stash: recorded as export-failed, not stopped/ok" / "stopped unreadable stash: overall result is partial, not ok" / "ps running failure: recorded as export-failed, not no-container" / "ps -a failure: recorded as export-failed, not no-container" / "inspect failure: recorded as export-failed, not no-container" / "cannot confirm leftover: recorded as export-failed" / "docker run failure: recorded as export-failed, not no-container"）
+- `proxy-log-setup.sh` は macOS 以外では、どのサブコマンドも何も配置せず 0 で終わる（テスト: "non-macOS 'install': nothing under HOME was created" / "non-macOS 'uninstall': nothing under HOME was created" / "non-macOS 'run': nothing under HOME was created"）
+- 保管庫のファイル名は `access-<YYYYMMDDTHHMMSSZ>.log.gz`（書き出した時刻、UTC）である。状態ファイルは最終実行の開始時刻・終了時刻・全体の結果（`ok` / `partial` / `failed`）・`interval_hours`（install で選んだ時間）と、ボリューム名をキーにしたボリュームごとの結果（書き出した行数、読めるコンテナが無い、label が不正、など）を持つ（テスト: "running: the vault filename matches access-<YYYYMMDDTHHMMSSZ>.log.gz" / "status shape: run_start looks like ISO 8601 UTC" / "status shape: run_end looks like ISO 8601 UTC" / "status shape: result is ok" / "status shape: interval_hours defaults to 24 when no interval file is installed" / "scheduled, due under an install-selected interval of 1 hour: status records interval_hours=1" / "running: status records the volume and line count" / "no container: status records it" / "invalid label: recorded (empty value)" / "duplicate label: both volumes are recorded"）
+- docker が見つからないとき、`proxy-log-setup.sh install` は非ゼロで終わり、何も配置しない（テスト: "install without docker: exits non-zero" / "install without docker: nothing was placed"）
+- `proxy-log-setup.sh install` は2回打っても0で終わり、置かれる内容は変わらない。`uninstall` は保管庫と状態ファイルを残す（テスト: "install twice: second install exits 0" / "install twice: job body unchanged" / "install twice: plist unchanged" / "uninstall: the vault is kept" / "uninstall: the status file is kept" / "uninstall: the status file content is untouched"）
+- スケジュール実行は、状態ファイルの最終実行が `ok` か `partial` で、その開始から install で選んだ時間が経っていなければ、何も書き出さず状態ファイルにも触れずに 0 で終わる。経っているとき、状態ファイルが無い・読めないとき、最終実行が `failed` のとき、最終実行の開始時刻が未来のときは書き出す（テスト: "scheduled, not due: exits 0" / "scheduled, not due: stdout is empty" / "scheduled, not due: stderr is empty" / "scheduled, not due: the status file is untouched" / "scheduled, due under an install-selected interval of 1 hour: exits 0" / "scheduled, due under an install-selected interval of 1 hour: run_start advances" / "scheduled, due under an install-selected interval of 1 hour: status records interval_hours=1" / "scheduled, not due (partial counts as success): exits 0" / "scheduled, not due (partial counts as success): status untouched" / "scheduled, due (elapsed past N hours): exits 0" / "scheduled, due: run_start advances past the old value" / "scheduled, last result failed: exits 0 and proceeds" / "scheduled, last result failed: status is rewritten to ok" / "scheduled, no status file: exits 0 and proceeds" / "scheduled, no status file: writes a status file" / "scheduled, unreadable status: exits 0 and proceeds" / "scheduled, unreadable status: status is rewritten with a valid result" / "scheduled, future run_start: exits 0 and proceeds" / "scheduled, future run_start: run_start advances rather than staying in the future"）（起源: `0052a-proxy-log-interval`）
+- `proxy-log-setup.sh run` は、最終実行からの経過時間によらず書き出す（テスト: "run ignores the interval: exits 0" / "run ignores the interval: run_start is refreshed"）（起源: `0052a-proxy-log-interval`）
+- Docker に繋がらない実行は、状態ファイルに触れない。スケジュール実行なら 0 で、`run` なら非ゼロで終わる（テスト: "docker unreachable, manual run: exits non-zero" / "docker unreachable, manual run: stderr mentions docker" / "docker unreachable, manual run: the status file is not touched" / "docker unreachable, scheduled run: exits 0" / "docker unreachable, scheduled run: stderr mentions docker" / "docker unreachable, scheduled run: the status file is not touched" / "docker unreachable, existing status file: exits non-zero" / "docker unreachable, existing status file: left untouched"）（起源: `0052a-proxy-log-interval`）
+- `proxy-log-setup.sh install` は `--interval <時間>` で 1 以上 168 以下の整数を受け付け、省略時は 24 にする。それ以外の値や未知の引数では非ゼロで終わり、何も配置しない（テスト: "install --interval 1: exits 0" / "install --interval 1: interval file content" / "install --interval 168: exits 0" / "install --interval 168: interval file content" / "install default interval: exits 0" / "install default interval: interval file content is 24" / "install --interval '0': exits non-zero" / "install --interval '0': nothing was placed" / "install --interval '169': exits non-zero" / "install --interval '169': nothing was placed" / "install --interval 'abc': exits non-zero" / "install --interval 'abc': nothing was placed" / "install --interval '1.5': exits non-zero" / "install --interval '1.5': nothing was placed" / "install --interval '-1': exits non-zero" / "install --interval '-1': nothing was placed" / "install --interval '08': exits non-zero" / "install --interval '08': nothing was placed" / "install --interval '010': exits non-zero" / "install --interval '010': nothing was placed" / "install --interval '': exits non-zero" / "install --interval '': nothing was placed" / "install --interval with no value: exits non-zero" / "install --interval with no value: nothing was placed" / "install unknown flag: exits non-zero" / "install unknown flag: nothing was placed"）（起源: `0052a-proxy-log-interval`）
+
 ## Unverified Promises
 
 ### C-2a — `未検証の約束 (テスト困難: CI の runtime-base ワークフローが、push 済みイメージを両アーキで smoke test する)`
@@ -535,6 +548,18 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - イメージは `squid` を非 root（uid 13）で起動する（B-b の同じ文の担い手はこのイメージである）
 
+### G-a — `未検証の約束 (テスト困難: ホストの Docker と稼働中の egress-proxy が要る。漏れうるのはコンテナ内での mv の権限と、SIGUSR1 を受けた squid の開き直しで、検収で行数の突き合わせを行う)`
+
+起源: `0052-proxy-log-vault`
+
+- 実機の Docker と egress-proxy で、書き出しのあいだに来た行が欠けない
+
+### G-b — `未検証の約束 (テスト困難: launchd の起動の間隔とスリープからの復帰は macOS の実機でしか観測できない。検収 2〜6 で確かめる)`
+
+起源: `0052a-proxy-log-interval`
+
+- Docker が動いている間は、PC が起きていれば、前回の書き出しの開始から選んだ時間 + 1時間以内に次の書き出しが走る
+
 ## 境界宣言
 
 ### 免責
@@ -573,6 +598,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `host-tools/dock.sh`、`host-tools/prod-run.sh`、`host-tools/dev-inject.sh`、`host-tools/host-run.sh`
 - `host-tools/broker-bitwarden.sh`、`host-tools/broker-macos-keychain.sh`、`host-tools/broker-macos-keychain-set.sh`
 - `host-tools/loopback-setup.sh` と `host-tools/loopback/` の daemon・plist
+- `host-tools/proxy-log-setup.sh` と `host-tools/proxy-log/` の export job・plist
 - `host-tools/compose.prod.yaml`
 - `host-tools/shims/`（`_dotenvx` と Windows 用ラッパー）
 - `host-tools/tests/` — 配布物に同梱されるテスト一式

@@ -3,7 +3,7 @@
 ## これは何か
 
 karakuri のうち、ホスト側で使用できる utility。
-担うのは 2 つで、broker から鍵を取り出してコンテナの stdin へ流す搬送路と、dev / prod のコンテナへ入る入口である。
+担うのは、broker から鍵を取り出してコンテナの stdin へ流す搬送路、dev / prod のコンテナへ入る入口、そして egress-proxy のアクセスログをホストの保管庫へ保全する仕組みである。
 コンテナの中身（イメージ・entrypoint・コンテナ側の shim）は別の配布物が持ち、こちらはそれを起動する側だけを持つ。
 
 利用側へは `host-tools-v*` タグの clone として渡る。
@@ -27,7 +27,7 @@ workspace の中に置くと、そこに常駐する LLM エージェントが�
 
 - `karakuri-dock ... up` — dev container を起動し、未注入なら鍵を注入して、入室の手前で止まる（注入先が tmpfs なので、起動はこれで行う）
 - `karakuri-run` — コンテナを経由せず、ホストで実行するコマンドへ鍵を渡す
-- `karakuri-prod-run` / `karakuri-prod-exec` — 使い捨ての prod コンテナで、指定した commit sha へ復元したコードを実行する（前者は依存の install を挟み、後者は渡したコマンドをそのまま走らせる）
+- `karakuri-prod-run` — 使い捨ての prod コンテナで、指定した commit sha へ復元したコードに対してタスクランナー経由でタスクを実行する（依存の install を挟む）
 - `karakuri-prod-base` / `karakuri-prod-shell` — 対話 prod 作業の土台を起動し、別の端末からそこへ入る
 
 **コンテナへ入る**
@@ -40,13 +40,10 @@ workspace の中に置くと、そこに常駐する LLM エージェントが�
 - `karakuri-port-forward` — ssh の転送を張り直す
 - `karakuri-loopback` — `/etc/hosts` と loopback 別名を設定する
 
-**イメージの digest**
-
-- `karakuri-image-digest` — タグから digest を引き、compose へ貼れる `image:` 行を出す
-- `karakuri-check-image` — compose に書かれた digest と、タグの現在の digest を照合する
-
 このほかに `shims/_dotenvx`（ホスト側の dotenvx shim）と `compose.prod.yaml`（prod コンテナの定義のひな形）が入っている。
 `dev-inject.sh` / `prod-run.sh` / `host-run.sh` / `loopback-setup.sh` は上の関数が呼ぶ下位スクリプトで、直接打つ必要はない。
+
+`proxy-log-setup.sh` と `proxy-log/` は、`karakuri.sh` の関数からは呼ばれない独立したツールで、直接実行する（詳細は下の「egress-proxy のアクセスログを保管庫へ書き出す」）。
 
 ## 推奨の使い方
 
@@ -82,7 +79,6 @@ alias は関数にも効き、引数もそのまま渡るので、下をその�
 ```sh
 alias pf='karakuri-port-forward'
 alias prod-run='karakuri-prod-run'
-alias prod-exec='karakuri-prod-exec'
 alias prod-base='karakuri-prod-base'
 alias prod-shell='karakuri-prod-shell'
 ```
@@ -155,11 +151,13 @@ dev が書いたコードを prod が実行する経路の唯一のゲートは 
 
 先に compose ファイルを置く（下記「compose ファイルの置き場所と digest」）。
 
+`package.json` の `scripts` に `_dotenvx get -f .env.prod` を書いたタスク（例: `get-secrets`）を用意し、`karakuri-prod-run` で呼ぶ。
+
 ```sh
-karakuri-prod-exec acme/app <sha> dotenvx get -f .env.prod
+karakuri-prod-run acme/app <sha> get-secrets
 ```
 
-`dotenvx` は `pnpm` の外側に置く（理由は `prod-run.sh` の usage）。
+scripts の中では `_dotenvx` と書く（理由は `images/runtime-base/Dockerfile` の shim の節）。
 
 **対話シェルが要る場合**
 stdin が secret の搬送路なので、`docker compose run` の対話 TTY とは両立しない。
@@ -264,12 +262,49 @@ mount した時点で、この構成は「書き換えられないもの」か�
 ```
 
 [`compose.prod.yaml`](./compose.prod.yaml) をこの名前でコピーし、`image:` の digest を実在のものへ差し替える。
-`karakuri-image-digest <tag>` が貼り付け用の行を出す。
+digest は配布元のレジストリで確かめて貼る。
 
 全プロジェクトで 1 枚を共有する `KARAKURI_PROD_COMPOSE` も残してあるが、その場合はイメージの更新が全プロジェクトへ一斉に適用される。
 
 **保証**
 [`tests/karakuri.test.sh`](./tests/karakuri.test.sh)。
+
+### egress-proxy のアクセスログを保管庫へ書き出す
+
+**何のために**
+LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を、後から照会できる記録として残すため。
+アクセスログは compose の named volume 1本にしかなく、ローテーションも保持期間も無い。
+`docker compose down -v` で消える。
+
+**どう動くか**
+label `karakuri.egress-log` を持つボリュームが対象で、値がそのまま保管庫のディレクトリ名になる。
+`proxy-log-setup.sh install [--interval <時間>]` が macOS の利用者権限 LaunchAgent を登録し、1時間ごとに [`proxy-log/karakuri-proxy-log-export`](./proxy-log/karakuri-proxy-log-export) を起こす。
+起きたジョブは、前回の書き出し成功（状態ファイルの `result` が `ok` か `partial`）から `--interval` で選んだ時間（1〜168、既定24）が経っていなければ何もしない。
+`proxy-log-setup.sh run` は手動の実行で、間隔を見ずにその場で書き出す。
+Docker が動いていない回は、書き出しも状態ファイルの更新も行わない。
+書き出し先は `~/.local/state/karakuri/egress-log/<project>/`（365日を超えたファイルは消える）で、実行結果は `~/.local/state/karakuri/egress-log/status` に `key=value` 形式で残る。
+
+保管庫のファイル名は `access-<YYYYMMDDTHHMMSSZ>.log.gz`（書き出した時刻、UTC）。
+状態ファイルは `run_start` / `run_end`（ISO 8601、UTC）、`result`（`ok` / `partial` / `failed`）、`interval_hours`（install で選んだ時間）と、ボリュームごとに `volume.<ボリューム名>=<状態>:<プロジェクト名>[:<行数>]` を持つ。
+書き出しを行わなかった回（間隔内のスケジュール実行、Docker 不在）は状態ファイルを更新しないので、`run_start` が古いことは「ジョブが止まっている」「PC が止まっていた」「Docker が動いていなかった」のどれでもあり、状態ファイルだけでは区別できない。
+`<状態>` は `running` / `stopped`（書き出し成功、`<行数>` を伴う）、`no-container` / `export-failed`（失敗、プロジェクト名のみ）、`invalid-label` / `duplicate-label`（プロジェクト名の位置に生の label 値が入る）のいずれかである。
+
+```sh
+proxy-log-setup.sh install [--interval <時間>]  # 初回 1 回（アップグレード後も）。1〜168、既定 24
+proxy-log-setup.sh run                          # 手動で 1 回だけ、間隔を見ずに走らせる
+proxy-log-setup.sh uninstall                    # 保管庫と状態ファイルは残る
+```
+
+`--interval` は前回の install で選んだ値を引き継がない——アップグレードで `install` を打ち直すときは毎回選び直す。
+
+macOS 以外ではどのサブコマンドも何もせず 0 で終わる。
+
+既存の compose を使っている場合、ボリュームの定義に label を足しただけでは効かない——ボリューム自体を作り直す必要があり、作り直すとそれまでのログは消える（`docker compose down` → `docker volume rm <vol>` → `up`）。
+行の形式そのものは `images/egress-proxy/squid.conf` の `logformat` が正本で、ここには写さない。
+行の形式（フィールドの並びや意味）は egress-proxy の版によって変わりうる。
+
+**保証**
+[`tests/proxy-log.test.sh`](./tests/proxy-log.test.sh)。
 
 ## リリース
 

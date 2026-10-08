@@ -207,3 +207,9 @@ volumes:
   <your-project>-claude-config:
   <your-project>-codex-config:
   <your-project>-proxy-log:
+    # host-tools/proxy-log-setup.sh が書き出し対象を見つけるための印。値を
+    # 自分のプロジェクト名に書き換えること——保管庫のディレクトリ名になる
+    # (host-tools/README.md「egress-proxy のアクセスログを保管庫へ書き出す」)。
+    # 既存のボリュームに後から付かない。付け直すとそれまでのログが消える。
+    labels:
+      karakuri.egress-log: <your-project>
