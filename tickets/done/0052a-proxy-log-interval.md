@@ -1,5 +1,5 @@
 ---
-status: open # draft → open → close
+status: close
 type: feat
 base: main
 targets:
