@@ -395,7 +395,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `node-schedule` は `schedule.json` の日付から maintenance 入り・EOL までの残り日数を返す。**残り日数がいくつであっても、`severity` はそれを見ない**（`severity` は `node-schedule` の出力を引数に取らない）
 - 固定値が npm の security advisory の影響範囲に入るとき、`advisory` は `checked-alert` を返す。遅れが `patch 1` でも、遅れが `none` でも、advisory があれば `severity` は `alert` になる
 - **否定対照:** advisory の照会に失敗したとき、`advisory` は該当なしと同じ `checked-none` を返さず `check-failed` を返す（テスト: "否定対照: advisory 照会の失敗は checked-none に化けず check-failed を返す"）
-- `advisory` は深刻度とは別に照会の可否を返す。照会に乗らない対象（node / crit / golang builder / egress-guard）では、遅れの有無にかかわらず `not-checked` を返す
+- `advisory` は深刻度とは別に照会の可否を返す。照会に乗らない対象（node / crit / golang builder）では、遅れの有無にかかわらず `not-checked` を返す
 - **否定対照:** `checked-none`（照会して該当なし）・`not-checked`（照会に乗らない）・`check-failed`（照会に失敗）・`checked-alert`（該当あり）は互いに異なる値である（テスト: "否定対照: not-checked / checked-none / check-failed / checked-alert は互いに異なる値"）
 
 ### 22. `images/devcontainer-base/tests/git-identity.test.sh` — `images/devcontainer-base/bin/git-identity-setup`
@@ -560,6 +560,12 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - Docker が動いている間は、PC が起きていれば、前回の書き出しの開始から選んだ時間 + 1時間以内に次の書き出しが走る
 
+### H-a — `未検証の約束 (テスト困難: egress-proxy ワークフローの smoke test が、push 済みイメージの両アーキについてソースと突き合わせる)`
+
+起源: `0046-egress-guard-from-source`
+
+- egress-proxy イメージは、`/usr/local/bin/init-project-firewall.sh` と、`/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` を含む。どれもビルド元コミットの `packages/egress-guard` と同一の内容で、スクリプトは実行可能、雛形は実行可能でない。runtime-base を使わない利用者は、このパスからスクリプトと雛形を取り出せる
+
 ## 境界宣言
 
 ### 免責
@@ -592,6 +598,8 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 **C-3. `egress-proxy` イメージ**
 - `/usr/local/bin/egress-proxy-bake`
 - `/etc/squid/squid.conf`
+- `/usr/local/bin/init-project-firewall.sh`
+- `/usr/share/egress-guard/templates/`（`firewall.json` / `firewall.audit.json` / `firewall.example.json`）
 
 **D. ホストと利用側リポジトリへ配布されるテンプレート**
 - `host-tools/karakuri.sh` — シェルへ source する関数集

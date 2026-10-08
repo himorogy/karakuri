@@ -11,12 +11,21 @@ ghcr.io/himorogy/egress-proxy:1
 ## 何を焼いてあるか
 
 - `squid`（`/etc/squid/squid.conf`。CONNECT と絶対 URI の HTTP だけを扱い、TLS は終端しない）
-- `/usr/local/bin/init-project-firewall.sh` — `@himorogy/egress-guard` から `npm install -g` で取得（`ARG EGRESS_GUARD_VERSION`）
+- `/usr/local/bin/init-project-firewall.sh` — `packages/egress-guard`（このリポジトリ、ビルド元コミットのソースそのもの）から named build context 経由で取得。npm は経由しない
+- `/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` — 同じく `packages/egress-guard` の雛形。実行可能ではない
 - `/usr/local/bin/egress-proxy-bake` — 利用側が呼ぶ焼き込みコマンド
 - `USER proxy`（uid 13）で起動する `ENTRYPOINT`
 
 `firewall.json` そのものはこのイメージに含まれない。
 利用側が自分の `firewall.json` を `COPY` し、`egress-proxy-bake` で焼く。
+
+`runtime-base` を使わない利用者は、このイメージからスクリプトと雛形を取り出せる。
+
+```dockerfile
+FROM your-base-image
+COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> /usr/local/bin/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh
+COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> /usr/share/egress-guard/templates/ /usr/share/egress-guard/templates/
+```
 
 ## 使い方
 
@@ -41,6 +50,7 @@ services:
 
 - 台帳 `docs/guarantees.md`（テスト: `images/egress-proxy/tests/bake.test.sh`）
 - squid が非 root（uid 13）で起動することは、起源チケット `0035-egress-proxy-image` の未検証の約束として台帳にある（push 済みイメージでの smoke test が要る）
+- イメージがスクリプトと雛形をソースと同一の内容・mode で含むことは、起源チケット `0046-egress-guard-from-source` の未検証の約束として台帳にある（push 済みイメージでの smoke test が要る）
 
 ## リリース
 

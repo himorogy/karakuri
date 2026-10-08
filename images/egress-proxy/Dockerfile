@@ -6,24 +6,9 @@
 # docs/archive/egress-guard-design.md §2.23、squid.conf 自体の個々の設定行
 # の理由はそのファイルのコメントを参照。
 #
-# 2 ステージ。builder は npm から egress-guard を取ってきて
-# init-project-firewall.sh を取り出すためだけに存在し、firewall.json には
-# 一切触れない (それは利用側が RUN egress-proxy-bake で行う)。
-#
-# ARG はファイル先頭のグローバルスコープに置く。監視 (.github/workflows/
-# monitor.yml) が `^ARG EGRESS_GUARD_VERSION=` の形で読むため。
-ARG EGRESS_GUARD_VERSION=0.4.0
-
-FROM node:24-bookworm-slim AS builder
-
-# Pinned for the same reason the egress-guard README pins it in the main
-# Dockerfile: this runs code at image build time, and a dist-tag would let a
-# package update change what that code does without anyone choosing to.
-ARG EGRESS_GUARD_VERSION
-RUN npm install -g @himorogy/egress-guard@${EGRESS_GUARD_VERSION} \
-    && cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-        /usr/local/bin/init-project-firewall.sh \
-    && chmod 755 /usr/local/bin/init-project-firewall.sh
+# 単一ステージ。init-project-firewall.sh と templates/ は packages/egress-guard
+# (このリポジトリ、ビルド元コミットのソースそのもの) から named build context
+# `egress-guard` で受け取る。npm は経由しない。
 
 FROM debian:bookworm-slim
 
@@ -43,7 +28,15 @@ RUN apt-get update \
 # volume the access log lives on. Nothing is written into the image layer.
 RUN mkdir -p /var/spool/squid /var/log/squid /run
 
-COPY --from=builder /usr/local/bin/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh
+# init-project-firewall.sh and the three firewall.json templates come from
+# packages/egress-guard in this repo, not from npm. The build context is
+# images/egress-proxy, so they're supplied as a named build context (same
+# shape as runtime-base's env-guard context): pass
+# `--build-context egress-guard=packages/egress-guard` (GitHub Actions:
+# docker/build-push-action's build-contexts input). Without it, the COPY
+# below fails.
+COPY --from=egress-guard scripts/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh
+COPY --from=egress-guard templates/firewall.json templates/firewall.audit.json templates/firewall.example.json /usr/share/egress-guard/templates/
 COPY squid.conf /etc/squid/squid.conf
 COPY bin/egress-proxy-bake /usr/local/bin/egress-proxy-bake
 
@@ -53,7 +46,11 @@ COPY bin/egress-proxy-bake /usr/local/bin/egress-proxy-bake
 # the consumer's Dockerfile can write them without needing write access to
 # /etc/squid itself (egress-proxy-bake replaces file contents in place
 # rather than renaming, precisely so this ownership is enough).
-RUN chmod 755 /usr/local/bin/egress-proxy-bake \
+RUN chown root:root /usr/local/bin/init-project-firewall.sh \
+    && chmod 755 /usr/local/bin/init-project-firewall.sh \
+    && chown root:root /usr/share/egress-guard/templates/*.json \
+    && chmod 644 /usr/share/egress-guard/templates/*.json \
+    && chmod 755 /usr/local/bin/egress-proxy-bake \
     && touch /etc/squid/allowed-domains.txt \
     && chown proxy:proxy /etc/squid/allowed-domains.txt /etc/squid/squid.conf
 
