@@ -143,12 +143,17 @@ gitconfig を暗黙にコピーしており、その分だけ動いて見えて�
 **保証。** [`docs/guarantees.md`](../../docs/guarantees.md) の
 `images/devcontainer-base/tests/git-identity.test.sh` の節。
 
-雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
-プロジェクトごとにユーザー定義ネットワーク（`<name>_default`）を自動で作り、その上でだけ
-Docker の埋め込みリゾルバ `127.0.0.11` が使えるため。デフォルトブリッジのままだと
-ホスト側の DNS アドレス宛に外向きの穴が 1 つ開く。根拠と、Compose を使わない場合の代替は
+雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。`examples/docker-compose.yaml`
+はトップレベルの `networks:` に `internal`（`internal: true`）と外向きの 2 本を定義し、`dev` は
+internal 側だけ、`egress-proxy` は両方に載せる。これにより Docker の埋め込みリゾルバ `127.0.0.11`
+が外部名を転送しなくなり、DNS でのデータ持ち出し経路が塞がる。根拠、Docker の版の条件、
+internal と両立しない機能、Compose を使わない場合の代替は
 [`packages/egress-guard/README.md`](../../packages/egress-guard/README.md) の
 「ネットワーク構成（推奨）」。
+
+**internal の構成には `devcontainer-base:2.7.0` 以降（`0048-firewall-l7-without-external-dns` 入りの版）が要る。** それより前の base
+で internal に載せると、`init-project-firewall.sh` が anchor を引けずに panic テーブルへ落ちる。
+雛形の Dockerfile は浮動タグ `devcontainer-base:2` を参照するため、通常は版を明示する必要はない。
 
 ### 忘れると時間を溶かす設定
 

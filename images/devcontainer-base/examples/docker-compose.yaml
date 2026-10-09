@@ -1,16 +1,15 @@
 # プロジェクト側 docker-compose.yaml の雛形。
 # .devcontainer/docker-compose.yaml としてコピーし、<your-project> を差し替える。
 #
-# egress-guard が第一に推奨する構成が Compose。理由はネットワークにある。
-# Compose はプロジェクトごとにユーザー定義ネットワーク (<name>_default) を自動で作り、
-# その上でだけ Docker の埋め込みリゾルバ 127.0.0.11 が使える。デフォルトブリッジだと
-# ホスト側の DNS アドレス宛に外向きの穴が 1 つ開く。
-# 判断の根拠は packages/egress-guard/README.md の「ネットワーク構成（推奨）」。
+# egress-guard が第一に推奨する構成が Compose。理由はネットワークにある
+# (packages/egress-guard/README.md「ネットワーク構成（推奨）」)。internal / outward の
+# 使い分けで埋め込みリゾルバが外部名を転送しなくなる理由は docs/conventions.md
+# 「発見しにくい事実」。
 #
 # **runArgs は dockerComposeFile を使うと黙って無視される。** ポート転送・cap・環境変数・
 # マウントは、devcontainer.json ではなくこのファイルに書く。
 
-# ネットワーク名がこれを接頭辞に決まる (<name>_default)。
+# ネットワーク名がこれを接頭辞に決まる (<name>_internal・<name>_outward)。
 # プロジェクトごとに違う値にすること。1 つのネットワークを共有すると、同居する
 # コンテナが相互に名前解決して到達できる。
 #
@@ -52,6 +51,12 @@ services:
     # （proxy 宛の環境変数を読まないツールは今までどおり直接つながろうとして拒否される）。
     depends_on:
       - egress-proxy
+
+    # **dev を outward 側にも乗せると塞がったことにならない**——1 本でも外向きの
+    # ネットワークに乗っていると、埋め込みリゾルバの外部名転送が戻る
+    # (packages/egress-guard/README.md「ネットワーク構成（推奨）」)。
+    networks:
+      - internal
 
     # containerEnv の置き換え。**devcontainer.json の containerEnv は Compose 構成では
     # 効かない。** 環境変数の置き場はここが既定で、イメージの ENV に置くのは利用側が
@@ -188,6 +193,12 @@ services:
     # cap_drop: [ALL] の下で失敗して落ちる（images/egress-proxy/Dockerfile 参照）。
     user: "13:13"
 
+    # 両方に乗った構成でだけ、internal 側の dev から外部名の DNS 転送が止まる
+    # (docs/conventions.md「発見しにくい事実」)。
+    networks:
+      - internal
+      - outward
+
     read_only: true
     tmpfs:
       - /var/spool/squid:uid=13,gid=13
@@ -213,3 +224,11 @@ volumes:
     # 既存のボリュームに後から付かない。付け直すとそれまでのログが消える。
     labels:
       karakuri.egress-log: <your-project>
+
+networks:
+  # internal: true の意味と、埋め込みリゾルバが外部名を転送しなくなる理由は
+  # docs/conventions.md「発見しにくい事実」を参照。
+  internal:
+    internal: true
+
+  outward:
