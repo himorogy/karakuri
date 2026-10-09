@@ -6,6 +6,8 @@ targets:
   - images/egress-proxy/squid.conf
   - packages/egress-guard/tests/verify-l7.sh
   - docs/guarantees.md
+  - tickets/0046-egress-guard-from-source.md
+  - tickets/done/0046-egress-guard-from-source.md
 bundle:
   - 0052-proxy-log-vault
   - 0052a-proxy-log-interval
@@ -46,6 +48,8 @@ egress-proxy のアクセスログを、LLM を通らない経路（パッケー
 
 0046（egress-guard をソースから焼く）が `images/egress-proxy/` と `verify-l7.sh` に触るので、0046 の着地後に着手する。
 0046 の targets に `squid.conf` は入っていない。
+
+修復: 0046-egress-guard-from-source（close 前に統合ブランチへマージされた。tickets/done/ への移動と status の書き換えをこの PR に載せる）
 
 ### 変えるもの
 
