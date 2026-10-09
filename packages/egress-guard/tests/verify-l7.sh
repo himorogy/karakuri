@@ -269,9 +269,10 @@ check_proxy_stop_breaks_egress() {
 
 check_acl_absent_in_dev() {
 	# squid.conf 自体は探さない。squid.conf と allowed-domains.txt はどちらも
-	# images/egress-proxy/ 発のファイルで、egress-guard の npm パッケージの
-	# files (templates 配下は *.json だけ) には含まれないため、dev の
-	# $(npm root -g) 配下には元から現れない。ここで確認したいのは、
+	# images/egress-proxy/ 発のファイルで、runtime-base が packages/egress-guard
+	# から焼くのは scripts/init-project-firewall.sh だけ (images/runtime-base/
+	# Dockerfile 参照。templates/ は焼かない) のため、dev には元から現れない。
+	# ここで確認したいのは、
 	# firewall.json から egress-proxy-bake (images/egress-proxy/bin/
 	# egress-proxy-bake) が焼く allowed-domains.txt —— egress-proxy のイメージ
 	# ビルド時にしか作られない生成物 —— が、別コンテナである dev から見えない

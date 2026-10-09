@@ -32,7 +32,7 @@ git に入るのを止める検査。pre-commit hook と CI が**同じ 1 本の
 ghcr.io/himorogy/devcontainer-base:1     ← images/devcontainer-base
   ├─ Node / pnpm / git / gh / ripgrep / crit …
   ├─ egress-guard 本体（スクリプトと sudoers）
-  │     ↑ ARG EGRESS_GUARD_VERSION で pin
+  │     ↑ packages/egress-guard（このリポジトリ）のソースをビルド時に焼く
   └─ env-guard のスキャナと pre-commit hook
         ↑ core.hooksPath をイメージに焼いてあるので全リポジトリに効く
 
@@ -85,7 +85,7 @@ allowlist の変更をエージェントに頼むときは
 ## 固定値の追従
 
 `images/runtime-base` と `images/devcontainer-base` は、node / pnpm / dotenvx /
-wrangler / egress-guard / crit / golang（crit のビルドに使う）の版を固定しています。
+wrangler / crit / golang（crit のビルドに使う）の版を固定しています。
 固定は上流の侵害リリースを自動で取り込まないための措置なので、上げる作業は自動化せず、
 上げ忘れだけを監視で拾います。
 
@@ -93,7 +93,7 @@ wrangler / egress-guard / crit / golang（crit のビルドに使う）の版を
 できない利用側が出た場合は、旧 LTS の fork を検討します
 - **固定値の棚卸しは月に1度です。** security advisory の影響下にあるとわかった場合だけ
 例外で、即時に上げます。advisory を自動で照会できるのは npm 由来の3つ（pnpm /
-dotenvx / wrangler）だけで、node / crit / golang builder / egress-guard の advisory は
+dotenvx / wrangler）だけで、node / crit / golang builder の advisory は
 この経路では照会できません
 - **`.github/workflows/monitor.yml` は上げ忘れを拾う装置で、上げる判断はしません。**
 通知が異常検知（`alert`）のときだけ即時に対応し、それ以外は月次の棚卸しで「上げる」か

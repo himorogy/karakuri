@@ -26,6 +26,12 @@ on:
     paths:
       - "images/egress-proxy/**"
       - "!images/egress-proxy/**/*.md"
+      # イメージは packages/egress-guard のスクリプトと雛形を named build
+      # context 経由で焼き込む。ここを見ていないと、スクリプトだけを変えた
+      # PR に対してイメージの検証が黙って飛ぶ。*.md だけ外すのは、paths を
+      # 狭めるより広い側へずらすため。
+      - "packages/egress-guard/**"
+      - "!packages/egress-guard/**/*.md"
       - ".github/workflows/egress-proxy.yml"
   workflow_dispatch:
     inputs:
@@ -130,12 +136,18 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ env.CONTEXT }}
+          # init-project-firewall.sh と雛形の実体は packages/egress-guard にあり、
+          # ビルドコンテキストの外にある。コンテキストを広げる代わりに、
+          # 必要なディレクトリだけを named build context として追加で供給する。
+          # Dockerfile 側は `COPY --from=egress-guard ...` で受ける。
+          build-contexts: |
+            egress-guard=packages/egress-guard
           platforms: linux/amd64,linux/arm64
           push: ${{ steps.cond.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          # ベースの node:24-bookworm-slim / debian:bookworm-slim を毎回引き直す。
+          # ベースの debian:bookworm-slim を毎回引き直す。
           # ランナー上の古いレイヤに引きずられないため。
           pull: true
           cache-from: type=gha
@@ -149,6 +161,10 @@ jobs:
       # --entrypoint sh の1回の docker run に両方の検証をまとめているのは、
       # egress-proxy-bake が焼いた squid.conf を次の docker run へ引き継ぐ手段が
       # (コンテナは --rm で毎回作り直すため) 無いため。
+      #
+      # 後半の突き合わせは、init-project-firewall.sh と3つの雛形が named build
+      # context 経由で焼かれたものであり、ビルドキャッシュが古いソースを引き
+      # ずっていないことの検出を目的とする。
       - name: Smoke test pushed image
         if: steps.cond.outputs.push == 'true'
         run: |
@@ -160,4 +176,18 @@ jobs:
               -v "${{ github.workspace }}/packages/egress-guard/templates/firewall.json:/firewall.json:ro" \
               --entrypoint sh "${tag}" -c \
               'egress-proxy-bake /firewall.json && squid -k parse -f /etc/squid/squid.conf'
+
+            docker run --rm --platform "${platform}" --entrypoint cat "${tag}" \
+              /usr/local/bin/init-project-firewall.sh \
+              | diff - "${{ github.workspace }}/packages/egress-guard/scripts/init-project-firewall.sh"
+            for f in firewall.json firewall.audit.json firewall.example.json; do
+              docker run --rm --platform "${platform}" --entrypoint cat "${tag}" \
+                "/usr/share/egress-guard/templates/${f}" \
+                | diff - "${{ github.workspace }}/packages/egress-guard/templates/${f}"
+            done
+            docker run --rm --platform "${platform}" --entrypoint sh "${tag}" -c \
+              'test -x /usr/local/bin/init-project-firewall.sh &&
+               [ ! -x /usr/share/egress-guard/templates/firewall.json ] &&
+               [ ! -x /usr/share/egress-guard/templates/firewall.audit.json ] &&
+               [ ! -x /usr/share/egress-guard/templates/firewall.example.json ]'
           done

@@ -1,0 +1,673 @@
+#!/usr/bin/env bash
+#
+# karakuri-proxy-log-export — egress-proxy のアクセスログをホストの保管庫へ
+# 書き出す。proxy-log-setup.sh の install がこのファイルを
+# ~/.local/libexec/karakuri/ へ複製し、LaunchAgent が1時間ごとに
+# `--scheduled` 付きでこれを呼び、または `proxy-log-setup.sh run` が
+# `--scheduled` なしで手動でこれを直接実行する。
+#
+# 対象は label karakuri.egress-log を持つ named volume である。squid の
+# access_log は images/egress-proxy/squid.conf が /etc/squid/squid.conf に
+# 焼き込んでおり、コンテナ内のパスは常に /var/log/squid/access.log
+# （compose 側はそこへ named volume を mount する契約——
+# .devcontainer/docker-compose.yaml と雛形 examples/docker-compose.yaml の
+# 両方がこの規約を守っている）。このパスはプロジェクトごとに変わらないので、
+# 発見ではなく固定値として扱う。
+#
+# 同じボリュームを ro で mount している別のコンテナ（dev）が同時に走って
+# いることがある。`docker ps --filter volume=<vol>` はそれも返すので、
+# 「このボリュームを mount している実行中のコンテナ」の中から
+# /var/log/squid を持つものだけを実際の書き手として選ぶ
+# （_find_proxy_container）。dev 側の mount 先は別パスなので、このパスが
+# 無いコンテナは squid ではないと分かる。
+
+set -uo pipefail
+
+HOME="${HOME:?karakuri-proxy-log-export requires HOME to be set}"
+
+VAULT_DIR="${HOME}/.local/state/karakuri/egress-log"
+STATUS_FILE="${VAULT_DIR}/status"
+DOCKER_BIN_FILE="${HOME}/.local/libexec/karakuri/docker-bin"
+INTERVAL_HOURS_FILE="${HOME}/.local/libexec/karakuri/interval-hours"
+DEFAULT_INTERVAL_HOURS=24
+
+LABEL_KEY="karakuri.egress-log"
+STASH_NAME="access.log.export"
+SQUID_LOG_DIR="/var/log/squid"
+RETENTION_DAYS=365
+
+# launchd は docker Desktop の docker を PATH に持たないことがある。install
+# が一度だけ解決した絶対パスをここで読む。ファイルが無ければ PATH 解決に
+# 委ねる（テストから直接呼ぶときなど、install を経由しない実行のため）。
+if [ -r "$DOCKER_BIN_FILE" ]; then
+	DOCKER_BIN="$(cat "$DOCKER_BIN_FILE")"
+else
+	DOCKER_BIN="docker"
+fi
+
+# docker-bin と同じ理由（install を経由しない直接実行のため）で、ファイルが
+# 無ければ install の既定値と同じ 24 を使う。
+if [ -r "$INTERVAL_HOURS_FILE" ]; then
+	INTERVAL_HOURS="$(cat "$INTERVAL_HOURS_FILE")"
+else
+	INTERVAL_HOURS="$DEFAULT_INTERVAL_HOURS"
+fi
+
+_err() {
+	printf 'karakuri-proxy-log-export: %s\n' "$1" >&2
+}
+
+# _list_contains <改行区切りのリスト> <値> — 完全一致で探す。
+# host-tools/loopback-setup.sh の同名ヘルパと同じ規律（部分一致による
+# コンテナ ID の誤判定を避ける）。
+_list_contains() {
+	local list="$1" want="$2" x
+	[ -n "$list" ] || return 1
+	while IFS= read -r x; do
+		[ "$x" = "$want" ] && return 0
+	done <<<"$list"
+	return 1
+}
+
+_valid_label_value() {
+	local v="$1" re='^[a-z0-9][a-z0-9-]*$'
+	[[ "$v" =~ $re ]]
+}
+
+_list_labeled_volumes() {
+	"$DOCKER_BIN" volume ls --filter "label=${LABEL_KEY}" --format '{{.Name}}'
+}
+
+_label_value() {
+	"$DOCKER_BIN" volume inspect "$1" --format "{{ index .Labels \"${LABEL_KEY}\" }}" 2>/dev/null
+}
+
+_dexec() {
+	local cid="$1" script="$2"
+	"$DOCKER_BIN" exec "$cid" sh -c "$script"
+}
+
+# _signal_rotate <cid> — squid に新しい access.log を開き直させる。
+# egress-proxy のイメージは `ENTRYPOINT ["squid", "-N", ...]` で squid を
+# コンテナの PID 1 として動かしており、`squid -k rotate` は pid ファイルの
+# 値が 1 になるため `Bad PID file ... unreasonably small PID value: 1` で
+# 拒否される（ホストでの検収で実測）。`squid -k rotate` がしているのは
+# squid の pid へ SIGUSR1 を送ることだけなので、PID 1 へ直接送る。これで
+# squid が新しい access.log を開き直すことも同じ検収で実測した。
+_signal_rotate() {
+	local cid="$1"
+	"$DOCKER_BIN" kill --signal=USR1 "$cid" >/dev/null 2>&1
+}
+
+# _file_state <cid> <path> — ファイルの有無を標準出力の "present" /
+# "absent" / "unknown" で返す。終了コードは信号として使わない——docker CLI
+# はデーモンに繋がらないときやコンテナが無いときも終了コード 1 で終わり、
+# それは `test -e` が「無い」で返す終了コード 1 と区別できない（実測ではない）。
+# コンテナの中で判定した文字列だけを信号にすれば、docker exec 自体が失敗して
+# 何も出力されなかった場合はどちらの文言にも一致せず "unknown" になる。
+_file_state() {
+	local cid="$1" path="$2" out
+	out="$(_dexec "$cid" "if [ -e '${path}' ]; then printf present; else printf absent; fi" 2>/dev/null)"
+	case "$out" in
+	present) printf 'present\n' ;;
+	absent) printf 'absent\n' ;;
+	*) printf 'unknown\n' ;;
+	esac
+}
+
+# _dir_state <cid> <path> — _file_state と同じ3値だが `-d` で判定する。
+_dir_state() {
+	local cid="$1" path="$2" out
+	out="$(_dexec "$cid" "if [ -d '${path}' ]; then printf present; else printf absent; fi" 2>/dev/null)"
+	case "$out" in
+	present) printf 'present\n' ;;
+	absent) printf 'absent\n' ;;
+	*) printf 'unknown\n' ;;
+	esac
+}
+
+# _find_proxy_container <vol> — 見つかれば標準出力に cid を出して 0 を返す。
+# 見つからない場合の終了コードは2種に分ける。
+#   2: このボリュームを mount している実行中のコンテナを `docker ps` で
+#      確認でき、その全てについて SQUID_LOG_DIR の有無も確認できて、
+#      どれも持っていないと確定した（書き手がいないと確定した）
+#   1: `docker ps` 自体が失敗した、またはどれかのコンテナで有無を
+#      確認できなかった——書き手がいないとは確定できない
+# ここを終了コードだけの二値（見つかった/見つからない）にすると、呼び出し元
+# は「確定して書き手がいない」と「確認できなかった」を区別できず、後者を
+# 停止中の手順に回してしまう。停止中の手順は稼働中の squid の access.log を
+# 読んで rm しうるので、これは行の消失につながる。
+_find_proxy_container() {
+	local vol="$1" cid ids rc state ambiguous=0
+
+	ids="$("$DOCKER_BIN" ps --filter "volume=${vol}" --format '{{.ID}}' 2>/dev/null)"
+	rc=$?
+	[ "$rc" -eq 0 ] || return 1
+
+	while IFS= read -r cid; do
+		[ -n "$cid" ] || continue
+		state="$(_dir_state "$cid" "$SQUID_LOG_DIR")"
+		case "$state" in
+		present)
+			printf '%s\n' "$cid"
+			return 0
+			;;
+		absent) ;;
+		*)
+			ambiguous=1
+			;;
+		esac
+	done <<<"$ids"
+
+	[ "$ambiguous" -eq 0 ] || return 1
+	return 2
+}
+
+# _wait_for_present <cid> <path> — rotate（SIGUSR1）はシグナルを送って戻る
+# だけで、squid が実際に新しいファイルを開き直すまでには間がありうる。
+# 開き直したと確かめる前に退避ファイルを読んで消すと、開き直すまでに来た
+# 行を失う。短い上限つきで present になるまで待ち、上限に達したら非ゼロで
+# 返す（_flush_file の同じ衝突待ちと同じ形）。
+_wait_for_present() {
+	local cid="$1" path="$2" attempt=0
+	while :; do
+		case "$(_file_state "$cid" "$path")" in
+		present) return 0 ;;
+		esac
+		attempt=$((attempt + 1))
+		[ "$attempt" -lt 10 ] || return 1
+		sleep 0.2
+	done
+}
+
+# _flush_file <cid> <コンテナ内のパス> <project> — ファイルが無ければ
+# 何もせず 0 行として成功で返る（前回の退避が残っていない通常の場合）。
+# 標準出力に書き出した行数を出す。
+_flush_file() {
+	local cid="$1" path="$2" project="$3"
+	local tmp dest ts attempt=0 lines state
+
+	state="$(_file_state "$cid" "$path")"
+	case "$state" in
+	absent)
+		printf '0\n'
+		return 0
+		;;
+	present) ;;
+	*)
+		# 確かめられない（docker exec 自体が失敗した場合を含む）ときに
+		# 「無い」側へ倒すと、実際には残っている退避ファイルを後続の
+		# mv が上書きして行を失う。確かめられないなら進まず失敗で返す。
+		return 1
+		;;
+	esac
+
+	tmp="$(mktemp "${TMPDIR:-/tmp}/karakuri-proxy-log.XXXXXX")" || return 1
+	if ! "$DOCKER_BIN" exec "$cid" cat "$path" >"$tmp" 2>/dev/null; then
+		rm -f "$tmp"
+		return 1
+	fi
+	lines="$(wc -l <"$tmp" | tr -d ' ')"
+
+	mkdir -p "${VAULT_DIR}/${project}" || {
+		rm -f "$tmp"
+		return 1
+	}
+
+	# ファイル名は書き出した時刻（秒精度）なので、同じ秒に2回書くと衝突
+	# する。衝突している間だけ待つ（上限を設けて、時計が壊れている場合に
+	# 無限に待たない）。
+	while :; do
+		ts="$(date -u +%Y%m%dT%H%M%SZ)"
+		dest="${VAULT_DIR}/${project}/access-${ts}.log.gz"
+		[ -e "$dest" ] || break
+		attempt=$((attempt + 1))
+		[ "$attempt" -lt 5 ] || break
+		sleep 1
+	done
+
+	if ! gzip -c "$tmp" >"${dest}.tmp"; then
+		rm -f "$tmp" "${dest}.tmp"
+		return 1
+	fi
+	if ! mv "${dest}.tmp" "$dest"; then
+		rm -f "$tmp" "${dest}.tmp"
+		return 1
+	fi
+	rm -f "$tmp"
+
+	if ! _dexec "$cid" "rm -f '${path}'" >/dev/null 2>&1; then
+		# docker exec は、コンテナとの接続が切れると、中の rm が実際には
+		# 効いていても非ゼロを返しうる。ここで $dest を無条件に消すと、
+		# 退避ファイルが本当に消えていた場合に、今回の行が保管庫にも
+		# 退避ファイルにも残らず永久に失われる——行を失うより、次の実行で
+		# 同じ行が重複する方を受け入れる。rm の成否を _file_state で
+		# 確かめ直し、三つの場合で扱いを分ける。
+		case "$(_file_state "$cid" "$path")" in
+		present)
+			# 残っていると確認できた。次回の実行がそれを拾って書き出す
+			# ので、今回書いた分は重複を避けるために消して失敗で返す。
+			rm -f "$dest"
+			return 1
+			;;
+		absent)
+			# 消えていると確認できた——rm は実際には効いていた。$dest は
+			# 唯一の記録なので残し、成功として返す。
+			printf '%s\n' "$lines"
+			return 0
+			;;
+		*)
+			# 確かめ直し自体も確認できなかった。$dest を残したまま失敗で
+			# 返す。退避ファイルが実際には残っていれば次回に重複して
+			# 書き出されるが、それは消えて二度と書き出されないより良い。
+			return 1
+			;;
+		esac
+	fi
+
+	printf '%s\n' "$lines"
+	return 0
+}
+
+# _process_running <vol> <project> — squid の書き手がいないと確定した場合
+# だけ 2 を返し、呼び出し元が停止中のコンテナの手順（_process_stopped）へ
+# 進む。書き手が見つかったが退避・rotate・書き出しのいずれかに失敗した場合、
+# および書き手がいるかどうか自体を確定できなかった場合（_find_proxy_container
+# の 1）は 1 を返す——どちらも「このボリュームには書き手がいない」が確定して
+# いないので、呼び出し元は停止中の手順へは進まない（停止中のコンテナの
+# access.log を読んで rm すれば、稼働中の squid が今も書いている行を
+# 失うことになる）。
+_process_running() {
+	local vol="$1" project="$2" cid leftover_lines lines find_rc stash_path access_path
+
+	cid="$(_find_proxy_container "$vol")"
+	find_rc=$?
+	# find_rc の 2 だけが「書き手がいないと確定した」。0 以外かつ 2 以外
+	# （1：確認できなかった）は確定していないので、呼び出し元を停止中の
+	# 手順へ進ませない——1 のまま return して export-failed にする。
+	if [ "$find_rc" -eq 2 ]; then
+		return 2
+	elif [ "$find_rc" -ne 0 ]; then
+		return 1
+	fi
+
+	stash_path="${SQUID_LOG_DIR}/${STASH_NAME}"
+	access_path="${SQUID_LOG_DIR}/access.log"
+
+	# 前回の実行が書き出しの途中で失敗して退避ファイルが残っていれば、
+	# 新しい退避を作る前にそれを先に書き出す（固定名なので、先に片付け
+	# ないと今回の退避で上書きしてしまう）。その行数も今回の書き出し分
+	# なので、最後に今回の退避の行数と合算して報告する。
+	#
+	# ただし、前回の mv（access.log → 退避ファイル）は docker exec の
+	# 報告とは裏腹に実際には効いていたかもしれない。そのときは squid が
+	# 今もこの名前のファイルへ書き続けている可能性があり、ここで読んで
+	# rm すると、squid が開き直すまでの間の書き込みが unlink された
+	# inode へ向かい失われる。退避ファイルが present なら、読む前に
+	# 必ず rotate を送って squid を新しい access.log へ切り替えさせ、
+	# 実際に開き直したと確かめてから読む。
+	case "$(_file_state "$cid" "$stash_path")" in
+	present)
+		_signal_rotate "$cid" || return 1
+		_wait_for_present "$cid" "$access_path" || return 1
+		;;
+	absent) ;;
+	*)
+		# 確かめられない（docker exec 自体が失敗した場合を含む）ときに
+		# このまま _flush_file へ進むと、そちらの確かめ直しで present が
+		# 返った場合に rotate を送らないまま読んで rm することになる。
+		# 前回の mv が報告とは裏腹に実際には効いていた状態（squid が
+		# まだこの名前のファイルへ書いている）だと、以後の書き込みが
+		# unlink された inode へ向かい、squid の再起動まで失われ続ける。
+		# 確かめられないなら進まず失敗で返す。
+		return 1
+		;;
+	esac
+	leftover_lines="$(_flush_file "$cid" "$stash_path" "$project")" || return 1
+
+	_dexec "$cid" "mv '${access_path}' '${stash_path}'" >/dev/null 2>&1 || return 1
+
+	if ! _signal_rotate "$cid"; then
+		# 失敗の報告を信じて mv を打ち消す前に access.log の有無を確かめる。
+		# rotate も docker 自身の報告とは裏腹に実際には効いていることが
+		# あり、そのときは access.log が新しく存在する。それを確かめずに
+		# 退避ファイルを書き戻すと、rotate 後に squid が書いた分をその場で
+		# 上書きし、次の rotate までの行を消す。absent と確かめられた
+		# ときだけ書き戻す——present か unknown なら戻さず、次回の実行の
+		# 「残っている退避ファイル」の手順（上記）に委ねる。
+		case "$(_file_state "$cid" "$access_path")" in
+		absent)
+			_dexec "$cid" "mv '${stash_path}' '${access_path}'" >/dev/null 2>&1 || true
+			;;
+		esac
+		return 1
+	fi
+	# 失敗の報告を信じて mv を打ち消す前に… と同じ理由で、成功の報告を
+	# 信じて即座に読むこともしない——シグナルを送って戻るのと、squid が
+	# 実際に開き直すのとの間には間がありうる。
+	_wait_for_present "$cid" "$access_path" || return 1
+
+	lines="$(_flush_file "$cid" "$stash_path" "$project")" || return 1
+	printf '%s\n' "$((leftover_lines + lines))"
+	return 0
+}
+
+# _process_stopped <vol> <project> — 使い捨てコンテナの mount 先はこちらが
+# 選ぶ（常に SQUID_LOG_DIR）ので、元のコンテナが squid だったかは問わない
+# ——sh / cat / rm があれば足りる。
+#
+# 読めるコンテナが無いと確認できた場合（ps と ps -a が両方成功して停止中の
+# コンテナが無い、または inspect が成功してイメージが空）は 2 を返す——
+# これは _process_running の 2 と同じ「書き出す対象が無い」を表し、
+# 呼び出し元はこれを no-container として記録する。ps・ps -a・inspect・
+# docker run 自体が失敗した場合、および見つけたコンテナからの読み出しに
+# 失敗した場合は 1 を返す。docker run の失敗はイメージを特定できている
+# （直前の inspect が確かめている）ので「読めるコンテナが無い」には
+# 当たらない——docker の操作が失敗したと分かっている場合を、別の想定内の
+# 状態に読み替えない。これらを main_run 側で区別しないと、
+# docker 自身の不調や退避ファイルを読めなかった実際の失敗が「読めるコンテナ
+# が無い」という想定内の状態として誤って記録される。
+_process_stopped() {
+	local vol="$1" project="$2"
+	local running_ids all_ids stopped_ids cid img twcid leftover_lines lines stash_rc=0 rc=0
+	local running_rc all_rc img_rc run_rc
+
+	# ps（実行中）・ps -a（全て）・inspect のいずれかが失敗したら、その
+	# 旨を区別せず return 2（no-container）にはしない。no-container は
+	# 「compose down 後でボリュームを mount しているコンテナが無い」
+	# という想定内の状態として監査側が読む約束なので、docker 自身の
+	# 不調をそこに読み替えると不調が良性として埋もれる。特に ps（実行中）
+	# が失敗すると、実行中のコンテナ（dev など）が停止中として数えられ、
+	# 使い捨てコンテナ経由で read + rm されてしまう——稼働中のコンテナが
+	# 書いているファイルを横から消すのと同じ危険がある。
+	running_ids="$("$DOCKER_BIN" ps --filter "volume=${vol}" --format '{{.ID}}' 2>/dev/null)"
+	running_rc=$?
+	all_ids="$("$DOCKER_BIN" ps -a --filter "volume=${vol}" --format '{{.ID}}' 2>/dev/null)"
+	all_rc=$?
+	if [ "$running_rc" -ne 0 ] || [ "$all_rc" -ne 0 ]; then
+		return 1
+	fi
+
+	stopped_ids=""
+	while IFS= read -r cid; do
+		[ -n "$cid" ] || continue
+		_list_contains "$running_ids" "$cid" && continue
+		stopped_ids="${stopped_ids:+${stopped_ids}
+}${cid}"
+	done <<<"$all_ids"
+
+	# どのコンテナもこのボリュームを mount していない（docker compose
+	# down でコンテナごと消えた）。イメージを特定できないので書き出さない。
+	# ps は確認できているので、ここは no-container で正しい。
+	[ -n "$stopped_ids" ] || return 2
+
+	cid="$(printf '%s\n' "$stopped_ids" | head -n1)"
+	img="$("$DOCKER_BIN" inspect -f '{{.Image}}' "$cid" 2>/dev/null)"
+	img_rc=$?
+	[ "$img_rc" -eq 0 ] || return 1
+	[ -n "$img" ] || return 2
+
+	twcid="$("$DOCKER_BIN" run -d --network none --user 13:13 --entrypoint sh \
+		-v "${vol}:${SQUID_LOG_DIR}" "$img" -c 'trap : TERM; sleep 600' 2>/dev/null)"
+	run_rc=$?
+	if [ "$run_rc" -ne 0 ] || [ -z "$twcid" ]; then
+		# イメージは特定できている（直前の inspect が確かめている）ので、
+		# ここは「読めるコンテナが無い」ではなく docker run 自体の失敗で
+		# ある。失敗と分かっている操作を no-container（想定内の状態）に
+		# 読み替えない。twcid が返っていれば（出力はあるが終了コードが
+		# 非ゼロ、のような食い違い）片付けてから失敗で返す。
+		[ -z "$twcid" ] || "$DOCKER_BIN" rm -f "$twcid" >/dev/null 2>&1 || true
+		return 1
+	fi
+
+	# 停止中の経路にも書き手はいないので、退避ファイルの行数も今回の分と
+	# して合算する（稼働中の経路と同じ理由。上の _process_running を参照）。
+	# どちらかの読み出しが失敗したら、使い捨てコンテナを片付けたうえで
+	# 失敗として返す——退避ファイルの書き出し失敗を握りつぶして result=ok
+	# にしない。
+	leftover_lines="$(_flush_file "$twcid" "${SQUID_LOG_DIR}/${STASH_NAME}" "$project")" || stash_rc=1
+	if [ "$stash_rc" -ne 0 ]; then
+		# 退避ファイルの書き出しに失敗したまま access.log も書き出すと、
+		# 保管庫のファイル名（書き出した時刻）の順序と、行が実際に書かれた
+		# 時刻の順序が前後する——退避ファイルの方が古い行を持つはずなのに、
+		# 失敗で後回しにする分、ファイル名は access.log 側より後になる。
+		# 退避ファイルを諦めるときは access.log の書き出しも行わない。
+		"$DOCKER_BIN" rm -f "$twcid" >/dev/null 2>&1 || true
+		return 1
+	fi
+
+	lines="$(_flush_file "$twcid" "${SQUID_LOG_DIR}/access.log" "$project")"
+	rc=$?
+
+	"$DOCKER_BIN" rm -f "$twcid" >/dev/null 2>&1 || true
+
+	[ "$rc" -eq 0 ] || return 1
+	printf '%s\n' "$((leftover_lines + lines))"
+	return 0
+}
+
+# _now_epoch / _epoch_from_ts — 保管庫のファイル名の時刻を使って保持期間を
+# 判定するための epoch 変換。GNU date と BSD date（macOS）の両方で動くように
+# 両方の書式を試す。
+_now_epoch() {
+	date -u +%s
+}
+
+_epoch_from_ts() {
+	local ts="$1" y m d hh mm ss iso
+	y="${ts:0:4}" m="${ts:4:2}" d="${ts:6:2}"
+	hh="${ts:9:2}" mm="${ts:11:2}" ss="${ts:13:2}"
+	iso="${y}-${m}-${d}T${hh}:${mm}:${ss}Z"
+	date -u -d "$iso" +%s 2>/dev/null ||
+		date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null
+}
+
+# _epoch_from_iso <ISO 8601 UTC> — 状態ファイルの run_start（_write_status と
+# 同じ書式）を epoch へ変換する。
+_epoch_from_iso() {
+	local iso="$1"
+	date -u -d "$iso" +%s 2>/dev/null ||
+		date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null
+}
+
+# _status_value <key> — 状態ファイルから key=value の行を1つ読む。
+_status_value() {
+	local key="$1" line
+	[ -r "$STATUS_FILE" ] || return 1
+	line="$(awk -F= -v k="$key" '$1 == k { print; exit }' "$STATUS_FILE")"
+	[ -n "$line" ] || return 1
+	printf '%s\n' "${line#*=}"
+}
+
+# _scheduled_run_is_not_due — スケジュール実行（--scheduled）だけが呼ぶ。
+# 状態ファイルが読めない・解釈できない場合は、いずれも「まだ早い」側では
+# なく書き出しへ進む側に倒す——読めない側を「まだ早い」に倒すと、壊れた
+# 状態ファイルのまま書き出しが永久に止まる経路を作ってしまう。
+_scheduled_run_is_not_due() {
+	local result run_start run_epoch now_epoch elapsed
+	result="$(_status_value result)" || return 1
+	case "$result" in
+	ok | partial) ;;
+	*) return 1 ;;
+	esac
+	run_start="$(_status_value run_start)" || return 1
+	run_epoch="$(_epoch_from_iso "$run_start")" || return 1
+	[ -n "$run_epoch" ] || return 1
+	now_epoch="$(_now_epoch)"
+	[ "$run_epoch" -le "$now_epoch" ] || return 1
+	elapsed=$((now_epoch - run_epoch))
+	# 10# を付けて10進として読む。付けないと先頭0を8進として読み、08・09
+	# は無効な8進数として算術エラーになり、010 は黙って8として扱われる
+	# （install は先頭0の値をそもそも拒否するが、ここでも同じ読み方の
+	# ずれを踏まないための防御）。
+	[ "$elapsed" -lt "$((10#$INTERVAL_HOURS * 3600))" ]
+}
+
+_prune_project_dir() {
+	local dir="$1" now f base ts epoch age_seconds
+	[ -d "$dir" ] || return 0
+	now="$(_now_epoch)"
+	for f in "$dir"/access-*.log.gz; do
+		[ -e "$f" ] || continue
+		base="$(basename "$f")"
+		ts="${base#access-}"
+		ts="${ts%.log.gz}"
+		epoch="$(_epoch_from_ts "$ts")" || continue
+		[ -n "$epoch" ] || continue
+		# 日数へ切り捨てると、365日と数時間を「365日」に丸めてしまい、
+		# 365日を超えているのに消えないファイルが生まれる。秒のまま
+		# 比べる。
+		age_seconds=$((now - epoch))
+		if [ "$age_seconds" -gt "$((RETENTION_DAYS * 86400))" ]; then
+			rm -f "$f"
+		fi
+	done
+}
+
+# _count_value <値> <配列名の代わりに $__vals を直接見る> — 同じ値を持つ
+# ボリュームが何個あるか。
+_count_value() {
+	local target="$1" n=0 v
+	for v in "${__vals[@]}"; do
+		[ "$v" = "$target" ] && n=$((n + 1))
+	done
+	printf '%s\n' "$n"
+}
+
+_write_status() {
+	local start="$1" end="$2" result="$3" body="$4" tmp
+	mkdir -p "$VAULT_DIR" || return 1
+	tmp="$(mktemp "${VAULT_DIR}/.status.XXXXXX")" || return 1
+	{
+		printf 'run_start=%s\n' "$start"
+		printf 'run_end=%s\n' "$end"
+		printf 'result=%s\n' "$result"
+		printf 'interval_hours=%s\n' "$INTERVAL_HOURS"
+		[ -n "$body" ] && printf '%s\n' "$body"
+	} >"$tmp"
+	mv "$tmp" "$STATUS_FILE"
+}
+
+main_run() {
+	local scheduled="$1" start_ts end_ts result any_bad=0
+
+	if [ "$scheduled" -eq 1 ] && _scheduled_run_is_not_due; then
+		return 0
+	fi
+
+	start_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+	# Docker 不在は、失敗ではなく書き出しを行わなかった回として扱う。だから
+	# 状態ファイルには触れない。
+	if ! "$DOCKER_BIN" version >/dev/null 2>&1; then
+		_err "cannot reach docker"
+		[ "$scheduled" -eq 1 ] && return 0
+		return 1
+	fi
+
+	local __vols __vol __vals=() __names=() __val_rcs=() __vols_rc
+
+	# docker version が通っても、個々の呼び出しは接続断などで単発に失敗
+	# しうる。ここで失敗すると「対象のボリュームが無かった」のか「列挙
+	# できなかった」のかが空の出力からは区別できず、後者を前者として
+	# 進めると、本来処理すべきボリュームを一つも処理しないまま result=ok
+	# を書くことになる——docker 自身が失敗した場合は version の失敗と
+	# 同じ扱いにする。
+	__vols="$(_list_labeled_volumes)"
+	__vols_rc=$?
+	if [ "$__vols_rc" -ne 0 ]; then
+		end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		_write_status "$start_ts" "$end_ts" "failed" ""
+		_err "cannot list volumes"
+		return 1
+	fi
+
+	while IFS= read -r __vol; do
+		[ -n "$__vol" ] || continue
+		__names+=("$__vol")
+		local __val __val_rc
+		__val="$(_label_value "$__vol")"
+		__val_rc=$?
+		__vals+=("$__val")
+		__val_rcs+=("$__val_rc")
+	done <<<"$__vols"
+
+	# 状態ファイルのキーは常にボリューム名（docker 上で一意）にする。
+	# label の値はプロジェクト名として値側へ含める——不正・重複な値はその
+	# ままでは安全なキーにならない（空になる、他のボリュームの値と衝突する
+	# など）ため。
+	local status_lines="" i=0 n="${#__names[@]}"
+	while [ "$i" -lt "$n" ]; do
+		local vol="${__names[$i]}" val="${__vals[$i]}" line=""
+
+		if [ "${__val_rcs[$i]}" -ne 0 ]; then
+			# label の値そのものが不正なのではなく、読み出し自体が失敗
+			# した。「無効な値を読んだ」と報告すると、実際には読めて
+			# いないのに読めたかのような記録になる。
+			_err "volume '${vol}': could not read its label value — skipping"
+			line="volume.${vol}=export-failed:"
+			any_bad=1
+		elif ! _valid_label_value "$val"; then
+			_err "volume '${vol}': label value '${val}' is invalid — skipping"
+			line="volume.${vol}=invalid-label:${val}"
+			any_bad=1
+		elif [ "$(_count_value "$val")" -gt 1 ]; then
+			_err "volume '${vol}': label value '${val}' is used by more than one volume — skipping"
+			line="volume.${vol}=duplicate-label:${val}"
+			any_bad=1
+		else
+			local lines_out="" rc=0
+			lines_out="$(_process_running "$vol" "$val")"
+			rc=$?
+			if [ "$rc" -eq 0 ]; then
+				line="volume.${vol}=running:${val}:${lines_out}"
+			elif [ "$rc" -eq 2 ]; then
+				lines_out="$(_process_stopped "$vol" "$val")"
+				rc=$?
+				if [ "$rc" -eq 0 ]; then
+					line="volume.${vol}=stopped:${val}:${lines_out}"
+				elif [ "$rc" -eq 2 ]; then
+					line="volume.${vol}=no-container:${val}"
+					any_bad=1
+				else
+					line="volume.${vol}=export-failed:${val}"
+					any_bad=1
+				fi
+			else
+				line="volume.${vol}=export-failed:${val}"
+				any_bad=1
+			fi
+		fi
+
+		status_lines="${status_lines:+${status_lines}
+}${line}"
+		i=$((i + 1))
+	done
+
+	if [ -d "$VAULT_DIR" ]; then
+		local d
+		for d in "$VAULT_DIR"/*/; do
+			[ -d "$d" ] || continue
+			_prune_project_dir "${d%/}"
+		done
+	fi
+
+	if [ "$any_bad" -eq 1 ]; then
+		result="partial"
+	else
+		result="ok"
+	fi
+
+	end_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	_write_status "$start_ts" "$end_ts" "$result" "$status_lines"
+
+	[ "$result" = "ok" ] && return 0
+	return 1
+}
+
+# 起動の経路の区別は、この引数1つだけで行う（plist の ProgramArguments が
+# 付け、`proxy-log-setup.sh run` は付けない）。
+SCHEDULED=0
+[ "${1:-}" = "--scheduled" ] && SCHEDULED=1
+main_run "$SCHEDULED"
+exit $?
