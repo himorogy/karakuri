@@ -98,7 +98,7 @@
 - `sshdPort` を書いた設定では3つのテーブルすべてにそのポートが開く。panic テーブルにはさらに応答経路の許可が付く（panic は一般の確立済み接続を持たないため、これが無いと開いていても使えない）。退役した既定ポートへは戻らない
 - 例外として、**設定が拒否された実行の panic テーブルでは `sshdPort` をあえて開かない**。その panic テーブルは設定を読む前に適用されるので、ファイルの中の数値はまだ検証されていない（テスト: "a port named by a refused configuration is not opened"）
 - 適用のフェーズは設定の読み取りより前に始まる。初回起動での「以前の方針」は全許可なので、設定エラーで何も適用せず抜けるとコンテナが開けっ放しになる。よって設定の拒否も panic テーブルへ落ちる（テスト: "a rejected configuration falls back to the panic table"）
-- 設定の拒否・resolver の欠落・anchor の解決失敗・ホストポートの宛先が定まらないこと・最終テーブルの拒否・自己検証の失敗は、いずれも非ゼロ終了し IPv4 と IPv6 の両方で panic テーブルへ落ちる。panic テーブルは INPUT・FORWARD・OUTPUT を落とし、loopback の2規則だけを持ち、DNS の固定も確立済み接続も allowlist も記録器もログも拒否も持たない。**IPv6 側の panic テーブルは拒否すら持たず黙って落とす**
+- 設定の拒否・resolver の欠落・anchor の生存確認の失敗・ホストポートの宛先が定まらないこと・最終テーブルの拒否・自己検証の失敗は、いずれも非ゼロ終了し IPv4 と IPv6 の両方で panic テーブルへ落ちる。panic テーブルは INPUT・FORWARD・OUTPUT を落とし、loopback の2規則だけを持ち、DNS の固定も確立済み接続も allowlist も記録器もログも拒否も持たない。**IPv6 側の panic テーブルは拒否すら持たず黙って落とす**
 - panic テーブルの適用自体が拒否されても実行は非ゼロで終わり、残るのは直前に受理された bootstrap テーブル——すなわち既に閉じており、割り当て resolver への 53 だけが通る状態である（テスト: "the effective table is still the bootstrap table"）
 - 記録器を含む最終テーブルが拒否された場合は、記録器を外した同じテーブルで一度だけ再試行して 0 で終わり、その旨を報告する。再試行のテーブルも拒否を保つ。再試行も拒否されたときだけ panic テーブルを**独立した適用として**投入し非ゼロで終わる（テスト: "the panic table is a restore of its own, not the last rejected one"）
 - L3 実現層では、GitHub の meta API は、github バンドルが選ばれているときだけ、かつ最終テーブルが有効になった後にだけ取得する。後でなければならないのは、その取得に要る egress を開くのが最終テーブル自身だからである。選ばれていないときに取得を試みないのは、意図的なスキップと取得失敗を区別するためであり、毎回「meta が使えない」と警告すると、本当にレンジが欠けた1回を読み飛ばす習慣を作る。取得は加算のみの best-effort で、同じホストは DNS 経由で既にセットに入っている——**唯一の外部取得をこの位置に置くことで、リビルドのどの工程も外部到達性を前提としない状態を保ち、任意の時点で強制終了しても不変条件が壊れないようにしている**（テスト: "the meta API is only fetched after the final table is live"）（起源: `0020-l7-sidecar-and-branch`）
@@ -111,8 +111,12 @@
 - ホスト名が公開アドレスを返した場合はそこにポートを開かず報告するが、ゲートウェイ側は開いたまま実行を継続する。ホスト名が私設アドレスを返すのは正常なので禁止レンジの検査は使えず、代わりに「私設アドレスであること」を要求する逆向きの検査を置いている。公開アドレスが返るのは名前が横取りされた場合であり、そこにポートを開けばホスト宛の許可ではなく**任意のインターネットホストへの穴**になる。ゲートウェイ側を落とさないのは、そちらがカーネルの経路表という別の入力源から来ており、汚染されうる入力に可用性の決定権を渡さないためである
 - 自己検証の「到達できないはず」の検査は、その宛先が allowlist に載っていたら別の宛先へ移る。解決結果が実行のたびに入れ替わっても、構築時と検証時のアドレス集合が1つでも重なれば合格と判定する（正しい方針を確率的に panic させないため）
 - anchor になるドメインが1つも無い設定は失敗ではなく、検査を飛ばした旨を述べて 0 で終わる。anchor が空になるのは方針に DNS 名が1本も無いとき——CIDR とホストポートだけの設定、または先頭ドットの記法しか書かれていない設定——に限られ、それは正当な設定である。死んだネットワークと空の allowlist を区別する手立てが無い以上、探るためのドメインを勝手に発明するより、飛ばしたと言うほうがよい。飛ばすのは「許可したものに届くか」側の検査だけで、「許可していないものが遮断されるか」側は飛ばさない
-- anchor がある場合に解決できなければ非ゼロ終了し panic テーブルへ落ちる（テスト: "an unresolvable host falls back to the panic table"）
-- 設定に書いたドメインを解決できないときは、その名前を挙げた警告を適用ログに出す。先頭ドットの記法だけは対象外で、DNS 名ではないため解決を試みず、生存確認の anchor にも選ばない。許可としては従来どおり成立し、`--print-proxy-acl` の出力も変わらない（テスト: "an unresolvable domain is still reported by name" / "a leading dot domain is not resolved" / "a leading dot domain produces no resolution warning" / "a leading dot domain is not taken as the anchor" / "the proxy ACL is unchanged by the leading dot form"）（起源: `0020a-l7-domain-resolve-warning`）
+- L3 実現層では、anchor がある場合に解決できなければ非ゼロ終了し panic テーブルへ落ちる（テスト: "a dead network falls back to the panic table"）
+- L3 実現層では、設定に書いたドメインを解決できないときは、その名前を挙げた警告を適用ログに出す（テスト: "an unresolvable domain is still reported by name"）（起源: `0020a-l7-domain-resolve-warning`）
+- L7 実現層では、先頭ドットの記法は DNS 名ではないため解決を試みず、生存確認の anchor にも選ばない。許可としては従来どおり成立し、`--print-proxy-acl` の出力も変わらない（テスト: "a leading dot domain is not resolved" / "a leading dot domain produces no resolution warning" / "a leading dot domain is not taken as the anchor" / "the proxy ACL is unchanged by the leading dot form"）（起源: `0020a-l7-domain-resolve-warning`）
+- L7 実現層では、dev 側の DNS が外部名を解決できない構成でも、proxy 経由で anchor に届く限り、最終テーブルを適用して 0 で終わる（テスト: "an l7 config exits 0 when only the proxy, not the anchor, resolves"）（起源: `0048-firewall-l7-without-external-dns`）
+- L7 実現層で anchor がある場合、proxy 経由で anchor に届かなければ非ゼロ終了し panic テーブルへ落ちる（テスト: "a denied CONNECT to the anchor exits non-zero" / "a denied CONNECT to the anchor falls back to the panic table"）（起源: `0048-firewall-l7-without-external-dns`）
+- L7 実現層では、割り当て resolver が外部名を解決できるとき、DNS が外へ転送されている旨の警告を適用ログに出し、実行は失敗にしない（テスト: "self verification warns when the assigned resolver still forwards an external name"）（起源: `0048-firewall-l7-without-external-dns`）
 - 適用時の設定は固定パスからのみ読み、作業ディレクトリを探索しない。ワークスペース側に置かれた設定は読まれず、方針を緩められない（テスト: "the workspace copy cannot relax the policy"）
 - sudo 経由の起動で引数を1つでも渡すと拒否する。sudoers の指定が空引数リストを書き忘れていても、開発用オプションが非特権ユーザーの手に渡らないようにするため
 - sudo 経由の起動では、スクリプト自身が root 所有でなければ昇格経路の問題として拒否し、理由を述べる（テスト: "a script the unprivileged user owns is refused under sudo"）
