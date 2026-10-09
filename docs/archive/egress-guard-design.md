@@ -787,6 +787,8 @@ sidecar は devcontainer ごとに 1 つ立ちます。**worktree を複数開�
 
 ### 3.1 DNS トンネリングは防げない
 
+> この経路は internal ネットワークの構成で塞いだ。現在形は `packages/egress-guard/README.md` を参照。
+
 53 番の宛先はリゾルバ 1 つに固定していますが、**そのリゾルバは再帰問い合わせをします。**
 
 ```sh
