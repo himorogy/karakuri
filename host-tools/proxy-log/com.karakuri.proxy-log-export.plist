@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	com.karakuri.proxy-log-export — egress-proxy のアクセスログをホストの
+	保管庫へ書き出す LaunchAgent。StartInterval で1時間ごとに起こし、
+	ジョブ本体（karakuri-proxy-log-export、`--scheduled` 付き）が前回の
+	成功から install で選んだ時間が経っていなければ何もしない判定を行う
+	（理由は host-tools/README.md「egress-proxy のアクセスログを保管庫へ
+	書き出す」）。loopback-aliases と違い root は要らない（叩く docker の
+	socket は利用者のもの）ので LaunchAgent にしてあり、sudo も使わない。
+
+	__KARAKURI_JOB_PATH__ と __KARAKURI_STDERR_LOG__ はプレースホルダ。
+	proxy-log-setup.sh の install が、利用者の $HOME を含む実際の絶対パスへ
+	sed で置き換えてから ~/Library/LaunchAgents/ へ書く（$HOME は plist の
+	中では展開されないため、配布物のこのファイルを直接コピーしても動かない）。
+
+	一度走って終わるジョブなので KeepAlive は書いていない（理由は
+	com.karakuri.loopback-aliases.plist と同じ）。StandardOutPath も同じ
+	理由で書かない——karakuri-proxy-log-export は正常な経路では標準出力に
+	何も出さない。RunAtLoad も書かない——ログイン直後は Docker Desktop が
+	立ち上がっていないことが多く、走っても Docker 不在で終わるだけだから
+	である。
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.karakuri.proxy-log-export</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__KARAKURI_JOB_PATH__</string>
+		<string>--scheduled</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>3600</integer>
+	<key>StandardErrorPath</key>
+	<string>__KARAKURI_STDERR_LOG__</string>
+</dict>
+</plist>

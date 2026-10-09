@@ -36,7 +36,6 @@ ARG PNPM_VERSION=11.25.0
 # §10 の実測項目に含める。
 ARG DOTENVX_VERSION=2.23.0
 ARG WRANGLER_VERSION=4.128.0
-ARG EGRESS_GUARD_VERSION=0.4.0
 
 # --- ロケール / タイムゾーン --------------------------------------------------
 # LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定に
@@ -160,8 +159,6 @@ RUN [ "$(command -v wrangler)" = /usr/local/bin/wrangler ] \
     && [ "$(command -v gh)" = /usr/local/bin/gh ] \
     && [ "$(command -v dotenvx)" = /usr/local/bin/dotenvx ]
 
-USER ${USERNAME}
-
 # --- egress-guard --------------------------------------------------------------
 # スクリプト本体と sudoers は base に入れる。どちらも全プロジェクトで同一で、
 # root 所有の場所に置く必要があり、npm では入らない領域を触るため。
@@ -170,21 +167,20 @@ USER ${USERNAME}
 # 異なるうえ、COPY 元がプロジェクトのビルドコンテキストにあり base のビルド時
 # には存在しない。プロジェクト側の Dockerfile で入れる (examples/Dockerfile)。
 #
-# バージョンは ARG で固定する。このスクリプトは下で root 所有の /usr/local/bin に
-# 置かれ、パスワードなし sudo の対象になる。dist-tag のまま追従させると、
-# パッケージ側の更新がそのままコンテナ内 root でのコード実行になる。
+# スクリプトはビルド元コミットのソースそのもので、外部から差し替わる経路が
+# 無い。下で root 所有の /usr/local/bin に置かれ、パスワードなし sudo の
+# 対象になる。
 #
-# npm のグローバル領域 (NPM_CONFIG_PREFIX) は node 所有のため、install は node の
-# まま実行する。root で入れると root 所有のファイルが混ざり、以後 node での
-# -g install が権限で失敗しうる。root が担当するのは配置と権限付与だけ。
-RUN npm install -g @himorogy/egress-guard@${EGRESS_GUARD_VERSION}
+# スクリプトの実体は packages/egress-guard にあり、ビルドコンテキスト
+# (images/runtime-base) の外にある。env-guard (下の git hook セクション) と
+# 同じ型で、named build context `egress-guard` として別に供給する。ビルド
+# する側は `--build-context egress-guard=packages/egress-guard` (GitHub
+# Actions では docker/build-push-action の build-contexts 入力) を渡すこと。
+# 渡さなければ以下の COPY で落ちる。
+COPY --from=egress-guard scripts/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh
+RUN chown root:root /usr/local/bin/init-project-firewall.sh \
+    && chmod 755 /usr/local/bin/init-project-firewall.sh
 
-USER root
-
-# sudoers は固定パスを名指しする必要があるため、グローバル node_modules を参照
-# させずにコピーする。NPM_CONFIG_PREFIX 配下は node が書き換えられるので、sudo で
-# 実行を許したファイルそのものを node が差し替えられる状態にはできない。
-#
 # sudoers 末尾の "" は「引数を取らない実行のみ許可」の意。実効設定を
 # /etc/egress-guard に固定し探索を廃止した設計意図を、引数経由での設定差し替えを
 # 塞ぐことで sudoers 側でも担保する。この "" を落とすと防御が無効になる。
@@ -192,11 +188,7 @@ USER root
 # visudo -c は構文検証。sudoers.d 配下に構文エラーがあると、その後の sudo 呼び出し
 # 全体がパースエラーで失敗する。この行を編集して引用符や改行を壊すとビルドは通り、
 # 派生プロジェクトの起動時に初めて表面化するため、base のビルド時に落とす。
-RUN cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-         /usr/local/bin/init-project-firewall.sh \
-    && chown root:root /usr/local/bin/init-project-firewall.sh \
-    && chmod 755 /usr/local/bin/init-project-firewall.sh \
-    && printf '%s ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
+RUN printf '%s ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""\n' \
          "${USERNAME}" > /etc/sudoers.d/node-firewall \
     && chmod 0440 /etc/sudoers.d/node-firewall \
     && visudo -cf /etc/sudoers.d/node-firewall
