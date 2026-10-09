@@ -58,7 +58,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
 - `vim-tiny`（`git commit` / `rebase -i` がエディタ不在で失敗しないための最小保険）
 - egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `dnsutils` / `aggregate`
   （`curl` と `jq` は上の行と `node:24` に含まれる）
-- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`ARG EGRESS_GUARD_VERSION` で pin）と
+- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`packages/egress-guard`、ビルド元コミットのソースそのもの）と
   `/etc/sudoers.d/node-firewall`
 - `crit`（bind は crit 既定の `127.0.0.1` のまま。`CRIT_PORT=4588` をイメージが固定、
   更新チェック無効。根拠と上書き方法は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
@@ -202,11 +202,9 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 - **ホストや Docker デーモンへの攻撃**
 
 前提として、ワークスペースの内容と lifecycle command が悪意を持たないこと、
-`firewall.json` と egress-guard パッケージのバージョンが管理下にあることを要求する。
-runtime-base の Dockerfile が `ARG EGRESS_GUARD_VERSION` でバージョンを固定するのは
-このため。
-dist-tag のまま追従させると、パッケージ側の更新がそのままコンテナ内 root での
-コード実行になる。
+`firewall.json` が管理下にあることを要求する。egress-guard のスクリプト自体は
+runtime-base がビルド元コミットの `packages/egress-guard` から直接焼くため、
+外部パッケージの更新が黙ってコンテナ内 root でのコード実行に化ける経路は無い。
 
 厳密に保護したい場合は、lifecycle command の実行前（コンテナの entrypoint 段階）で
 firewall を張る設計が必要になる。現状はそこまで踏み込んでいない。
@@ -379,11 +377,6 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   ビルド時に落とせる。追従漏れの検知は
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 GitHub releases と照合して
   Slack に出す（導入済み）
-- **`ARG EGRESS_GUARD_VERSION` の更新運用**。この ARG は runtime-base 側にあるので、
-  egress-guard を上げるには runtime-base を再ビルドしてタグを出し直し、こちらを
-  `RUNTIME_BASE_VERSION` の指すタグで取り直す必要がある。Renovate は入れていないので、
-  上げる操作自体は手動のまま。上げ忘れは
-  [monitor.yml](../../.github/workflows/monitor.yml) が毎日 npm と照合して Slack に出す
 
 ### 判断済み（再検討するときに読む）
 

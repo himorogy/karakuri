@@ -229,10 +229,26 @@ exit 0'
 
 	# The meta API answers with IPv6 prefixes too. They must never reach
 	# `aggregate` or ipset.
+	#
+	# The 172.20.0.5:3128 branch is verify_anchor_reachable's CONNECT tunnel
+	# through the proxy (the address is what the dig case below answers for
+	# egress-proxy). It prints what real curl's -w '%{http_connect}' would
+	# have printed rather than honouring -w itself, which this stub does not
+	# implement. FW_PROXY_DENY simulates the proxy ACL refusing the CONNECT
+	# (a response code other than 200); unset, the tunnel opens, which is
+	# the common case every other test in this file relies on.
 	make_stub curl '
 case "$*" in
 	*api.github.com/meta*)
 		echo "{\"web\":[\"140.82.112.0/20\",\"2606:50c0:8000::/40\"],\"api\":[\"192.30.252.0/22\"],\"git\":[\"143.55.64.0/20\"]}"
+		exit 0
+		;;
+	*172.20.0.5:3128*)
+		if [ -n "${FW_PROXY_DENY:-}" ]; then
+			printf "%s" "403"
+		else
+			printf "%s" "200"
+		fi
 		exit 0
 		;;
 	*example.*) exit 7 ;;
@@ -259,6 +275,7 @@ run_firewall() { # <run-tag> [config-json]
 		"FW_NO_GATEWAY=${FW_NO_GATEWAY:-}"
 		"FW_NO_HOST_INTERNAL=${FW_NO_HOST_INTERNAL:-}"
 		"FW_HOST_INTERNAL_PUBLIC=${FW_HOST_INTERNAL_PUBLIC:-}"
+		"FW_PROXY_DENY=${FW_PROXY_DENY:-}"
 	)
 	local -a opts=("--resolv-conf" "${FW_RESOLV_CONF:-$WORK/resolv.conf}")
 	if [ -n "$config" ]; then
@@ -1523,6 +1540,20 @@ assert_contains "self verification says it skipped the reachability check" \
 assert_contains "the configured CIDR is still allowed" "$(cat "$WORK/log.anchornone")" \
 	'^ipset add -exist egress-allow-v4-stg 203\.0\.113\.0/24$'
 
+# A non-anchor domain that will not resolve (healthy_net_stubs leaves
+# nowhere.example.net unanswered) is a warn-and-continue case under l3, not a
+# panic - the anchor (api.anthropic.com) still resolves, so the policy as a
+# whole is live.
+run_firewall l3unresolvable '{"version":1,"profile":["anthropic"],"allowDomains":["nowhere.example.net"]}'
+if [ "$(cat "$WORK/rc.l3unresolvable")" = "0" ]; then
+	ok "an l3 config with an unresolvable extra domain still exits 0"
+else
+	ng "an l3 config with an unresolvable extra domain still exits 0 (got $(cat "$WORK/rc.l3unresolvable"))"
+	sed 's/^/    /' "$WORK/out.l3unresolvable" >&2
+fi
+assert_contains "an unresolvable domain is still reported by name" \
+	"$(cat "$WORK/out.l3unresolvable")" 'failed to resolve nowhere\.example\.net'
+
 # A dead network still fails closed, and the message names the domain that was
 # actually tried rather than one the policy never asked for.
 make_stub dig 'exit 9'
@@ -1675,6 +1706,19 @@ assert_contains "allowCidrs still reaches the L7 final table" "$(cat "$LOG_L7")"
 	'^ipset add -exist egress-allow-v4-stg 198\.51\.100\.0/24$'
 assert_absent "the L7 audit set is never created" "$(cat "$LOG_L7")" \
 	'^ipset create -exist egress-audit-v4'
+# The names themselves are never asked for either - not just kept out of the
+# set - now that dev side resolution of a bundle or allowDomains name buys
+# l7 nothing.
+assert_absent "the L7 layer does not resolve the anthropic bundle's domain" \
+	"$(cat "$LOG_L7")" ' A api\.anthropic\.com$'
+assert_absent "the L7 layer does not resolve the npm bundle's domain" \
+	"$(cat "$LOG_L7")" ' A registry\.npmjs\.org$'
+assert_contains "the L7 anchor is shown alive through the proxy" \
+	"$(cat "$WORK/out.l7enforce")" 'anchor reachable through the proxy (api.anthropic.com)'
+# healthy_net_stubs resolves example.com (EGRESS_PROBES[0]), so this run
+# exercises the branch without a dedicated fixture.
+assert_contains "self verification warns when the assigned resolver still forwards an external name" \
+	"$(cat "$WORK/out.l7enforce")" 'the assigned resolver answered for example.com; external DNS is still being forwarded'
 
 run_firewall l7audit '{"version":2,"layer":"l7","mode":"audit","profile":["anthropic","npm"],"allowCidrs":["198.51.100.0/24"],"allowHostPorts":[5432]}'
 if [ "$(cat "$WORK/rc.l7audit")" = "0" ]; then
@@ -1732,13 +1776,68 @@ make_stub dig 'exit 9'
 make_stub curl 'exit 7'
 run_firewall l7panic '{"version":2,"layer":"l7","profile":["anthropic"]}'
 healthy_net_stubs
-assert_is_panic_table "an L7 config that cannot resolve its anchor still falls back to the panic table" \
+assert_is_panic_table "an L7 config that cannot resolve the proxy still falls back to the panic table" \
 	"$(v4_table l7panic)"
 if [ "$(v4_table panic)" = "$(v4_table l7panic)" ]; then
 	ok "the panic table is identical across realisation layers"
 else
 	ng "the panic table is identical across realisation layers"
 fi
+
+# --- l7 anchor liveness without external DNS ---------------------------------
+#
+# The dig stub below models issue `#83`'s observed state (Docker Desktop
+# 29.6.2): an internal-only network leaves a Compose service name like
+# egress-proxy resolvable while every other name is not.
+echo "l7 anchor liveness without external DNS"
+make_stub dig '
+name=""
+for arg in "$@"; do
+	case "$arg" in
+		@*) exit 9 ;;
+		+*|-*|A) ;;
+		*) name="$arg" ;;
+	esac
+done
+case "$name" in
+	egress-proxy) echo "172.20.0.5" ;;
+	*) ;;
+esac
+exit 0'
+run_firewall l7nodns '{"version":2,"layer":"l7","profile":["anthropic"]}'
+healthy_net_stubs
+if [ "$(cat "$WORK/rc.l7nodns")" = "0" ]; then
+	ok "an l7 config exits 0 when only the proxy, not the anchor, resolves"
+else
+	ng "an l7 config exits 0 when only the proxy, not the anchor, resolves (got $(cat "$WORK/rc.l7nodns"))"
+	sed 's/^/    /' "$WORK/out.l7nodns" >&2
+fi
+assert_contains "the final table is still installed" "$(v4_table l7nodns)" \
+	'-A OUTPUT -d 172\.20\.0\.5/32 -p tcp --dport 3128 -j ACCEPT'
+assert_contains "liveness is shown through the proxy instead of DNS" \
+	"$(cat "$WORK/out.l7nodns")" 'anchor reachable through the proxy (api.anthropic.com)'
+assert_absent "no resolution warning is produced for the unreachable anchor name" \
+	"$(cat "$WORK/out.l7nodns")" 'failed to resolve api\.anthropic\.com'
+assert_contains "a resolver that cannot forward the probe name is reported as information, not a warning" \
+	"$(cat "$WORK/out.l7nodns")" 'the assigned resolver did not answer for example.com (no DNS based egress path detected)'
+
+# --- l7 anchor liveness failure through the proxy -----------------------------
+#
+# FW_PROXY_DENY makes the curl stub's -x branch stand in for the proxy ACL
+# refusing the CONNECT.
+echo "l7 anchor unreachable through the proxy"
+FW_PROXY_DENY=1
+run_firewall l7proxydeny '{"version":2,"layer":"l7","profile":["anthropic"]}'
+unset FW_PROXY_DENY
+if [ "$(cat "$WORK/rc.l7proxydeny")" != "0" ]; then
+	ok "a denied CONNECT to the anchor exits non-zero"
+else
+	ng "a denied CONNECT to the anchor exits non-zero"
+fi
+assert_contains "the failure names the anchor and the proxy" "$(cat "$WORK/out.l7proxydeny")" \
+	'the anchor domain did not answer through the proxy (api.anthropic.com)'
+assert_is_panic_table "a denied CONNECT to the anchor falls back to the panic table" \
+	"$(v4_table l7proxydeny)"
 
 # The github bundle is the one thing that puts addresses into $SET_V4 without
 # the configuration author having written them down (allowCidrs is the
@@ -1770,8 +1869,9 @@ assert_contains "the L3 layer still fetches the GitHub meta ranges" "$(cat "$WOR
 #
 # The form l7 accepts for a whole zone: the domain and every subdomain, carried
 # by the proxy ACL. A resolver has no answer for the string itself, so the apply
-# path must not ask - while a plain name that does not resolve still has to be
-# reported.
+# path must not ask - and, since this ticket, a plain name is not asked for
+# either: dev side resolution of any allowDomains or bundle name buys l7
+# nothing any more, so a name that would not resolve produces no warning.
 
 echo "leading dot domains"
 run_firewall l7dot '{"version":2,"layer":"l7","profile":["anthropic"],"allowDomains":[".example.com","nowhere.example.net"]}'
@@ -1787,10 +1887,13 @@ assert_absent "a leading dot domain produces no resolution warning" \
 	"$(cat "$WORK/out.l7dot")" 'failed to resolve \.example\.com'
 assert_contains "a leading dot domain is reported as allowed" \
 	"$(cat "$WORK/out.l7dot")" '\.example\.com is allowed by the proxy ACL'
-# The other half of the same guarantee: a name that is a name and does not
-# resolve is a configuration error or an outage, and stays worth a warning.
-assert_contains "an unresolvable domain is still reported by name" \
+# A plain name that would not resolve (healthy_net_stubs leaves
+# nowhere.example.net unanswered) is not even asked about under l7 any more,
+# so it produces no warning either.
+assert_absent "an unresolvable plain domain produces no resolution warning under l7" \
 	"$(cat "$WORK/out.l7dot")" 'failed to resolve nowhere\.example\.net'
+assert_absent "an unresolvable plain domain is not resolved under l7" \
+	"$(cat "$WORK/log.l7dot")" ' A nowhere\.example\.net$'
 
 # Nothing but leading dot entries leaves no name to anchor the liveness check
 # on. That is a working policy, so it skips the check rather than panicking the
