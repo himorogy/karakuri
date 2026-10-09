@@ -1064,6 +1064,18 @@ add_domain() {
 		return 1
 	fi
 
+	# Under l7 the proxy ACL (print_proxy_acl) is what carries name based
+	# policy, and dev side resolution of a plain name buys nothing any more -
+	# not even liveness, now that verify_anchor_reachable shows that through
+	# the proxy instead. A dev that cannot resolve external names at all
+	# (an internal only Docker network, for instance) would otherwise turn
+	# every such name into a "failed to resolve" warning on every run, which
+	# is not informative when the failure is the network layout working as
+	# intended rather than a configuration problem.
+	if [ "$LAYER" = "l7" ]; then
+		return 1
+	fi
+
 	while read -r ip; do
 		# A name is not allowed to smuggle a private address into the allowlist.
 		# allowCidrs is checked against the same ranges; without this the DNS
@@ -1073,10 +1085,7 @@ add_domain() {
 			rejected=1
 			continue
 		fi
-		# L7 realises name based policy through the proxy ACL (print_proxy_acl),
-		# not this ipset - resolving still proves the name is alive, which is
-		# what the anchor check below needs.
-		[ "$LAYER" = "l7" ] || allowset_add "$ip"
+		allowset_add "$ip"
 		added=1
 	done < <(resolve_domain "$name")
 
@@ -1088,11 +1097,7 @@ add_domain() {
 		fi
 		return 1
 	fi
-	if [ "$LAYER" = "l7" ]; then
-		info "$name resolves (name based policy for it lives in the proxy ACL)"
-	else
-		info "allowed $name"
-	fi
+	info "allowed $name"
 	return 0
 }
 
@@ -1198,13 +1203,24 @@ build_allowlist() {
 	# Checked after both lists rather than after the base profile, because with
 	# no bundle selected the anchor comes from allowDomains and does not exist
 	# yet at the earlier point.
-	if [ -n "$anchor" ]; then
-		[ "$resolved_anchor" = "1" ] ||
-			die "the anchor domain did not resolve ($anchor); the container has no working network"
-	else
-		# A policy of nothing but CIDRs, host ports and leading dot entries has no
-		# name to resolve, so there is no way to tell a dead network from an empty
-		# allowlist. Saying so is better than inventing a domain to probe.
+	#
+	# Under l7, add_domain no longer resolves a plain name at all, so
+	# resolved_anchor can never become 1 here - the die below would fire on
+	# every l7 config that has an anchor, which is not what changed. Liveness
+	# for l7 is shown afterwards by verify_anchor_reachable, through the
+	# proxy; this function only still owns the "no anchor at all" case, which
+	# is unaffected by which layer is doing the resolving.
+	if [ "$LAYER" != "l7" ]; then
+		if [ -n "$anchor" ]; then
+			[ "$resolved_anchor" = "1" ] ||
+				die "the anchor domain did not resolve ($anchor); the container has no working network"
+		else
+			# A policy of nothing but CIDRs, host ports and leading dot entries has no
+			# name to resolve, so there is no way to tell a dead network from an empty
+			# allowlist. Saying so is better than inventing a domain to probe.
+			warn "no domain to anchor on, so DNS liveness could not be checked"
+		fi
+	elif [ -z "$anchor" ]; then
 		warn "no domain to anchor on, so DNS liveness could not be checked"
 	fi
 
@@ -1558,6 +1574,37 @@ resolve_proxy_target() {
 		die "layer l7 requires the $PROXY_HOST sidecar to be reachable, and it could not be resolved"
 }
 
+# L7's replacement for the anchor liveness check build_allowlist performs
+# under l3. There, a resolved address is proof the network works; under l7
+# build_allowlist resolves nothing, and the final table has no accept for the
+# anchor's address anyway - only for the proxy - so the only way left to show
+# the anchor is alive is a CONNECT tunnel to it through the proxy. Runs after
+# apply_rules, because the proxy accept this dials does not exist before
+# then. A failed tunnel carries the same weight the unresolved anchor used
+# to: a non-zero exit here feeds the same on_exit trap into the panic table.
+#
+# Only the tunnel opening is checked, not what is behind it: a CONNECT that
+# reaches the proxy and gets refused by its ACL, or a proxy that is down, are
+# both failures here, while a TLS handshake or certificate failure past an
+# opened tunnel is not - the overall curl exit status cannot tell the two
+# apart (a CA bundle problem exits non-zero exactly like a refused CONNECT
+# would), so this reads %{http_connect}, curl's own record of the response
+# code the proxy gave to the CONNECT, instead. "200" is the only passing
+# value; everything else, including "000" for a proxy that never answered at
+# all, is treated the same as the anchor not resolving used to be.
+verify_anchor_reachable() {
+	local anchor connect_code
+	anchor="$(anchor_domain)"
+	[ -n "$anchor" ] || return 0
+
+	connect_code="$(curl -s -o /dev/null -w '%{http_connect}' \
+		--connect-timeout 5 --max-time 15 \
+		-x "$PROXY_TARGET:$PROXY_PORT" "https://$anchor/" 2>/dev/null)" || true
+	[ "$connect_code" = "200" ] ||
+		die "the anchor domain did not answer through the proxy ($anchor); the container has no working egress"
+	info "anchor reachable through the proxy ($anchor)"
+}
+
 # --- self verification -------------------------------------------------------
 
 VERIFY_FAILED=0
@@ -1669,7 +1716,22 @@ self_verify() {
 	local anchor
 	anchor="$(anchor_domain)"
 
-	if [ -n "$anchor" ]; then
+	if [ "$LAYER" = "l7" ]; then
+		# The anchor's liveness was already shown through the proxy by
+		# verify_anchor_reachable before self_verify ran, so asking the
+		# resolver about $anchor here would test DNS, not egress. What is
+		# worth knowing under l7 is whether the assigned resolver forwards
+		# an external name at all: a dev container that still has that path
+		# open can move data out through DNS without this script's
+		# allowlist ever seeing it. Neither outcome fails the run - this is
+		# information for whoever reads the apply log, not a check the
+		# policy is held to.
+		if dns_answers "" "${EGRESS_PROBES[0]}"; then
+			warn "the assigned resolver answered for ${EGRESS_PROBES[0]}; external DNS is still being forwarded, which is a data exfiltration path this firewall cannot see"
+		else
+			info "the assigned resolver did not answer for ${EGRESS_PROBES[0]} (no DNS based egress path detected)"
+		fi
+	elif [ -n "$anchor" ]; then
 		verify_step "DNS via the assigned resolver returns an answer" pass \
 			dns_answers "" "$anchor"
 	else
@@ -2054,6 +2116,13 @@ main() {
 	resolve_host_targets
 	resolve_proxy_target
 	apply_rules
+
+	# l7 only: the final table is live now, so the proxy accept this dials
+	# exists. This is the layer's replacement for the anchor check
+	# build_allowlist runs for l3 before the table is even built.
+	if [ "$LAYER" = "l7" ]; then
+		verify_anchor_reachable
+	fi
 
 	# Only now, with the real table live, is api.github.com reachable - and only
 	# when the github bundle put it in the allowlist in the first place. Calling
