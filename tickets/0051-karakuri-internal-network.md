@@ -5,6 +5,8 @@ base: main
 targets:
   - .devcontainer/docker-compose.yaml
   - .devcontainer/Dockerfile
+  - packages/egress-guard/tests/verify-l7.sh
+  - docs/guarantees.md
 bundle:
   - 0052-proxy-log-vault
   - 0052a-proxy-log-interval
@@ -43,8 +45,8 @@ dev を `internal: true` のネットワークだけに載せ、egress-proxy を
 これは偶然の挙動ではなく Docker の設計である。
 moby の advisory GHSA-mq39-4gv4-mvpx（CVE-2024-29018。GitHub API で原文を確認）は、internal ネットワークだけに載ったコンテナは上流の resolver で外部名を解決できないことを設計として述べ、ホストの loopback の resolver を経由して外へ転送していた振る舞いを、データ持ち出しにつながる脆弱性として修正した（Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降）。
 同 advisory は、Docker の文書が `--internal` を「ネットワーク外との通信から完全に隔離する」と述べていることを修正の根拠に挙げている。
-退行すれば Docker 側の脆弱性として扱われる種類の振る舞いであり、こちらでは 0050 が verify-l7.sh に足す検査が常設で見張る。
-0048 が egress-guard をその構成で動くようにし、0050 が雛形と検収の構成を移し、0051 が karakuri 自身を移す。
+退行すれば Docker 側の脆弱性として扱われる種類の振る舞いであり、こちらでは 0051 が verify-l7.sh に足す検査が常設で見張る。
+0048 が egress-guard をその構成で動くようにし、0050 が雛形を移し、0051 が karakuri 自身と検収の構成を移す（検収の `verify-l7.sh` は karakuri 自身の `.devcontainer/docker-compose.yaml` を使うので、karakuri の構成と一緒に動かす）。
 
 ### 前提
 
@@ -65,6 +67,15 @@ pin の更新をこの1枚にまとめるのは、karakuri の rebuild を1回�
 版と digest は着手の時点で GHCR から読む（起票の時点ではまだ存在しない）。
 このリポジトリは egress-proxy の配布元なので浮動タグを使わない、という既存の pin のコメントの規律に従う。
 
+### verify-l7.sh
+
+ハーネスは karakuri 自身の `.devcontainer/docker-compose.yaml` を読むので、上のネットワークの変更と同じチケットで直す。
+
+- ハーネスの compose で、ネットワーク名を参照している箇所（`${PROJECT}_default` など）を新しい名前へ付け替える
+- v6 ハーネスの overlay は暗黙の `default` ネットワークを `networks: default: {}` で参照している。トップレベルに `networks:` を定義すると暗黙の `default` は作られなくなるので、壊れるかを確かめて直す（壊れるかは未確認。実装者はこの開発環境で docker を動かせないので、compose の仕様で判断し、検収で走らせて確かめる）
+- 「dev から外部名が DNS で解決できない」ことの検査を足す。dev の中から割り当て resolver に外部名を問い、答えが返らないことを `ok`、返ることを `ng` とする。既存の `ok` / `ng` / `skip` と判定不能（2）の作法に従う
+- 既存の proxy 経由の検査が internal の構成で当たり続けることは、検収で走らせて確かめる
+
 ### 検収
 
 ホストで rebuild したあと、次を確かめる。
@@ -78,7 +89,7 @@ pin の更新をこの1枚にまとめるのは、karakuri の rebuild を1回�
 
 ### やらないこと
 
-- 雛形・`verify-l7.sh`・README の変更（0050）
+- 雛形・README の変更（0050）
 - egress-guard の改修（0048）
 - タグを打つこと（このチケットの前提であって、変更ではない）
 - 検査の深さ: 3 の確認は日常の操作が通ることだけを見る。拡張機能ごとの通信先の洗い出しはしない
@@ -93,6 +104,7 @@ pin の更新をこの1枚にまとめるのは、karakuri の rebuild を1回�
 
 - 台帳 E-a（pin を上げたあとの rebuild）。検収の rebuild で確かめる
 - B-c の各行は、karakuri の構成で `pnpm verify:l7` が通ることで維持する
+- 0050 が B-c に足した「雛形どおりに構成した dev からは、外部名を DNS で解決できない」の行は、着地先を `未検証の約束 (テスト困難: ...)` から、このチケットで verify-l7.sh に足す検査の名前へ書き換える。文は変えない
 
 ### 廃止する保証
 
