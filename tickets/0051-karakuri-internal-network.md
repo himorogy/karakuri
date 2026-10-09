@@ -6,7 +6,6 @@ targets:
   - .devcontainer/docker-compose.yaml
   - .devcontainer/Dockerfile
   - packages/egress-guard/tests/verify-l7.sh
-  - docs/guarantees.md
 bundle:
   - 0052-proxy-log-vault
   - 0052a-proxy-log-interval
@@ -50,28 +49,40 @@ moby の advisory GHSA-mq39-4gv4-mvpx（CVE-2024-29018。GitHub API で原文を
 
 ### 前提
 
-次がすべて済んでから着手する。
+次はすべて済んでいる。
 
 - 0050 の着地（雛形の構成が定まっている）
-- 0048 入りの devcontainer-base のタグ（runtime-base → devcontainer-base の順に打つ）
-- 0049（logformat の拡充）入りの egress-proxy のタグ
+- 0048 入りの devcontainer-base のタグ `devcontainer-base-v2.7.0`（runtime-base-v1.8.0 の後に打った）
+- 0049（logformat の拡充）入りの egress-proxy のタグ `egress-proxy-v1.1.0`
+
+2本のタグは同じコミット（0048 のマージ）を指し、0049 はその祖先に含まれる。
 
 pin の更新をこの1枚にまとめるのは、karakuri の rebuild を1回で済ませるためである。
 
 ### 変えるもの
 
-- `.devcontainer/Dockerfile` の `FROM ghcr.io/himorogy/devcontainer-base:<版>@sha256:<digest>` を、0048 入りの版と digest に上げる
-- `.devcontainer/docker-compose.yaml` の egress-proxy の `dockerfile_inline` の `FROM ghcr.io/himorogy/egress-proxy:<版>@sha256:<digest>` を、0049 入りの版と digest に上げる
-- `.devcontainer/docker-compose.yaml` に 0050 の雛形と同じ形でネットワークを2本定義し、dev は internal 側だけ、egress-proxy は両方に載せる。ネットワーク名は雛形に揃える
+- `.devcontainer/Dockerfile` の `FROM` を `ghcr.io/himorogy/devcontainer-base:2.7.0@sha256:<digest>` に上げる
+- `.devcontainer/docker-compose.yaml` の egress-proxy の `dockerfile_inline` の `FROM` を `ghcr.io/himorogy/egress-proxy:1.1.0@sha256:<digest>` に上げる
+- `.devcontainer/docker-compose.yaml` に 0050 の雛形（`images/devcontainer-base/examples/docker-compose.yaml`）と同じ形でネットワークを2本定義する。名前は雛形どおり `internal`（`internal: true`）と `outward`。dev は `internal` だけ、egress-proxy は両方に載せる
+- 同ファイルで、dev と egress-proxy が暗黙の `default` ネットワークに載っていることを前提にしたコメントを、新しい構成に合わせて直す
 
-版と digest は着手の時点で GHCR から読む（起票の時点ではまだ存在しない）。
+digest はこの開発環境から GHCR に届かない（`ghcr.io` への接続はプロキシに拒否され、`gh api` のパッケージ一覧も権限不足で 403。2026-10-09 に確認）。
+実装者は着手の時点で利用者にホストでの `docker buildx imagetools inspect ghcr.io/himorogy/devcontainer-base:2.7.0` と `... egress-proxy:1.1.0` の結果を求め、その digest を書く。
 このリポジトリは egress-proxy の配布元なので浮動タグを使わない、という既存の pin のコメントの規律に従う。
+
+#### pin のコメントと N-1 規律
+
+`.devcontainer/Dockerfile` の pin のコメントは、karakuri は1つ前の実証済みリリースへ pin する（N-1 規律）と定め、「次に規律が効くのは 2.7.0 以降で、そのとき karakuri は 2.6.0 に留まる」と書いている。
+このチケットは 2.7.0 へ上げる。dev を internal に移すと、0048 を含まない 2.6.0 の `init-project-firewall.sh` は anchor を DNS で引けずに panic テーブルへ落ちるため、2.6.0 に留まったまま移せない。
+規律の趣旨（karakuri の開発環境が最新リリースの故障で動かなくならないこと）は、2.6.0 のときと同じ型で満たす——下の検収の rebuild で動くことを確かめた版へ上げる。
+コメントの「2.6.0 を選ぶ理由」と「N-1 規律との関係」を、2.7.0 を選ぶ理由（0048 を含む最初の版で、internal の構成に要る）と、検収の rebuild を実証とする旨に書き換える。
+egress-proxy の pin のコメントの「初版のため、まだ N-1 の判断は無い」も、1.1.0 を選ぶ理由（0049 の logformat を含む最初の版）と、同じ検収で確かめる旨に書き換える。
 
 ### verify-l7.sh
 
 ハーネスは karakuri 自身の `.devcontainer/docker-compose.yaml` を読むので、上のネットワークの変更と同じチケットで直す。
 
-- ハーネスの compose で、ネットワーク名を参照している箇所（`${PROJECT}_default` など）を新しい名前へ付け替える
+- ネットワーク名を参照している箇所を新しい名前へ付け替える。起票時点で見つかっているのは、`probe_curl()` が `docker run --network` に渡す `${PROJECT}_default`（proxy 経由の検査は dev と同じ側から投げるので `${PROJECT}_internal` が候補）と、v6 ハーネスの overlay。ほかにも無いかは実装者が洗う
 - v6 ハーネスの overlay は暗黙の `default` ネットワークを `networks: default: {}` で参照している。トップレベルに `networks:` を定義すると暗黙の `default` は作られなくなるので、壊れるかを確かめて直す（壊れるかは未確認。実装者はこの開発環境で docker を動かせないので、compose の仕様で判断し、検収で走らせて確かめる）
 - 「dev から外部名が DNS で解決できない」ことの検査を足す。dev の中から割り当て resolver に外部名を問い、答えが返らないことを `ok`、返ることを `ng` とする。既存の `ok` / `ng` / `skip` と判定不能（2）の作法に従う
 - 既存の proxy 経由の検査が internal の構成で当たり続けることは、検収で走らせて確かめる
@@ -104,7 +115,7 @@ pin の更新をこの1枚にまとめるのは、karakuri の rebuild を1回�
 
 - 台帳 E-a（pin を上げたあとの rebuild）。検収の rebuild で確かめる
 - B-c の各行は、karakuri の構成で `pnpm verify:l7` が通ることで維持する
-- 0050 が B-c に足した「雛形どおりに構成した dev からは、外部名を DNS で解決できない」の行は、着地先を `未検証の約束 (テスト困難: ...)` から、このチケットで verify-l7.sh に足す検査の名前へ書き換える。文は変えない
+- 0050 が B-c に足した「雛形どおりに構成した dev からは、外部名を DNS で解決できない」の行。B-c の着地先は節の見出しのとおり「verify-l7.sh で常設化し、検収で走らせる」であり、このチケットが verify-l7.sh に検査を足すことでその記述が実体を持つ。台帳の文と着地先は変えない
 
 ### 廃止する保証
 
