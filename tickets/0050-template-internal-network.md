@@ -4,7 +4,6 @@ type: feat
 base: main
 targets:
   - images/devcontainer-base/examples/docker-compose.yaml
-  - packages/egress-guard/tests/verify-l7.sh
   - packages/egress-guard/README.md
   - images/devcontainer-base/README.md
   - docs/archive/egress-guard-spec.md
@@ -49,8 +48,8 @@ dev を `internal: true` のネットワークだけに載せ、egress-proxy を
 これは偶然の挙動ではなく Docker の設計である。
 moby の advisory GHSA-mq39-4gv4-mvpx（CVE-2024-29018。GitHub API で原文を確認）は、internal ネットワークだけに載ったコンテナは上流の resolver で外部名を解決できないことを設計として述べ、ホストの loopback の resolver を経由して外へ転送していた振る舞いを、データ持ち出しにつながる脆弱性として修正した（Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降）。
 同 advisory は、Docker の文書が `--internal` を「ネットワーク外との通信から完全に隔離する」と述べていることを修正の根拠に挙げている。
-退行すれば Docker 側の脆弱性として扱われる種類の振る舞いであり、こちらでは 0050 が verify-l7.sh に足す検査が常設で見張る。
-0048 が egress-guard をその構成で動くようにし、0050 が雛形と検収の構成を移し、0051 が karakuri 自身を移す。
+退行すれば Docker 側の脆弱性として扱われる種類の振る舞いであり、こちらでは 0051 が verify-l7.sh に足す検査が常設で見張る。
+0048 が egress-guard をその構成で動くようにし、0050 が雛形を移し、0051 が karakuri 自身と検収の構成を移す（検収の `verify-l7.sh` は karakuri 自身の `.devcontainer/docker-compose.yaml` を使うので、karakuri の構成と一緒に動かす）。
 
 ### 前提
 
@@ -76,13 +75,6 @@ issue `#83` の実測で、この構成でも壊れないと確かめたもの: 
 内蔵 resolver の転送が止まるには、moby の CVE-2024-29018 の修正（26.0.0-rc3 / 25.0.5 / 23.0.11 以降）が要る。
 それより前の Docker でホストの resolver が loopback にある構成では漏れる（同 issue）。
 
-### verify-l7.sh
-
-- ハーネスの compose で、ネットワーク名を参照している箇所（`${PROJECT}_default` など）を新しい名前へ付け替える
-- v6 ハーネスの overlay は暗黙の `default` ネットワークを `networks: default: {}` で参照している。トップレベルに `networks:` を定義すると暗黙の `default` は作られなくなるので、壊れるかを確かめて直す（壊れるかは未確認。実装者はこの開発環境で docker を動かせないので、compose の仕様で判断し、検収で走らせて確かめる）
-- 「dev から外部名が DNS で解決できない」ことの検査を足す。dev の中から割り当て resolver に外部名を問い、答えが返らないことを `ok`、返ることを `ng` とする。既存の `ok` / `ng` / `skip` と判定不能（2）の作法に従う
-- 既存の proxy 経由の検査が internal の構成で当たり続けることは、検収で走らせて確かめる
-
 ### README
 
 `packages/egress-guard/README.md` の「ネットワーク構成（推奨）」節に、internal の構成を推奨として書く。
@@ -101,7 +93,7 @@ issue `#83` の実測で、この構成でも壊れないと確かめたもの: 
 
 - internal ネットワークだけに載ったコンテナでは、Docker 内蔵の resolver は外部名を転送しない。これは Docker の設計で、外へ転送していた振る舞いは CVE-2024-29018 として修正された（Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降。moby の advisory GHSA-mq39-4gv4-mvpx）
 - 外向きのネットワークに1本でも載っていると転送は戻る
-- この性質に依っている箇所（雛形と karakuri の compose、`verify-l7.sh` の DNS の検査、egress-guard の L7 の生存確認）
+- この性質に依っている箇所（雛形と karakuri の compose、`verify-l7.sh` の DNS の検査（0051 が足す）、egress-guard の L7 の生存確認）
 
 参照する箇所が複数あり、コードからもコマンドの出力からも読めない環境の事実なので、conventions に置く。
 compose のコメントと README は、この性質を説明し直さずに conventions を参照する。
@@ -116,6 +108,7 @@ archive は現在形の文書へ移したあとに消す予定の参考資料で
 ### やらないこと
 
 - karakuri 自身の `.devcontainer/` の変更（0051）
+- `verify-l7.sh` の変更（0051）。ハーネスは karakuri 自身の compose を使うので、ネットワーク名の付け替えと DNS の検査は karakuri を internal の構成へ移すときに一緒に行う
 - egress-guard の改修（0048）
 - `allowCidrs` / `allowHostPorts` / `l3` を internal で使えるようにすること
 - archive の中身の書き換えと削除（現在形の文書への移送の作業が持つ）
@@ -125,12 +118,12 @@ archive は現在形の文書へ移したあとに消す予定の参考資料で
 
 ### 新たに宣言する保証
 
-- 雛形どおりに構成した dev からは、外部名を DNS で解決できない — `未検証の約束 (テスト困難: Docker と外向きの到達性が要り、pnpm test からは走らせられない。verify-l7.sh で常設化し、検収で走らせる。漏れうるのは dev を外向きのネットワークにも載せた構成と古い Docker で、前者は verify-l7.sh のハーネスが雛形と同じ構成であることで、後者は README の版の条件で受ける)`。台帳の未検証の約束 B-c に足す（起源 `0050-template-internal-network`）
+- 雛形どおりに構成した dev からは、外部名を DNS で解決できない — `未検証の約束 (テスト困難: Docker と外向きの到達性が要り、pnpm test からは走らせられない。0051 で karakuri 自身を雛形と同じ構成に揃えたうえで、verify-l7.sh に検査を足して常設化する。漏れうるのは dev を外向きのネットワークにも載せた構成と古い Docker で、前者は雛形のコメントと README で、後者は README の版の条件で受ける)`。台帳の未検証の約束 B-c に足す（起源 `0050-template-internal-network`）
 
 ### 維持する保証
 
 - B-c「proxy の環境変数を読まずに直接外へ出ようとする接続は、縮小した最終テーブルが落とす」は、internal の構成では経路そのものが無くなるので、より強く成り立つ。文は変えない
-- B-c の他の行（ACL が焼き込みであること、先頭ドットの許可）は、ネットワークの付け替えのあとも verify-l7.sh で当たり続けることで維持する
+- B-c の他の行（ACL が焼き込みであること、先頭ドットの許可）は、検収の構成（karakuri 自身の compose）に触れないので影響を受けない
 - 台帳「境界宣言」の E（雛形の compose）は公開面として残る。サービスの構成は変えず、ネットワークを足すだけである
 
 ### 廃止する保証
