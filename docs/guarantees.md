@@ -566,6 +566,12 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - egress-proxy イメージは、`/usr/local/bin/init-project-firewall.sh` と、`/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` を含む。どれもビルド元コミットの `packages/egress-guard` と同一の内容で、スクリプトは実行可能、雛形は実行可能でない。runtime-base を使わない利用者は、このパスからスクリプトと雛形を取り出せる
 
+### I-a — `未検証の約束 (テスト困難: 稼働中の egress-proxy と外向きの到達性が要り、pnpm test からは走らせられない。verify-l7.sh で常設化し、検収で走らせる。漏れうるのは squid の版上げで項目の意味が変わることで、許可と拒否の両方の行を目で読む)`
+
+起源: `0049-proxy-logformat`
+
+- egress-proxy のアクセスログの各行は、許可・拒否の結果と宛先に加えて、ミリ秒までの時刻、接続時間、接続元のアドレス、クライアントから受け取ったバイト数と返したバイト数を持つ
+
 ## 境界宣言
 
 ### 免責

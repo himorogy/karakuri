@@ -156,6 +156,23 @@ proxy_log_has() { # <status> <host> — 例: "TCP_TUNNEL/200" "github.com"
 	dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -q -- "$1 .*CONNECT $2:"
 }
 
+# squid.conf の logformat karakuri (0049) は組み込み squid 形式 (10列) に対して
+# 11列になる (%un が `-` のとき)。列数だけでは `%ts.%03tu` が `%ts` に戻って
+# ミリ秒が落ちる、`%>st` が別の項目に替わるといった退行を拾えない (I-a が関わる)。
+# そのため列数に加えて、先頭のミリ秒時刻・接続時間・上り下りのバイト数の4項目が
+# 数値であることも見る。各項目の値の正しさ (実際の転送量・接続時間と一致するか)
+# は見ない (チケット「やらないこと」の検査の深さ)。
+proxy_log_line_shape_ok() { # <status> <host> <expected NF>
+	local line nf
+	line="$(dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -- "$1 .*CONNECT $2:" | tail -n1)"
+	nf="$(printf '%s\n' "$line" | awk '{print NF}')"
+	[ "$nf" = "$3" ] || return 1
+	# mawk 1.3.4 20200120 (Debian/Ubuntu の既定 awk) は `{3}` を区間指定として
+	# 読まない ("a{3}" という文字列として literal 一致を試みる) ため、代わりに
+	# [0-9] を3回並べる (実測済み)。
+	printf '%s\n' "$line" | awk '$1 ~ /^[0-9]+\.[0-9][0-9][0-9]$/ && $2 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $6 ~ /^[0-9]+$/' | grep -q .
+}
+
 # proxy_log_has は `dc exec -T dev` で読んでおり、これは docker exec 経路。
 # sshd 経由のログインは /etc/group から補助グループを組み直すため、同じ組み直しを
 # 起こす su で読めることを別に見る (ログの内容には依らない)。
@@ -207,6 +224,11 @@ check_leading_dot_domains() {
 		esac
 		if proxy_log_has "TCP_TUNNEL/200" "$target"; then
 			ok "$target への接続が許可 (TCP_TUNNEL/200) として proxy のログに残る (allowDomainsに書いていない具体名。サフィックスマッチの証拠)"
+			if proxy_log_line_shape_ok "TCP_TUNNEL/200" "$target" 11; then
+				ok "$target の許可された行が新しい logformat の列数 (11) と、時刻・接続時間・上り下りのバイト数が数値であることを満たす"
+			else
+				ng "$target の許可された行が新しい logformat の列数 (11)、または時刻・接続時間・上り下りのバイト数が数値であることを満たさない"
+			fi
 		else
 			ng "$target への接続が許可 (TCP_TUNNEL/200) として proxy のログに残っていない"
 		fi
@@ -225,6 +247,11 @@ check_denied_domain() {
 	esac
 	if proxy_log_has "TCP_DENIED/403" "$target"; then
 		ok "$target への接続が拒否 (TCP_DENIED/403) として proxy のログに残る"
+		if proxy_log_line_shape_ok "TCP_DENIED/403" "$target" 11; then
+			ok "$target の拒否された行が新しい logformat の列数 (11) と、時刻・接続時間・上り下りのバイト数が数値であることを満たす"
+		else
+			ng "$target の拒否された行が新しい logformat の列数 (11)、または時刻・接続時間・上り下りのバイト数が数値であることを満たさない"
+		fi
 	else
 		ng "$target への接続が拒否 (TCP_DENIED/403) として proxy のログに残っていない"
 	fi

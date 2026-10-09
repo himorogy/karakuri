@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: refactor
 base: main
 targets:
