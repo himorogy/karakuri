@@ -1,5 +1,5 @@
 ---
-status: draft # draft → open → close
+status: open # draft → open → close
 type: chore
 base: main
 targets:
@@ -103,6 +103,7 @@ egress-proxy の pin のコメントの「初版のため、まだ N-1 の判断
 - 雛形・README の変更（0050）
 - egress-guard の改修（0048）
 - タグを打つこと（このチケットの前提であって、変更ではない）
+- 個人フック（postCreate の `/personal/setup.sh`）が internal の構成で外へ出られなくなることへの対応。`personal-setup` の proxy 変数を外す処理の削除と、文書・コメントの前提の書き換え（0053）
 - 検査の深さ: 3 の確認は日常の操作が通ることだけを見る。拡張機能ごとの通信先の洗い出しはしない
 
 ## 保証

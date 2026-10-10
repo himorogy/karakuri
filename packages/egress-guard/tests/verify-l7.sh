@@ -145,6 +145,26 @@ apply_firewall() {
 	return 1
 }
 
+# dev は internal ネットワークだけに乗る。埋め込みリゾルバが外部名を転送しなく
+# なることが、DNS による持ち出し経路を塞ぐという束の主張そのもの
+# (docs/conventions.md「発見しにくい事実」)。dig は NXDOMAIN / SERVFAIL の
+# いずれでも exit 0 を返すため (init-project-firewall.sh の dns_answers と同じ
+# 理由)、答えに実際の IPv4 アドレスが含まれるかで見る。
+check_dns_no_external_resolution() {
+	echo "== dev の埋め込みリゾルバが外部名 (nodejs.org) を解決しないか =="
+	local out
+	out="$(dc exec -T dev dig +short +time=3 +tries=1 A nodejs.org 2>&1)"
+	if printf '%s\n' "$out" | grep -qE 'executable file not found|OCI runtime exec failed|is not running'; then
+		skip "DNS外部転送" "dev で dig を実行できなかった"
+		return
+	fi
+	if printf '%s\n' "$out" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+		ng "dev の埋め込みリゾルバが外部名 (nodejs.org) を解決してしまった ($out)"
+	else
+		ok "dev の埋め込みリゾルバは外部名 (nodejs.org) を解決しない"
+	fi
+}
+
 # egress-proxy のアクセスログはファイル (/var/log/squid/access.log) にあり、
 # dev からは同じ named volume を :ro でマウントした /var/log/egress-proxy 越しに
 # 読む (README.md「proxy のログを読む」)。dev から読めることは、イメージが
@@ -450,7 +470,7 @@ check_config_fail_closed() {
 	rm -f "$broken"
 }
 
-# dev の default network 上に、dev とは別の使い捨てコンテナを立てて curl を
+# dev と同じ internal network 上に、dev とは別の使い捨てコンテナを立てて curl を
 # 実行する。dev 自身は最終テーブルで縛られているため、dev から出すと
 # egress-proxy 以外への接続を試す判定 (PTR 偽装など) が dev の firewall に
 # 先に落とされてしまう。同じネットワーク上の別コンテナは dev の iptables の
@@ -466,7 +486,7 @@ probe_curl() {
 		return 2
 	fi
 	local out rc
-	out="$(docker run --rm --network "${PROJECT}_default" "$image" curl "$@" 2>&1)"
+	out="$(docker run --rm --network "${PROJECT}_internal" "$image" curl "$@" 2>&1)"
 	rc=$?
 	case "$rc" in
 	125 | 126 | 127) return 2 ;;
@@ -532,7 +552,7 @@ services:
     depends_on:
       - ptr-spoof-harness
     networks:
-      default: {}
+      internal: {}
       v6-test-net: {}
   ptr-spoof-harness:
     image: python:3-alpine
@@ -562,7 +582,7 @@ EOF
 		wait_for_proxy_v6
 		local wait_rc=$?
 		if [ "$wait_rc" -eq 2 ]; then
-			skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
+			skip "PTR偽装" "internal network 上の使い捨てコンテナで curl を実行できなかった"
 		elif [ "$wait_rc" -ne 0 ]; then
 			skip "PTR偽装" "egress-proxy-v6 が待ち時間内に接続を受け付けなかった"
 			dcv6 logs --no-log-prefix --tail 40 egress-proxy-v6 >&2 2>&1 || true
@@ -572,7 +592,7 @@ EOF
 			probe_curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
 			local rc=$?
 			if [ "$rc" -eq 2 ]; then
-				skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
+				skip "PTR偽装" "internal network 上の使い捨てコンテナで curl を実行できなかった"
 			elif ! dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -q "$harness_ip"; then
 				# 前提条件: リクエストが proxy まで届いたことを先に確かめる。届いて
 				# いなければ「victim へ接続しなかった」のが -n の効果なのか、そもそも
@@ -633,6 +653,7 @@ main() {
 		exit 1
 	fi
 
+	check_dns_no_external_resolution
 	check_proxy_log_readable_via_login
 	check_apt_first_pass
 	check_apt_second_pass

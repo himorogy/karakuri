@@ -5,14 +5,11 @@
 # - **base の参照規律**（Dockerfile の N-1 pin コメントを参照）。浮動タグを
 #   使わないため、雛形の `dev` / `egress-proxy` の build.pull: true はどちらも
 #   ここでは不要 — pin を上げたときに `docker compose build --pull` すればよい
-#
-# Compose はプロジェクトごとにユーザー定義ネットワーク（<name>_default）を
-# 自動で作る。埋め込みリゾルバ 127.0.0.11 が使えるのはユーザー定義ネットワーク上
-# だけ。判断の根拠は packages/egress-guard/README.md の「ネットワーク構成（推奨）」。
 
-# ネットワーク名がこれを接頭辞に決まる（<name>_default）。**プロジェクトごとに
-# 違う値にすること。** 1 つのネットワークを共有すると、同居するコンテナが相互に
-# 名前解決して到達できる（packages/egress-guard/docs/design.md §4.4）。
+# ネットワーク名がこれを接頭辞に決まる（<name>_internal・<name>_outward）。
+# **プロジェクトごとに違う値にすること。** 1 つのネットワークを共有すると、
+# 同居するコンテナが相互に名前解決して到達できる
+# （packages/egress-guard/docs/design.md §4.4）。
 #
 # volume の実名はこれに依存しない。下の volumes で name: を明示しているため、
 # ここを変えても履歴・claude / codex 設定は失われない。
@@ -34,6 +31,12 @@ services:
     # postStartCommand が失敗する。
     depends_on:
       - egress-proxy
+
+    # **dev を outward 側にも乗せると塞がったことにならない**——1 本でも外向きの
+    # ネットワークに乗っていると、埋め込みリゾルバの外部名転送が戻る
+    # (packages/egress-guard/README.md「ネットワーク構成（推奨）」)。
+    networks:
+      - internal
 
     # --cap-add の置き換え。egress-guard が iptables と ipset を触るために要る。
     cap_add:
@@ -127,14 +130,15 @@ services:
   #
   # FROM は digest pin。このリポジトリは egress-proxy イメージの配布元自身
   # であり、浮動タグは使わない（dev の Dockerfile の pin コメントと同じ規律）。
-  # 初版のため、まだ N-1 の判断は無い。
+  # 1.1.0 を選ぶ理由は 0049 の logformat 拡充を含む最初の版であること。
+  # 動くことの確認は `pnpm verify:l7` を含む検収の rebuild が実証とする。
   egress-proxy:
     build:
       # dev と同じディレクトリ。firewall.json はここ（.devcontainer/ = context
       # root）にある必要がある。
       context: .
       dockerfile_inline: |
-        FROM ghcr.io/himorogy/egress-proxy:1.0.0@sha256:99c49a3c3b26ac1b972985e80f47766d4b9301f97ff2ae7348239bc86b472551
+        FROM ghcr.io/himorogy/egress-proxy:1.1.0@sha256:3a016bea1909d1288439925db6c825488acfe8f5cfe0c072874363ca711f182c
         COPY firewall.json /firewall.json
         RUN egress-proxy-bake /firewall.json
 
@@ -144,6 +148,12 @@ services:
     # 起動時から proxy（uid 13）で動かす。root から降格させようとすると
     # cap_drop: [ALL] の下で失敗して落ちる（images/egress-proxy/Dockerfile 参照）。
     user: "13:13"
+
+    # 両方に乗った構成でだけ、internal 側の dev から外部名の DNS 転送が止まる
+    # (docs/conventions.md「発見しにくい事実」)。
+    networks:
+      - internal
+      - outward
 
     read_only: true
     tmpfs:
@@ -174,3 +184,11 @@ volumes:
     # ——付け直すとそれまでのログが消える。
     labels:
       karakuri.egress-log: karakuri
+
+networks:
+  # internal: true の意味と、埋め込みリゾルバが外部名を転送しなくなる理由は
+  # docs/conventions.md「発見しにくい事実」を参照。
+  internal:
+    internal: true
+
+  outward:
