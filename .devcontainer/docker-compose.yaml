@@ -130,7 +130,7 @@ services:
   #
   # FROM は digest pin。このリポジトリは egress-proxy イメージの配布元自身
   # であり、浮動タグは使わない（dev の Dockerfile の pin コメントと同じ規律）。
-  # 1.1.0 を選ぶ理由は 0049 の logformat 拡充を含む最初の版であること。
+  # 1.1.0 を選ぶ理由は、access log の logformat 拡充を含む最初の版であること。
   # 動くことの確認は `pnpm verify:l7` を含む検収の rebuild が実証とする。
   egress-proxy:
     build:

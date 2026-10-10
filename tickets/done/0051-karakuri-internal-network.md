@@ -1,5 +1,5 @@
 ---
-status: open # draft → open → close
+status: close
 type: chore
 base: main
 targets:
