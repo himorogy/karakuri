@@ -10,19 +10,19 @@
 # 参照しない。通常は 1 つ前の実証済みリリースへ pin し、pin を上げるのはその版が
 # base を利用する別のリポジトリで実運用に耐えたことを確認してから。
 #
-# **2.6.0 を選ぶ理由。** `node` が `proxy` グループに入っており（sshd 経由の
-# ログインでも proxy のログが読める）、egress-guard 0.4.0 を焼いている
-# （anthropic バンドルに `platform.claude.com`）最初の版である。
+# **2.7.0 を選ぶ理由。** dev を internal ネットワークだけに載せる構成
+# （docs/conventions.md「発見しにくい事実」）で動く最初の版——anchor を DNS で
+# 引けないことを `init-project-firewall.sh` が panic ではなく情報として扱う
+# 変更を含む。
 #
 # **N-1 規律との関係。** 規律の趣旨は「最新リリースが壊れたときに、直す環境が
 # 最新リリース自身に依存しない」であり、karakuri の開発環境が動かなくなるのを
-# 防ぐためのものである。2.6.0 は同じソースから `:local` を焼いてこの devcontainer
-# 自身で rebuild して確認済み（ssh 経由の `id -Gn` に `proxy`、
-# `/var/log/egress-proxy/access.log` が読める、`platform.claude.com` が
-# `TCP_TUNNEL/200`、`ab.chatgpt.com` が 403、`codex exec` が動く）で、動くことが
-# 確認された版へ上げる判断は規律の趣旨に反しない。次に規律が効くのは 2.7.0
-# 以降で、そのとき karakuri は 2.6.0 に留まる。
-FROM ghcr.io/himorogy/devcontainer-base:2.6.0@sha256:379be607b3dd188a236fd4f7deccbeea9ea998e39687e682de8f24c4e8ed6379
+# 防ぐためのものである。dev を internal に移すと、2.6.0 の
+# `init-project-firewall.sh` はこの変更を含まず anchor を DNS で引けずに panic
+# テーブルへ落ちるため、2.6.0 に留まったまま移せない。規律の趣旨は、2.6.0 の
+# ときと同じ型（動くことを rebuild で確かめた版へ上げる）で満たす——
+# `pnpm verify:l7` を含む検収の rebuild を実証とする。
+FROM ghcr.io/himorogy/devcontainer-base:2.7.0@sha256:dfc941a184b85546aed7fcecf26b857c9787f6b950046bf3ea517b339f6ff3e3
 
 # --- egress-guard 実効設定 -------------------------------------------------------
 USER root
