@@ -91,24 +91,18 @@
 	// ホストの GUI git クライアントのようにコンテナの外からコミットする経路には
 	// この設定が届かないので、そちらは @himorogy/env-guard をプロジェクトに入れて塞ぐ。
 
-	// 取得を伴うセットアップはここに置く。firewall の適用後には外から取ってこられない。
+	// 取得を伴うセットアップはここに置く。取得先は firewall.json の allowDomains の
+	// 範囲に限られる（下の「注意」参照）。
 	//
-	// 注意: features も postCreateCommand も egress-guard が適用される「前」に、
-	// 復号キーが注入済みのコンテナ内で走る。egress-guard はコンテナ作成中の通信を
-	// 保護しない。詳細は README の「保護範囲」を参照。
+	// 注意: features の取得（イメージのビルド中）は保護されない。postCreateCommand は
+	// internal 構成では egress-proxy の ACL の範囲で走る。詳細は README の
+	// 「保護範囲」を参照。
 	//
 	// 個人設定フック（/personal は docker-compose.yaml がホスト側ディレクトリを
-	// ro mount している）もここで実行する。個人セットアップの実体はツール取得で、
-	// firewall 適用後では宛先が許可されておらずブロックされるため、他の取得を伴う
-	// セットアップと同じくこの段に置く。作成時 1 回という postCreate の意味論も
-	// インストール系に合う。firewall 前の実行だが、フック本体はホスト側 ro で
-	// コンテナ内の主体には書けず、書けるのは tracked なこのファイルと同じく
-	// 開発者本人だけ。信頼水準は変わらない。
-	//
-	// L7 実現層では compose の environment に proxy 変数がコンテナ作成時から
-	// 入っており、フックの取得先（個人ドメインや GitHub Releases 等）は
-	// sidecar の ACL に無いため、そのままでは 403 で落ちる。personal-setup は
-	// それらを外してフックを直接経路で走らせる（base のイメージへ焼き込み済み）。
+	// ro mount している）もここで実行する。作成時 1 回という postCreate の意味論が
+	// インストール系に合う。振る舞いは images/devcontainer-base/bin/personal-setup
+	// 自身のコメントを参照。フック本体はホスト側 ro でコンテナ内の主体には書けず、
+	// 書けるのは tracked なこのファイルと同じく開発者本人だけ。信頼水準は変わらない。
 	"postCreateCommand": "personal-setup",
 
 	// egress-guard はコンテナ起動のたびに適用する（iptables は永続しない）。

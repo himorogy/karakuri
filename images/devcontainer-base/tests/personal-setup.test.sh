@@ -78,45 +78,6 @@ else
 fi
 rm -rf "$t"
 
-# --- 4. proxy 変数はフックへ渡らない ---------------------------------------------
-t="$(mktemp -d)"
-{
-    printf '#!/bin/sh\n'
-    printf 'env > "%s/hook-env"\n' "$t"
-} >"$t/hook.sh"
-chmod +x "$t/hook.sh"
-http_proxy="http://proxy.example:3128" \
-    https_proxy="http://proxy.example:3128" \
-    HTTP_PROXY="http://proxy.example:3128" \
-    HTTPS_PROXY="http://proxy.example:3128" \
-    PERSONAL_SETUP_HOOK="$t/hook.sh" \
-    sh "$SETUP_SRC" >/dev/null 2>&1
-if ! grep -qiE '^(http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY)=' "$t/hook-env"; then
-    ok "proxy 変数はフックへ渡らない"
-else
-    leaked="$(grep -iE '^(http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY)=' "$t/hook-env")"
-    ng "proxy 変数はフックへ渡らない (leaked=$leaked)"
-fi
-rm -rf "$t"
-
-# --- 4b. 否定対照: proxy 以外の環境変数はそのまま渡る ---------------------------
-t="$(mktemp -d)"
-{
-    printf '#!/bin/sh\n'
-    printf 'env > "%s/hook-env"\n' "$t"
-} >"$t/hook.sh"
-chmod +x "$t/hook.sh"
-http_proxy="http://proxy.example:3128" \
-    PERSONAL_SETUP_HOOK_TEST_MARKER="kept-value" \
-    PERSONAL_SETUP_HOOK="$t/hook.sh" \
-    sh "$SETUP_SRC" >/dev/null 2>&1
-if grep -q '^PERSONAL_SETUP_HOOK_TEST_MARKER=kept-value$' "$t/hook-env"; then
-    ok "否定対照: proxy 以外の環境変数はそのまま渡る"
-else
-    ng "否定対照: proxy 以外の環境変数はそのまま渡る (hook-env に見当たらない)"
-fi
-rm -rf "$t"
-
 # --- result ------------------------------------------------------------------
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"

@@ -159,44 +159,38 @@ GH_TOKEN=<個人の GH_TOKEN> # 必須：本レポジトリに限定した Fine-
 ## devcontainer への個人用開発ツールの導入
 
 ホスト側の `~/.config/devc-personal/setup.sh` が postCreateCommand で発火します。
-個人で使いたいツールはここでインストールしてください。
+dev コンテナはこの時点で外部ネットワークに出られないため、取得はホスト側で済ませて
+`~/.config/devc-personal` 配下に置き、`setup.sh` はそこから配置・設定するだけにしてください。
 
-下記は starship を入れるサンプルです。
+下記は starship を入れるサンプルです。取得の手段（どこから・どう取るか）は一例で、規約では
+ありません。
+
+まずホスト側（macOS）で、コンテナが動く Linux 向けのバイナリを取得して置きます。
+
+```bash
+# ホスト側で実行。VER / ARCH はコンテナの CPU アーキテクチャに合わせる
+# (Apple Silicon でも、動かす先はコンテナ内の linux/arm64 なので aarch64)
+VER="v1.26.0"
+ARCH="x86_64" # または aarch64
+
+mkdir -p ~/.config/devc-personal/bin
+curl -fsSL "https://github.com/starship/starship/releases/download/${VER}/starship-${ARCH}-unknown-linux-musl.tar.gz" \
+  | tar -xzf - -C ~/.config/devc-personal/bin starship
+chmod +x ~/.config/devc-personal/bin/starship
+```
+
+`setup.sh` はコンテナ内から走り、置かれたものを配置するだけです。
 
 ```bash
 #!/usr/bin/env bash
 
 set -euo pipefail
 
-STARSHIP_VERSION="v1.26.0"
+SRC="/personal/bin/starship"
+DEST="$HOME/.local/bin/starship"
 
-BIN="$HOME/.local/bin"
-ARCH="$(uname -m)"
-
-warn() {
-  printf 'warn: %s\n' "$*" >&2
-}
-
-install_starship() {
-  # 作業ユーザは node であり apt は使えないため、配布元の tarball から$HOME/.local/bin へ実行ファイルを置く形を取る
-  local url="https://github.com/starship/starship/releases/download/${STARSHIP_VERSION}/starship-${ARCH}-unknown-linux-musl.tar.gz"
-  local tmp
-
-  command -v starship >/dev/null 2>&1 && return 0
-
-  tmp="$(mktemp -d)"
-
-  if curl -fsSL --retry 2 --max-time 300 "$url" | tar -xzf - -C "$tmp"; then
-    install -D -m 755 "$tmp/starship" "$BIN/starship"
-  else
-    warn "starship の取得に失敗: ${url}"
-  fi
-
-  rm -rf "$tmp"
-}
-
-case "$ARCH" in
-  aarch64 | x86_64) install_starship ;;
-  *) warn "未対応のアーキテクチャ: ${ARCH}" ;;
-esac
+if [ -x "$SRC" ]; then
+  mkdir -p "$(dirname "$DEST")"
+  install -m 755 "$SRC" "$DEST"
+fi
 ```

@@ -449,8 +449,6 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - `/personal/setup.sh` が実行可能なら、呼び出し元と同じユーザーのままそれを実行し、その終了コードで終わる。無い、または実行可能でなければ何もせず 0 で終わる
   （テスト: "フックがあれば呼び出し元のユーザーで実行して終了コードを返す" / "フックが無ければ何もせず 0 で終わる" / "実行可能でないフックは実行せず 0 で終わる"）
-- フックは proxy の環境変数（`http_proxy` / `https_proxy` / `HTTP_PROXY` / `HTTPS_PROXY`）を持たない環境で走る。呼び出し側の環境にそれらがあってもフックへは渡らない
-  （テスト: "proxy 変数はフックへ渡らない" / "否定対照: proxy 以外の環境変数はそのまま渡る"）
 
 ### 25. `images/egress-proxy/tests/bake.test.sh` — `images/egress-proxy/bin/egress-proxy-bake`
 

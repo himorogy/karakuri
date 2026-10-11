@@ -173,12 +173,8 @@ RUN chown root:root /usr/local/bin/git-identity-setup \
     && chmod 0755 /usr/local/bin/git-identity-setup
 
 # --- personal hook ---------------------------------------------------------------
-# postCreateCommand から node として呼ぶ (examples/devcontainer.json)。L7 実現層
-# では compose の environment に proxy 変数がコンテナ作成時から入り、個人フック
-# (/personal/setup.sh) の取得先 (GitHub Releases や個人ドメイン) は sidecar の
-# ACL に無いため 403 で落ちる。personal-setup はフックを proxy 変数を外した
-# 環境で実行することでこれを避ける。狙いは bin/personal-setup 自身のコメントと
-# README を参照。
+# postCreateCommand から node として呼ぶ (examples/devcontainer.json)。狙いと
+# 振る舞いは bin/personal-setup 自身のコメントと README を参照。
 COPY bin/personal-setup /usr/local/bin/personal-setup
 RUN chown root:root /usr/local/bin/personal-setup \
     && chmod 0755 /usr/local/bin/personal-setup

@@ -10,7 +10,6 @@ targets:
   - images/devcontainer-base/examples/devcontainer.json
   - images/devcontainer-base/examples/docker-compose.yaml
   - .devcontainer/devcontainer.json
-  - .devcontainer/docker-compose.yaml
   - DEVCONTAINER.md
   - docs/guarantees.md
 verify:
