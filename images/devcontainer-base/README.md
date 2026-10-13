@@ -35,13 +35,12 @@ base に入れる条件は次のいずれか。
 
 - 人間の対話体験にしか効かない → C（個人フック `/personal/setup.sh`）。ホスト側に置いて
   ro mount するのは、ワークスペース内の gitignored スクリプトだとコンテナ内の主体が
-  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行は postCreate
-  （firewall 適用前）— 個人セットアップの実体はツール取得で、firewall 後では宛先が
-  許可されておらずブロックされる。firewall 前でも、フックを書けるのはホスト側の
-  開発者本人だけで、tracked な devcontainer.json / Dockerfile と信頼水準は同じ。
-  守備範囲は対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると
-  環境の同一性が崩れる
-  L7 実現層では postCreateCommand の時点で compose の proxy 変数（`http_proxy` 等）が既にコンテナへ入っているため、実行は `personal-setup`（base に焼き込み済み）を経由させ、それらを外してフックを直接経路で走らせる。
+  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行は postCreate。
+  dev は internal ネットワークだけに載る構成で、この時点で外部へ出られないため、
+  フックは `/personal` に置かれたものを配置・設定するだけにする。取得はホスト側で
+  済ませて `/personal` に置く。フックを書けるのはホスト側の開発者本人だけで、
+  tracked な devcontainer.json / Dockerfile と信頼水準は同じ。守備範囲は対話体験
+  のみ — toolchain（node や pnpm の別版等）を入れ始めると環境の同一性が崩れる
 - npm で入る → D（devDependency）。base に焼くとバージョンがプロジェクトの
   `package.json` と乖離し、ローカルと CI でフォーマット結果が変わる
 - プロジェクト固有 → プロジェクトの Dockerfile
@@ -76,7 +75,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
   到達の機構は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - `/usr/local/bin/git-identity-setup`（`bin/git-identity-setup` 由来）。対話シェルの起動時に
   呼ばれ、`GH_TOKEN` のアカウントから git の commit 者情報を導出する。詳細は「git identity」節
-- `/usr/local/bin/personal-setup`（`bin/personal-setup` 由来）。`postCreateCommand` から呼ばれ、個人フックを proxy 変数を外した環境で実行する。保証は `docs/guarantees.md` の `images/devcontainer-base/tests/personal-setup.test.sh` の節
+- `/usr/local/bin/personal-setup`（`bin/personal-setup` 由来）。`postCreateCommand` から呼ばれ、個人フックを呼び出し元と同じユーザーで実行する。保証は `docs/guarantees.md` の `images/devcontainer-base/tests/personal-setup.test.sh` の節
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
   `WORKDIR` は `/workspaces`（複数形。devcontainer の既定に合わせている）
@@ -190,14 +189,22 @@ build:
 egress-guard は「正しく動くツールが意図しない宛先へ通信するのを防ぐ」ためのもので、
 悪意あるコードを封じ込めるサンドボックスではない。以下は保護されない。
 
-- **コンテナ作成中の通信**。devcontainer の lifecycle は
-  `initializeCommand`（ホスト側）→ **Feature の導入** → `postCreateCommand` →
-  `postStartCommand` の順。firewall を適用するのは `postStartCommand` なので、
-  Feature の取得も `postCreateCommand`（個人フック含む）の取得系コマンドも
-  制限なしで実行される。
-  この時点で復号キーは既にコンテナ内にある。Feature を使うと版は
-  `devcontainer-lock.json` に固定されるが、**固定されるのは取得物であって通信ではない**
-  L7 実現層では compose の `environment` に proxy 変数がコンテナ作成時から入るため、素の `postCreateCommand` は既定で proxy 経由になる（個人フックはこれを避けるため `personal-setup` を経由させている。「収録判定」参照）。
+- **イメージのビルド中の通信（Feature の取得）**。devcontainer の lifecycle は
+  `initializeCommand`（ホスト側）→ **Feature の導入**（イメージのビルド中） →
+  `postCreateCommand` → `postStartCommand` の順。雛形の `build:`
+  （`examples/docker-compose.yaml`）に `network:` の指定が無く、Feature の取得は
+  compose の `internal` ネットワークにも egress-proxy にも載らないため、制限なしで
+  実行される。Feature を使うと版は `devcontainer-lock.json` に固定されるが、
+  **固定されるのは取得物であって通信ではない**。
+  `postCreateCommand`（雛形は `personal-setup` だけ）はこれとは事情が異なる。
+  コンテナが internal ネットワークに載ったあとで走るため、firewall（iptables）を
+  適用するのは `postStartCommand` でも、この時点で dev から外へ出る経路は
+  egress-proxy だけになり、その ACL は `firewall.json` の `allowDomains` から
+  焼き込まれ起動時から常に効くため、取得系コマンドはこの時点で `allowDomains` の
+  ACL の範囲に限られる。この時点で復号キーは既にコンテナ内にある。個人フックは
+  この窓を使わない——`/personal` に置かれたものを配置・設定するだけで、取得のための
+  通信を行わない（dev は internal ネットワークだけに載る構成のため、試みても届かない。
+  「収録判定」参照）。
 - **`waitFor` は待機指定であって境界ではない**。エディタが接続を報告するタイミングを
   制御するだけで、先行する lifecycle command の通信は止めない
 - **コンテナ内で root を取ったプロセス**。雛形は egress-guard の実装上
