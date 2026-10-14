@@ -1821,6 +1821,11 @@ assert_absent "no resolution warning is produced for the unreachable anchor name
 assert_contains "a resolver that cannot forward the probe name is reported as information, not a warning" \
 	"$(cat "$WORK/out.l7nodns")" 'the assigned resolver did not answer for example.com (no DNS based egress path detected)'
 
+assert_absent "self verification skips the unlisted host check under l7 without a warning" \
+	"$(cat "$WORK/out.l7nodns")" 'WARNING: verify SKIP: .*egress probe'
+assert_contains "the skipped unlisted host check is reported as information under l7" \
+	"$(cat "$WORK/out.l7nodns")" 'verify SKIP: unlisted host reachability (blocked by the proxy ACL under layer l7'
+
 # --- l7 anchor liveness failure through the proxy -----------------------------
 #
 # FW_PROXY_DENY makes the curl stub's -x branch stand in for the proxy ACL

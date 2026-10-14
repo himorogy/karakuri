@@ -109,13 +109,14 @@
 - 全回答が禁止レンジのドメインは、解決できなかったのと同じ扱いで警告だけを出して実行を継続し、自己検証もそのドメインを飛ばす。ここで失敗にすると、外部の名前空間を握る者が回答1本でコンテナを起動不能にできる
 - ホストポートの許可は、既定経路のゲートウェイとホスト名の解決結果の**両方**に対して個別アドレスとして出す。ホストのネットワーク全体は開かない。両方に出すのは、この2つが別アドレスになりうるためで、実測ではゲートウェイ宛の規則にパケットが1つも乗らず、到達はホスト名側でのみ成立した——片方だけを許していた頃はこの機能自体が動いていなかった（テスト: "the host network is not allowed wholesale"）
 - ホスト名が公開アドレスを返した場合はそこにポートを開かず報告するが、ゲートウェイ側は開いたまま実行を継続する。ホスト名が私設アドレスを返すのは正常なので禁止レンジの検査は使えず、代わりに「私設アドレスであること」を要求する逆向きの検査を置いている。公開アドレスが返るのは名前が横取りされた場合であり、そこにポートを開けばホスト宛の許可ではなく**任意のインターネットホストへの穴**になる。ゲートウェイ側を落とさないのは、そちらがカーネルの経路表という別の入力源から来ており、汚染されうる入力に可用性の決定権を渡さないためである
-- 自己検証の「到達できないはず」の検査は、その宛先が allowlist に載っていたら別の宛先へ移る。解決結果が実行のたびに入れ替わっても、構築時と検証時のアドレス集合が1つでも重なれば合格と判定する（正しい方針を確率的に panic させないため）
-- anchor になるドメインが1つも無い設定は失敗ではなく、検査を飛ばした旨を述べて 0 で終わる。anchor が空になるのは方針に DNS 名が1本も無いとき——CIDR とホストポートだけの設定、または先頭ドットの記法しか書かれていない設定——に限られ、それは正当な設定である。死んだネットワークと空の allowlist を区別する手立てが無い以上、探るためのドメインを勝手に発明するより、飛ばしたと言うほうがよい。飛ばすのは「許可したものに届くか」側の検査だけで、「許可していないものが遮断されるか」側は飛ばさない
+- L3 実現層では、自己検証の「到達できないはず」の検査は、その宛先が allowlist に載っていたら別の宛先へ移る。解決結果が実行のたびに入れ替わっても、構築時と検証時のアドレス集合が1つでも重なれば合格と判定する（正しい方針を確率的に panic させないため）
+- anchor になるドメインが1つも無い設定は失敗ではなく、検査を飛ばした旨を述べて 0 で終わる。anchor が空になるのは方針に DNS 名が1本も無いとき——CIDR とホストポートだけの設定、または先頭ドットの記法しか書かれていない設定——に限られ、それは正当な設定である。死んだネットワークと空の allowlist を区別する手立てが無い以上、探るためのドメインを勝手に発明するより、飛ばしたと言うほうがよい。L3 実現層で飛ばすのは「許可したものに届くか」側の検査だけで、「許可していないものが遮断されるか」側は飛ばさない
 - L3 実現層では、anchor がある場合に解決できなければ非ゼロ終了し panic テーブルへ落ちる（テスト: "a dead network falls back to the panic table"）
 - L3 実現層では、設定に書いたドメインを解決できないときは、その名前を挙げた警告を適用ログに出す（テスト: "an unresolvable domain is still reported by name"）（起源: `0020a-l7-domain-resolve-warning`）
 - L7 実現層では、先頭ドットの記法は DNS 名ではないため解決を試みず、生存確認の anchor にも選ばない。許可としては従来どおり成立し、`--print-proxy-acl` の出力も変わらない（テスト: "a leading dot domain is not resolved" / "a leading dot domain produces no resolution warning" / "a leading dot domain is not taken as the anchor" / "the proxy ACL is unchanged by the leading dot form"）（起源: `0020a-l7-domain-resolve-warning`）
 - L7 実現層では、dev 側の DNS が外部名を解決できない構成でも、proxy 経由で anchor に届く限り、最終テーブルを適用して 0 で終わる（テスト: "an l7 config exits 0 when only the proxy, not the anchor, resolves"）（起源: `0048-firewall-l7-without-external-dns`）
 - L7 実現層で anchor がある場合、proxy 経由で anchor に届かなければ非ゼロ終了し panic テーブルへ落ちる（テスト: "a denied CONNECT to the anchor exits non-zero" / "a denied CONNECT to the anchor falls back to the panic table"）（起源: `0048-firewall-l7-without-external-dns`）
+- L7 実現層では、自己検証は許可していない宛先が遮断されるかの検査を行わず、行わなかった旨を述べる。dev 側の DNS が外部名を解決できない構成でも、この検査を理由とする警告を適用ログに出さない（テスト: "self verification skips the unlisted host check under l7 without a warning"）（起源: `0054-l7-self-verify-unlisted-skip`）
 - L7 実現層では、割り当て resolver が外部名を解決できるとき、DNS が外へ転送されている旨の警告を適用ログに出し、実行は失敗にしない（テスト: "self verification warns when the assigned resolver still forwards an external name"）（起源: `0048-firewall-l7-without-external-dns`）
 - 適用時の設定は固定パスからのみ読み、作業ディレクトリを探索しない。ワークスペース側に置かれた設定は読まれず、方針を緩められない（テスト: "the workspace copy cannot relax the policy"）
 - sudo 経由の起動で引数を1つでも渡すと拒否する。sudoers の指定が空引数リストを書き忘れていても、開発用オプションが非特権ユーザーの手に渡らないようにするため

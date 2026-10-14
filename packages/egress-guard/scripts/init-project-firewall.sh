@@ -1707,6 +1707,16 @@ pick_blocked_probe() {
 	return 0
 }
 
+probe_any_resolves() {
+	local candidate ip
+	for candidate in "${EGRESS_PROBES[@]}"; do
+		while read -r ip; do
+			[ -n "$ip" ] && return 0
+		done < <(resolve_domain "$candidate")
+	done
+	return 1
+}
+
 self_verify() {
 	info "running self verification"
 
@@ -1766,7 +1776,13 @@ self_verify() {
 		warn "verify SKIP: allowed host reachability (no domain to anchor on)"
 	fi
 
-	if [ "$MODE" = "enforce" ]; then
+	if [ "$LAYER" = "l7" ]; then
+		# Blocking of unlisted hosts is the proxy ACL's job, and a direct
+		# curl from here never goes through the proxy, so a failure to
+		# connect proves nothing about it. Direct paths are closed by the
+		# final table and the network itself.
+		info "verify SKIP: unlisted host reachability (blocked by the proxy ACL under layer l7, which this check does not go through)"
+	elif [ "$MODE" = "enforce" ]; then
 		# The probe has to be a host that is genuinely outside the allowlist.
 		# Hardcoding one breaks the moment a project adds it to allowDomains -
 		# a correct configuration would then fail the self check.
@@ -1775,8 +1791,10 @@ self_verify() {
 		if [ -n "$egress_probe" ]; then
 			verify_step "unlisted host is blocked ($egress_probe)" fail \
 				curl -sS -o /dev/null --connect-timeout 5 --max-time 10 "https://$egress_probe"
+		elif probe_any_resolves; then
+			warn "verify SKIP: every egress probe host that resolved is in the allowlist, so none can prove that unlisted hosts are blocked"
 		else
-			warn "verify SKIP: every egress probe host is in the allowlist, so none can prove that unlisted hosts are blocked"
+			warn "verify SKIP: no egress probe host resolved, so none can prove that unlisted hosts are blocked"
 		fi
 	else
 		info "verify SKIP: unlisted host reachability (audit mode allows it by design)"
