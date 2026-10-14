@@ -3,7 +3,7 @@
 prod container と devcontainer の**共通土台**になるイメージ。
 
 ```
-ghcr.io/himorogy/runtime-base:1
+ghcr.io/himorogy/runtime-base:2
 ```
 
 `images/devcontainer-base` はこのイメージを `FROM` で継承する。二層にしている理由は、prod
@@ -22,7 +22,7 @@ ghcr.io/himorogy/runtime-base:1
 
 | 種別 | 中身 |
 |---|---|
-| 実行系 | Node 24、pnpm、dotenvx、wrangler、git、gh |
+| 実行系 | Node 24（Debian 13 trixie 土台）、pnpm 12、dotenvx、wrangler、git、gh |
 | secret 注入 | `wrangler` / `gh` / `dotenvx` の shim、`prod-entrypoint.sh`、`git-credential-gh-token`、`git-askpass` |
 | 制約 | `core.hooksPath` + pre-commit hook、egress-guard 本体と sudoers、github.com の credential helper の固定（`GIT_CONFIG_COUNT` 系）と `git-auth-check` |
 
@@ -281,7 +281,7 @@ fatal: credential helper '/usr/local/bin/git-credential-gh-token' told us to qui
 6. `GIT_REF` が完全な commit sha であることと、**それが自分自身に解決されること**を確認する
 7. 解決した sha を stderr と `/run/prod-ref` へ記録する
 8. `checkout --detach --force` → `reset --hard` → `clean -xdff` の順で `GIT_REF` の状態へ復元する
-9. `pnpm config set store-dir /src/.pnpm-store` で store を node_modules と同一 tmpfs へ向ける
+9. store-dir を `/src/.pnpm-store` に設定（設定ファイルへ直接書く）して store を node_modules と同一 tmpfs へ向ける
 10. `rm -f /run/secrets/GH_TOKEN` と `unset GIT_ASKPASS` で clone 用トークンを破棄する（以降 helper は
     `quit=1` を返すようになる）
 11. `exec "$@"`（引数が無ければ非ゼロ終了）
@@ -333,7 +333,7 @@ ssh 形式（`git@github.com:owner/repo.git`）は `://` を含まないので�
 ref 名として解決されうる。すると**可変 ref の内容が immutable な sha として実行され、
 `/run/prod-ref` にもそう記録される**。解決結果が `GIT_REF` 自身と一致することまで確認する。
 
-現行の git（2.39.5 で実測）はこのケースを意図的に無視するため、この検査は多重防御である。
+git 2.39.5（Debian 12）での実測では、git はこのケースを意図的に無視する。trixie の git で同じかは未実測。この検査は git の版の挙動に依らず効く。
 `rev-parse` の解決規則は git の版と実装に属するもので、このイメージが管理できる範囲にない。
 
 **解決済みの commit sha は必ず記録される。**
@@ -382,9 +382,9 @@ store を /src 配下（同一 tmpfs） 合計 131M  リンク数 2 以上のフ
 pnpm 自身が出力で機構を明言する — 前者は `Packages are copied ...`、後者は
 `Packages are hard linked ...`。
 
-設定は entrypoint が `pnpm config set store-dir /src/.pnpm-store` で行う。環境変数
-`npm_config_store_dir` は効かない。書き込み先は `$HOME/.config/pnpm/config.yaml`（YAML の
-`storeDir:`。`.npmrc` の `store-dir=` ではない）で、`$HOME` は tmpfs なので毎回新規に書かれる。
+entrypoint は pnpm を起動せず、`$HOME/.config/pnpm/config.yaml`（`storeDir:`）と
+`$HOME/.config/pnpm/rc`（`store-dir=`）の両方へ同じパスを直接書く。環境変数
+`npm_config_store_dir` は効かない。`$HOME` は tmpfs なので毎回新規に書かれる。
 
 **イメージには焼かない。** dev container の store は `/workspaces/.pnpm-store` にあり `/src` は
 存在しないので、runtime-base に焼くと devcontainer-base 側が壊れる。
@@ -609,10 +609,10 @@ file:.git/config      /tmp/local-hooks        ← 実効値はこちら
 タグを push するとマルチアーキビルドが走り GHCR へ push される。
 
 ```sh
-git tag runtime-base-v1.0.0 && git push origin runtime-base-v1.0.0
+git tag runtime-base-v2.0.0 && git push origin runtime-base-v2.0.0
 ```
 
-`:1.0.0` / `:1.0` / `:1` / `sha-xxxxxxx` が付く。
+`:2.0.0` / `:2.0` / `:2` / `sha-xxxxxxx` が付く。
 
 **リリース順は runtime-base → devcontainer-base。** devcontainer-base は
 `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` で載るため、runtime-base が
@@ -643,7 +643,7 @@ public にしておくと利用側の `docker pull` に認証が要らなくな�
 | 参照元 | 参照の仕方 | 理由 |
 |---|---|---|
 | `compose.prod.yaml` | `@sha256:<digest>` で digest pin | prod は「変わらないこと」に価値がある。タグは後から指す先を変えられる |
-| `devcontainer-base` | `:1` を追随 | 改善を伝播させたい |
+| `devcontainer-base` | `:2` を追随 | 改善を伝播させたい |
 
 ---
 
