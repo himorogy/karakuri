@@ -61,11 +61,8 @@
 #   karakuri-run -b <broker-key> [-e dev|prod] -- <cmd> [args...]
 #                                                    ホストで実行するコマンドへ鍵を渡す
 #   karakuri-prod-run <org/repo> <sha> <task> [args...]
-#   karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
 #   karakuri-prod-base <org/repo> <sha>             対話作業の土台を起動
 #   karakuri-prod-shell <repo>                      土台へ入る
-#   karakuri-image-digest <tag>                     タグ → image: 行の完成形
-#   karakuri-check-image <tag>                      compose の digest と照合
 #   karakuri-broker-command <dev|prod> <project>    broker 実行ファイルのパスを出す（差し替え点）
 #   karakuri-broker-env <dev|prod> <project>        broker へ渡す環境変数を出す（差し替え点）
 #   karakuri-help                                   この一覧と環境変数の現在値を出す
@@ -1051,23 +1048,6 @@ karakuri-prod-run() {
 	_karakuri_prod_call "$spec" "$sha" sh -c "$script"
 }
 
-# karakuri-prod-exec <org/repo> <sha> <command> [args...] — タスクランナーを
-# 挟まずに、渡したコマンドをそのまま prod で実行する。
-#
-# 引数は最後まで配列のまま運ぶ。文字列連結を挟まないので、引用の付け忘れが
-# 別のコマンドの実行になる余地がない。install も走らないため、依存が要る
-# ものは karakuri-prod-run を使うこと。
-karakuri-prod-exec() {
-	if [ "$#" -lt 3 ]; then
-		echo "Usage: karakuri-prod-exec <org/repo> <40-char sha> <command> [args...]" >&2
-		return 1
-	fi
-
-	local spec="$1" sha="$2"
-	shift 2
-	_karakuri_prod_call "$spec" "$sha" "$@"
-}
-
 # karakuri-prod-base <org/repo> <sha> — 対話 prod 作業の土台を起動する。
 #
 # 鍵の搬送路が stdin なので、`docker compose run` に対話 TTY は付けられない。
@@ -1164,237 +1144,6 @@ karakuri-prod-shell() {
 	env MSYS_NO_PATHCONV=1 docker exec -it -w /src "$cid" bash
 }
 
-# --- image の digest -------------------------------------------------------------
-# compose ファイルは digest で pin する（タグは後から指す先を変えられる）。
-# その digest をタグから引くのがここの 2 つ。
-#
-# compose ファイルを書き換える実装にはしない。あのファイルは prod の防御
-# （read_only・tmpfs の記法・ulimits など）を宣言している中心で、機械的に
-# 触る経路を作ると、パターンの取り違えが防御を消す形で現れる。貼るのは
-# 人間の手で、貼った結果は人間の目を通す。
-
-# _karakuri_compose_image_ref <file> — その compose ファイルに書かれている
-# image の参照を stdout に出す。
-#
-# 読むファイルを引数で受けるのは、ディレクトリ運用では 1 枚に決まらないため
-# （どのファイルを見るかを決めるのは _karakuri_compose_for / _karakuri_compose_list
-# の側で、ここは渡された 1 枚を読むだけにする）。
-_karakuri_compose_image_ref() {
-	local file="$1"
-
-	if [ ! -f "$file" ]; then
-		echo "karakuri: '${file}' is not a file. Check that KARAKURI_PROD_COMPOSE (or KARAKURI_PROD_COMPOSE_DIR) points at the compose file you keep outside the dev workspace" >&2
-		return 1
-	fi
-
-	local lines
-	lines="$(grep -E '^[[:space:]]*image:[[:space:]]*[^[:space:]#]' "$file")"
-
-	if [ -z "$lines" ]; then
-		echo "karakuri: no 'image:' line in ${file}" >&2
-		return 1
-	fi
-	if [ "$(printf '%s\n' "$lines" | wc -l)" -gt 1 ]; then
-		echo "karakuri: ${file} has more than one 'image:' line — cannot tell which one pins the prod image. Check it by hand" >&2
-		return 1
-	fi
-
-	# 行頭の `image:` を落としたあと、行末の YAML コメントも落とす。YAML の
-	# 規則では、空白の後に続く `#` からが行末コメントで、クォートされた
-	# スカラーの中の `#` はコメントではない。ここでは後者（クォート）は
-	# 対応しない: docker image の参照文字列（レジストリ/名前/タグ/digest）
-	# が取りうる文字集合に `#` は含まれないため、クォートしてまで書く動機が
-	# なく、実機でも見た例がない。対応してしまうと、閉じクォートの位置を
-	# 誤検出したときに digest の一部を切り落とすという、無対応より悪い
-	# 失敗モードを自分で作り込むことになる。したがって「空白 + `#`
-	# 以降を落とす」だけで足り、クォートは検査対象にしない。
-	# `karakuri-image-digest` が吐く行にコメントは付かないが、利用者が
-	# `# v1.2.2` のように手でメモを足す運用まで壊さないためにこの一段を足す。
-	printf '%s\n' "$lines" |
-		sed -e 's/^[[:space:]]*image:[[:space:]]*//' \
-			-e 's/[[:space:]][[:space:]]*#.*$//' \
-			-e 's/[[:space:]]*$//'
-}
-
-# _karakuri_image_name <ref> — 参照からタグと digest を落として、イメージ名
-# だけを stdout に出す。レジストリのポート番号（host:5000/name）を巻き込ま
-# ないよう、最後の / より後ろだけを見てタグを落とす。
-_karakuri_image_name() {
-	local name="${1%%@*}"
-	case "${name##*/}" in
-	*:*) name="${name%:*}" ;;
-	esac
-	printf '%s\n' "$name"
-}
-
-# _karakuri_compose_image_name — 見るべき compose ファイル全部が同じイメージ名
-# を指しているとき、その名前を stdout に出す。
-#
-# ディレクトリ運用では「どのファイルの image 名を使うか」が引数からは決まら
-# ない。1 枚目を採るような選び方はしない: そこで選んだことは利用者に見えず、
-# 別プロジェクトのイメージのタグを解決した digest を、当人は自分のプロジェクト
-# のものだと思って貼る。揃っていれば曖昧さは無いので通し、揃っていなければ
-# 止めて、完全な参照を打ってもらう（0 件・複数件・曖昧は必ず失敗させる、という
-# このファイル全体の規律と同じ）。
-_karakuri_compose_image_name() {
-	local files
-	files="$(_karakuri_compose_list)" || return 1
-
-	local file ref name common="" common_file=""
-	while IFS= read -r file; do
-		[ -n "$file" ] || continue
-
-		ref="$(_karakuri_compose_image_ref "$file")" || return 1
-		name="$(_karakuri_image_name "$ref")"
-
-		if [ -z "$common_file" ]; then
-			common="$name"
-			common_file="$file"
-			continue
-		fi
-		if [ "$name" != "$common" ]; then
-			echo "karakuri: the compose files do not all name the same image — ${common_file} says '${common}' but ${file} says '${name}', so a bare tag cannot be resolved. Pass the full <image>:<tag> reference instead" >&2
-			return 1
-		fi
-	done <<EOF
-${files}
-EOF
-
-	if [ -z "$common_file" ]; then
-		echo "karakuri: found no compose file to read the image name from" >&2
-		return 1
-	fi
-
-	printf '%s\n' "$common"
-	return 0
-}
-
-# _karakuri_image_ref <tag> — 利用者が打った 1 引数を完全な参照にする。
-# `/` を含むならそのまま参照として扱い、含まないなら compose ファイルに
-# 書かれているイメージ名のタグとして扱う（判定にスラッシュを使うのは
-# <org>/<repo> と同じ理由）。
-_karakuri_image_ref() {
-	case "$1" in
-	*/*)
-		printf '%s\n' "$1"
-		return 0
-		;;
-	esac
-
-	local name
-	name="$(_karakuri_compose_image_name)" || return 1
-	printf '%s:%s\n' "$name" "$1"
-}
-
-# _karakuri_resolve_digest <ref> — レジストリに問い合わせて digest を出す。
-_karakuri_resolve_digest() {
-	local digest
-	digest="$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')" || {
-		echo "karakuri: could not resolve '$1'. Check the tag exists and that you are logged in to the registry" >&2
-		return 1
-	}
-
-	case "$digest" in
-	sha256:*) ;;
-	*)
-		echo "karakuri: unexpected digest for '$1': '${digest}'" >&2
-		return 1
-		;;
-	esac
-
-	printf '%s\n' "$digest"
-}
-
-# karakuri-image-digest <tag> — タグから digest を引き、compose ファイルへ
-# 貼れる形の 1 行を出力する。出力は行頭から始まるので、貼り付け先の
-# インデントには手で合わせること。
-karakuri-image-digest() {
-	if [ "$#" -ne 1 ]; then
-		echo "Usage: karakuri-image-digest <tag>   (or a full <image>:<tag> reference)" >&2
-		return 1
-	fi
-
-	local ref digest
-	ref="$(_karakuri_image_ref "$1")" || return 1
-	digest="$(_karakuri_resolve_digest "$ref")" || return 1
-
-	printf 'image: %s@%s\n' "$(_karakuri_image_name "$ref")" "$digest"
-}
-
-# karakuri-check-image <tag> — compose ファイルに書かれている digest が、
-# 指定タグの現在の digest と一致するかを見る。読むだけで、書き換えはしない。
-#
-# clone した配布物の版ずれは git status で見えるが、compose ファイルは
-# clone の外にあるので git では見えない。そこを見るのがこの関数。
-#
-# ディレクトリ運用では、repo を指定させずにディレクトリの中を全部見る。
-# 引数に repo を取る形にすると、貼り忘れているプロジェクトを見つけるために
-# 「どれを貼り忘れたか」を先に知っている必要があり、順序が逆になる。全部を
-# 一覧で出せば、古い digest のまま残っているプロジェクトがその場で分かる。
-# 1 件目の不一致で止めないのもこのため（止めた先はいつまでも見えない）。
-karakuri-check-image() {
-	if [ "$#" -ne 1 ]; then
-		echo "Usage: karakuri-check-image <tag>   (or a full <image>:<tag> reference)" >&2
-		return 1
-	fi
-
-	local ref expected_name files
-	ref="$(_karakuri_image_ref "$1")" || return 1
-	expected_name="$(_karakuri_image_name "$ref")"
-	files="$(_karakuri_compose_list)" || return 1
-
-	local file current current_digest current_name expected="" bad=0
-	while IFS= read -r file; do
-		[ -n "$file" ] || continue
-
-		current="$(_karakuri_compose_image_ref "$file")" || {
-			bad=1
-			continue
-		}
-
-		# digest が入っていない（タグ pin のまま）ときと、テンプレートの
-		# プレースホルダが残っているときは、レジストリへ問い合わせる前に
-		# 止める。どちらも「照合できる状態になっていない」であって、照合の
-		# 結果が不一致なのとは原因が違う。同じメッセージにすると直し方を誤る。
-		current_digest=""
-		case "$current" in
-		*@*) current_digest="${current#*@}" ;;
-		esac
-		if ! printf '%s' "$current_digest" | grep -qE '^sha256:[0-9a-f]{64}$'; then
-			echo "karakuri-check-image: ${file} does not pin a resolved digest (it says '${current}'). Run 'karakuri-image-digest $1' and paste the result over that line" >&2
-			bad=1
-			continue
-		fi
-
-		current_name="$(_karakuri_image_name "$current")"
-		if [ "$current_name" != "$expected_name" ]; then
-			echo "karakuri-check-image: ${file} pins image '${current_name}', but '$1' resolves to '${expected_name}' — these are different images, so their digests cannot be compared" >&2
-			bad=1
-			continue
-		fi
-
-		# レジストリへ問い合わせるのは、照合できるファイルが最初に見つかった
-		# ときの 1 回だけ。答えはファイルによらず同じなので繰り返す意味が無く、
-		# 「1 枚も照合できる状態になっていない」ときに問い合わせないという
-		# 元からの性質もこの置き方で保たれる。
-		if [ -z "$expected" ]; then
-			expected="$(_karakuri_resolve_digest "$ref")" || return 1
-		fi
-
-		if [ "$current_digest" = "$expected" ]; then
-			printf '%s pins %s@%s (matches %s)\n' "$file" "$current_name" "$current_digest" "$ref"
-			continue
-		fi
-
-		echo "karakuri-check-image: digest mismatch. ${file} pins ${current_digest}, but ${ref} is now ${expected}. Run 'karakuri-image-digest $1' and paste the result over the image: line if the move is intended" >&2
-		bad=1
-	done <<EOF
-${files}
-EOF
-
-	[ "$bad" -eq 0 ]
-}
-
 # --- ヘルプ -----------------------------------------------------------------------
 
 # _karakuri_help_env <name> <必須/任意> <現在値> <説明> — karakuri-help の
@@ -1443,16 +1192,10 @@ karakuri.sh が提供する関数:
       ホストで実行するコマンドへ broker の鍵を渡す（既定は dev。項目の並びは既存の dev 注入・prod 起動と同一）
   karakuri-prod-run <org/repo> <sha> <task> [task-args...]
       install を挟んでタスクランナー経由で prod のタスクを実行する
-  karakuri-prod-exec <org/repo> <sha> <cmd> [args...]
-      install を挟まず、渡したコマンドをそのまま prod で実行する
   karakuri-prod-base <org/repo> <sha>
       対話 prod 作業の土台を起動する（前面で動かし、別端末から karakuri-prod-shell で入る）
   karakuri-prod-shell <repo>
       起動済みの土台へ入る
-  karakuri-image-digest <tag>
-      タグから digest を引き、compose ファイルへ貼れる image: 行を出す
-  karakuri-check-image <tag>
-      compose に pin された digest と、タグの現在の digest を照合する
   karakuri-broker-command <dev|prod> <project>
       broker 実行ファイルのパスを出す（差し替え点。既定は Bitwarden broker）
   karakuri-broker-env <dev|prod> <project>
@@ -1477,7 +1220,7 @@ FUNCS
 		"全プロジェクトで 1 枚を共有する compose.prod.yaml の配置先。KARAKURI_PROD_COMPOSE_DIR が設定されていれば、そちらが優先されこの値は使われない"
 
 	_karakuri_help_env "KARAKURI_PROD_COMPOSE_DIR" "KARAKURI_PROD_COMPOSE が無いとき prod 系の関数で必須" "${KARAKURI_PROD_COMPOSE_DIR:-}" \
-		"プロジェクトごとの compose ファイルを集めたディレクトリ。使うのは <repo>.yaml（無ければ <repo>.yml、両方あればエラー）。KARAKURI_PROD_COMPOSE より優先される。karakuri-check-image はこのディレクトリの中を全部見る"
+		"プロジェクトごとの compose ファイルを集めたディレクトリ。使うのは <repo>.yaml（無ければ <repo>.yml、両方あればエラー）。KARAKURI_PROD_COMPOSE より優先される"
 
 	if [ "${KARAKURI_PROD_INSTALL+set}" = "set" ]; then
 		if [ -z "$KARAKURI_PROD_INSTALL" ]; then

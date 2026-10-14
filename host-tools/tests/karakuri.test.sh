@@ -6,7 +6,7 @@
 # `docker` と `ssh` を PATH 先頭のフェイクスクリプトへ差し替え、karakuri.sh が
 # 呼ぶ prod-run.sh / dev-inject.sh / broker もフェイクへ差し替えて、
 # karakuri.sh 自身のロジック（引数の解決・compose project 名・sh -c を挟む
-# 条件・コンテナ特定の失敗系・digest の照合）だけを検証する。実際の
+# 条件・コンテナ特定の失敗系）だけを検証する。実際の
 # docker compose / ssh / prod-run.sh の挙動はここでは見ない。
 #
 # フェイクの置き方: karakuri.sh は「自分自身が置かれているディレクトリ」から
@@ -90,13 +90,12 @@ FAKE_BROKER
 chmod +x "$FAKE_BIN_DIR/broker-bitwarden.sh"
 
 # --- フェイク docker -----------------------------------------------------------
-# karakuri.sh が docker を呼ぶのは 3 箇所: コンテナ特定 (ps -q --filter
-# label=...)、土台へ入る (exec)、digest 解決 (buildx imagetools inspect)。
-# compose ファイルの変数展開に巻き込まれないよう、コンテナ特定は
-# `docker compose ps` ではなく素の `docker ps` をラベルで絞る形にしてある
-# （実機で GIT_REPO/GIT_REF 未設定のまま `docker compose ps` が
-# interpolation error で落ちた不具合の修正）。サブコマンドで分岐して、
-# それぞれ引数を記録する。
+# karakuri.sh が docker を呼ぶのは 2 箇所: コンテナ特定 (ps -q --filter
+# label=...)、土台へ入る (exec)。compose ファイルの変数展開に巻き込まれない
+# よう、コンテナ特定は `docker compose ps` ではなく素の `docker ps` を
+# ラベルで絞る形にしてある（実機で GIT_REPO/GIT_REF 未設定のまま
+# `docker compose ps` が interpolation error で落ちた不具合の修正）。
+# サブコマンドで分岐して、それぞれ引数を記録する。
 cat >"$FAKE_BIN_DIR/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -111,13 +110,6 @@ exec)
 	printf '%s\n' "$@" >"${FAKE_EXEC_ARGV_FILE:?}"
 	printf 'MSYS_NO_PATHCONV=%s\n' "${MSYS_NO_PATHCONV:-<unset>}" >"${FAKE_EXEC_ENV_FILE:?}"
 	exit "${FAKE_EXEC_EXIT_CODE:-0}"
-	;;
-buildx)
-	printf '%s\n' "$@" >"${FAKE_BUILDX_ARGV_FILE:?}"
-	if [ -n "${FAKE_DIGEST:-}" ]; then
-		printf '%s\n' "$FAKE_DIGEST"
-	fi
-	exit "${FAKE_BUILDX_EXIT_CODE:-0}"
 	;;
 *)
 	echo "fake docker: unexpected subcommand: ${1:-}" >&2
@@ -225,34 +217,14 @@ FAKE_LOOPBACK_SETUP
 chmod +x "$FAKE_BIN_DIR/loopback-setup.sh"
 
 # --- 検査対象の compose ファイル -------------------------------------------------
-# コメント行の image: を無視できているかも同時に見たいので 1 行入れてある。
 BASE_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
-OTHER_DIGEST="sha256:2222222222222222222222222222222222222222222222222222222222222222"
 BASE_IMAGE="ghcr.io/acme/runtime-base"
 
 COMPOSE_PINNED="$WORKDIR/compose.pinned.yaml"
 cat >"$COMPOSE_PINNED" <<EOF
 services:
   prod:
-    # image: ghcr.io/acme/decoy@${OTHER_DIGEST}
     image: ${BASE_IMAGE}@${BASE_DIGEST}
-EOF
-
-COMPOSE_PLACEHOLDER="$WORKDIR/compose.placeholder.yaml"
-cat >"$COMPOSE_PLACEHOLDER" <<EOF
-services:
-  prod:
-    image: ${BASE_IMAGE}@sha256:REPLACE_WITH_ACTUAL_DIGEST
-EOF
-
-# 実機で踏んだ形そのもの: karakuri-image-digest はコメントを付けないが、
-# 利用者が版を手でメモする運用がある。行末コメントが digest の一部として
-# 読み込まれないことを見るための fixture。
-COMPOSE_PINNED_COMMENTED="$WORKDIR/compose.pinned-commented.yaml"
-cat >"$COMPOSE_PINNED_COMMENTED" <<EOF
-services:
-  prod:
-    image: ${BASE_IMAGE}@${BASE_DIGEST} # v1.2.2
 EOF
 
 # --- 検査対象の compose ディレクトリ ------------------------------------------------
@@ -260,10 +232,9 @@ EOF
 # repo 名になる（karakuri.sh はそれ以外の手掛かりでファイルを選ばない）ので、
 # ここのファイル名はそのままテストで打つ repo 名でもある。
 #
-# ディレクトリを 1 つで済ませず 4 つに分けてあるのは、karakuri-check-image が
-# ディレクトリの中を全部見るため。曖昧な組み合わせやイメージ名の食い違いを
-# 同じディレクトリに同居させると、それらが他のテストの掃引結果に混ざる。
-OTHER_IMAGE="ghcr.io/acme/other-runtime"
+# ディレクトリを 2 つに分けてあるのは、正常系（.yaml と .yml が 1 つずつ）と
+# 曖昧系（同じ repo に両方ある）を同じディレクトリに同居させると、片方の
+# 検査がもう片方のファイルの存在に混ざるため。
 
 # write_compose <path> <image ref> — 1 サービスだけの compose ファイルを書く。
 write_compose() {
@@ -284,21 +255,6 @@ write_compose "$COMPOSE_DIR_OK/legacy.yml" "${BASE_IMAGE}@${BASE_DIGEST}"
 COMPOSE_DIR_BOTH="$WORKDIR/compose-dir-both"
 write_compose "$COMPOSE_DIR_BOTH/dup.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
 write_compose "$COMPOSE_DIR_BOTH/dup.yml" "${BASE_IMAGE}@${BASE_DIGEST}"
-
-# 掃引の結果が混ざるディレクトリ。ファイル名を意図的にこの並びにしてある:
-# 掃引は名前順なので、問題のある 2 枚（古い digest・digest 未記入）の後ろに
-# 正常な 1 枚を置いておかないと、「最初の問題で打ち切る」実装との差が出ない
-# （打ち切っても、最後尾の問題までは同じ出力になってしまう）。
-COMPOSE_DIR_MIXED="$WORKDIR/compose-dir-mixed"
-write_compose "$COMPOSE_DIR_MIXED/app.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
-write_compose "$COMPOSE_DIR_MIXED/billing.yaml" "${BASE_IMAGE}@${OTHER_DIGEST}"
-write_compose "$COMPOSE_DIR_MIXED/notes.yml" "${BASE_IMAGE}:1.2.2"
-write_compose "$COMPOSE_DIR_MIXED/zeta.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
-
-# イメージ名が揃っていない。裸のタグからは参照を組み立てられない。
-COMPOSE_DIR_DIVERGE="$WORKDIR/compose-dir-diverge"
-write_compose "$COMPOSE_DIR_DIVERGE/app.yaml" "${BASE_IMAGE}@${BASE_DIGEST}"
-write_compose "$COMPOSE_DIR_DIVERGE/other.yaml" "${OTHER_IMAGE}@${BASE_DIGEST}"
 
 BASE_SHA="1234567890abcdef1234567890abcdef12345678"
 BASE_CID="cafe0123deadbeef"
@@ -347,7 +303,6 @@ reset_env() {
 	export FAKE_PS_ARGV_FILE="$WORKDIR/ps-argv.$$.$_case_seq"
 	export FAKE_EXEC_ARGV_FILE="$WORKDIR/exec-argv.$$.$_case_seq"
 	export FAKE_EXEC_ENV_FILE="$WORKDIR/exec-env.$$.$_case_seq"
-	export FAKE_BUILDX_ARGV_FILE="$WORKDIR/buildx-argv.$$.$_case_seq"
 	export FAKE_SSH_LOG="$WORKDIR/ssh-log.$$.$_case_seq"
 	export FAKE_SSH_G_LOG="$WORKDIR/ssh-g-log.$$.$_case_seq"
 	# karakuri-dock のオーケストレーション（ensure-running → secrets-ok →
@@ -359,8 +314,6 @@ reset_env() {
 	export FAKE_PS_STDOUT="$BASE_CID"
 	export FAKE_PS_EXIT_CODE=0
 	export FAKE_EXEC_EXIT_CODE=0
-	export FAKE_DIGEST="$BASE_DIGEST"
-	export FAKE_BUILDX_EXIT_CODE=0
 
 	# dock.sh フェイクの既定はどのモードも成功（secrets はすでに注入済み
 	# 扱い = dev-inject を呼ばない）。karakuri-dock のオーケストレーションを
@@ -571,10 +524,6 @@ run_suite() {
 	assert_env_has "COMPOSE_PROJECT_NAME=prod-app" "[$s] prod-run sets COMPOSE_PROJECT_NAME=prod-<repo>"
 
 	reset_env
-	run_case karakuri-prod-exec acme/app "$BASE_SHA" ls
-	assert_env_has "COMPOSE_PROJECT_NAME=prod-app" "[$s] prod-exec sets COMPOSE_PROJECT_NAME=prod-<repo>"
-
-	reset_env
 	run_case karakuri-prod-base acme/app "$BASE_SHA"
 	assert_env_has "COMPOSE_PROJECT_NAME=prod-app" "[$s] prod-base sets COMPOSE_PROJECT_NAME=prod-<repo>"
 	assert_argv_has "sleep" "[$s] prod-base runs sleep as the base command"
@@ -610,16 +559,6 @@ run_suite() {
 	run_case karakuri-prod-run acme/app "$BASE_SHA" deploy "a b"
 	assert_argv_has "pnpm install --frozen-lockfile && pnpm 'deploy' 'a b'" \
 		"[$s] arguments are quoted before being concatenated for sh -c"
-
-	# --- prod-exec: 常に配列のまま --------------------------------------------------
-	echo "[$s] prod-exec never builds a command string"
-	reset_env
-	run_case karakuri-prod-exec acme/app "$BASE_SHA" dotenvx run -f .env.prod -- pnpm deploy
-
-	assert_rc_zero "[$s] prod-exec succeeds"
-	assert_argv_lacks "-c" "[$s] prod-exec does not go through sh -c even with the default install set"
-	assert_argv_has "dotenvx" "[$s] prod-exec passes the command through verbatim"
-	assert_argv_has "--" "[$s] prod-exec passes '--' through verbatim"
 
 	# --- broker 依存部 ------------------------------------------------------------
 	echo "[$s] broker-specific environment is built in one place"
@@ -1280,74 +1219,6 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	assert_rc_nonzero "[$s] prod-base without a sha fails"
 	assert_stderr_has "Usage:" "[$s] prod-base without a sha prints usage"
 
-	# --- image digest ---------------------------------------------------------------
-	echo "[$s] image digests are resolved and compared, never written"
-	reset_env
-	local compose_before
-	compose_before="$(cksum <"$COMPOSE_PINNED")"
-	run_case karakuri-image-digest 1.2.2
-
-	assert_rc_zero "[$s] image-digest succeeds"
-	assert_stdout_is "image: ${BASE_IMAGE}@${BASE_DIGEST}" "[$s] image-digest prints a complete image: line"
-	if has_line "$FAKE_BUILDX_ARGV_FILE" "${BASE_IMAGE}:1.2.2"; then
-		ok "[$s] the tag is resolved against the image named in the compose file"
-	else
-		ng "[$s] the tag is resolved against the image named in the compose file (argv: $(cat "$FAKE_BUILDX_ARGV_FILE" 2>/dev/null))"
-	fi
-	if [ "$(cksum <"$COMPOSE_PINNED")" = "$compose_before" ]; then
-		ok "[$s] image-digest leaves the compose file untouched"
-	else
-		ng "[$s] image-digest leaves the compose file untouched"
-	fi
-
-	reset_env
-	run_case karakuri-check-image 1.2.2
-	assert_rc_zero "[$s] check-image succeeds when the pinned digest matches"
-
-	reset_env
-	export FAKE_DIGEST="$OTHER_DIGEST"
-	run_case karakuri-check-image 1.2.2
-	assert_rc_nonzero "[$s] check-image fails when the pinned digest is stale"
-	assert_stderr_has "mismatch" "[$s] the error says the digests do not match"
-
-	reset_env
-	export KARAKURI_PROD_COMPOSE="$COMPOSE_PLACEHOLDER"
-	run_case karakuri-check-image 1.2.2
-	assert_rc_nonzero "[$s] check-image fails while the compose file still holds the placeholder"
-	assert_stderr_has "karakuri-image-digest" "[$s] the placeholder error says which command produces the line to paste"
-	assert_not_invoked "$FAKE_BUILDX_ARGV_FILE" "[$s] no registry lookup happens when the compose file pins nothing"
-
-	reset_env
-	export FAKE_BUILDX_EXIT_CODE=1
-	export FAKE_DIGEST=""
-	run_case karakuri-image-digest 1.2.2
-	assert_rc_nonzero "[$s] image-digest fails when the registry lookup fails"
-
-	# --- image 行の行末コメント -------------------------------------------------------
-	# 実機で踏んだ不具合そのもの: 利用者が版を手でメモした
-	# `image: ...@sha256:... # v1.2.2` 形式の行末コメントが digest 文字列の
-	# 一部として読み込まれ、正しく pin されているのに「digest が入っていない」
-	# と誤診断されていた。
-	echo "[$s] a trailing YAML comment on the image: line is stripped, not read as part of the digest"
-	reset_env
-	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED_COMMENTED"
-	run_case karakuri-check-image 1.2.2
-	assert_rc_zero "[$s] check-image succeeds when the image: line has a trailing '# v1.2.2' comment"
-
-	reset_env
-	export KARAKURI_PROD_COMPOSE="$COMPOSE_PINNED_COMMENTED"
-	run_case karakuri-image-digest 1.2.2
-	assert_stdout_is "image: ${BASE_IMAGE}@${BASE_DIGEST}" \
-		"[$s] image-digest resolves against the image name even when the current line has a trailing comment"
-
-	# コメントが無い場合（COMPOSE_PINNED）も従来どおり読めることの確認。
-	# 上の「image-digest / check-image」ブロックの各アサーションが
-	# COMPOSE_PINNED に対して既に検査しているので、ここでは崩れていないこと
-	# だけを重ねて確認する。
-	reset_env
-	run_case karakuri-check-image 1.2.2
-	assert_rc_zero "[$s] check-image still succeeds without a trailing comment"
-
 	# --- プロジェクトごとの compose ファイル -------------------------------------------
 	# compose ファイルはプロジェクトごとに 1 枚持ち、置き場所ごと、どの dev
 	# container にも mount しないホスト上の git repo に置く。karakuri.sh 側は
@@ -1363,11 +1234,8 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 
 	reset_env
 	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
-	run_case karakuri-prod-exec acme/legacy "$BASE_SHA" ls
-
-	assert_rc_zero "[$s] prod-exec succeeds when only <repo>.yml exists"
-	assert_env_has "PROD_COMPOSE_FILE=$COMPOSE_DIR_OK/legacy.yml" \
-		"[$s] <repo>.yml is used when <repo>.yaml is absent"
+	run_case karakuri-prod-run acme/legacy "$BASE_SHA" deploy
+	assert_env_has "PROD_COMPOSE_FILE=$COMPOSE_DIR_OK/legacy.yml" "[$s] <repo>.yml is used when <repo>.yaml is absent"
 
 	# reset_env は単一ファイル運用を張ったままなので、上の 2 件も実は
 	# 「両方設定された状態」を通っている。優先順位が意図であることを名前で
@@ -1406,61 +1274,6 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 
 	assert_rc_nonzero "[$s] prod-run fails when neither the directory nor the single file is set"
 	assert_stderr_has "KARAKURI_PROD_COMPOSE_DIR" "[$s] the error names KARAKURI_PROD_COMPOSE_DIR as one of the two ways out"
-
-	# --- ディレクトリ運用の digest 照合 --------------------------------------------
-	# 引数に repo を取らずディレクトリを丸ごと掃引するのが狙い: 貼り忘れた
-	# プロジェクトを見つけるのに、どれを貼り忘れたかを先に知っている必要がない。
-	echo "[$s] check-image sweeps every compose file in the directory"
-	reset_env
-	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
-	run_case karakuri-check-image 1.2.2
-
-	assert_rc_zero "[$s] check-image succeeds when every file in the directory matches"
-	assert_stdout_has "$COMPOSE_DIR_OK/app.yaml" "[$s] each .yaml file is reported by name"
-	assert_stdout_has "$COMPOSE_DIR_OK/legacy.yml" "[$s] .yml files are swept as well"
-
-	reset_env
-	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_MIXED"
-	run_case karakuri-check-image 1.2.2
-
-	assert_rc_nonzero "[$s] check-image fails when one of the files pins a stale digest"
-	assert_stderr_has "mismatch" "[$s] the stale file is reported as a mismatch"
-	assert_stderr_has "$COMPOSE_DIR_MIXED/billing.yaml" "[$s] the mismatch names the file that is behind"
-	assert_stderr_has "$COMPOSE_DIR_MIXED/notes.yml" "[$s] a file that pins no digest at all is reported separately"
-	assert_stdout_has "$COMPOSE_DIR_MIXED/app.yaml" "[$s] the files that do match are still listed"
-	assert_stdout_has "matches" "[$s] the matching file is reported as a match"
-	# ここが「打ち切らない」ことの本体。zeta.yaml は問題のある 2 枚より後ろに
-	# あるので、最初の問題で止める実装ではこの行が出ない。
-	assert_stdout_has "$COMPOSE_DIR_MIXED/zeta.yaml" \
-		"[$s] the sweep continues past a problem and still reports the files behind it"
-
-	echo "[$s] image-digest needs the directory to agree on one image name"
-	reset_env
-	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_OK"
-	run_case karakuri-image-digest 1.2.2
-
-	assert_rc_zero "[$s] image-digest succeeds when every file names the same image"
-	assert_stdout_is "image: ${BASE_IMAGE}@${BASE_DIGEST}" \
-		"[$s] the shared image name is used to resolve the bare tag"
-
-	reset_env
-	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_DIVERGE"
-	run_case karakuri-image-digest 1.2.2
-
-	assert_rc_nonzero "[$s] image-digest fails when the files name different images"
-	assert_stderr_has "$COMPOSE_DIR_DIVERGE/other.yaml" "[$s] the error names a file that disagrees"
-	assert_not_invoked "$FAKE_BUILDX_ARGV_FILE" \
-		"[$s] no registry lookup happens while the image name is ambiguous"
-
-	# 完全な参照を渡す道は残っている（スラッシュを含むなら compose を読まない、
-	# という既存の判定則がそのまま逃げ道になる）。
-	reset_env
-	export KARAKURI_PROD_COMPOSE_DIR="$COMPOSE_DIR_DIVERGE"
-	run_case karakuri-image-digest "${OTHER_IMAGE}:1.2.2"
-
-	assert_rc_zero "[$s] a full reference still works when the directory's image names disagree"
-	assert_stdout_is "image: ${OTHER_IMAGE}@${BASE_DIGEST}" \
-		"[$s] the full reference decides the image name without reading any compose file"
 
 	# --- port forwarding -------------------------------------------------------------
 	echo "[$s] karakuri-port-forward uses the given name verbatim"
@@ -1699,8 +1512,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 
 	for fn in karakuri-port-forward karakuri-loopback \
 		karakuri-dock karakuri-run karakuri-prod-run \
-		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
-		karakuri-image-digest karakuri-check-image karakuri-help; do
+		karakuri-prod-base karakuri-prod-shell karakuri-help; do
 		assert_stdout_has "$fn" "[$s] karakuri-help output mentions $fn"
 	done
 
@@ -1750,8 +1562,7 @@ karakuri-dock up -p myproj-dev -b myproj' karakuri-test >"$out" 2>"$err"; then
 	reset_env
 	for fn in karakuri-port-forward karakuri-loopback \
 		karakuri-dock karakuri-run karakuri-prod-run \
-		karakuri-prod-exec karakuri-prod-base karakuri-prod-shell \
-		karakuri-image-digest karakuri-check-image \
+		karakuri-prod-base karakuri-prod-shell \
 		karakuri-broker-command karakuri-broker-env karakuri-help; do
 		# shellcheck disable=SC2016 # 展開するのは検査対象のシェル側
 		if PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" \

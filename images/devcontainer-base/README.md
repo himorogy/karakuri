@@ -35,13 +35,12 @@ base に入れる条件は次のいずれか。
 
 - 人間の対話体験にしか効かない → C（個人フック `/personal/setup.sh`）。ホスト側に置いて
   ro mount するのは、ワークスペース内の gitignored スクリプトだとコンテナ内の主体が
-  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行は postCreate
-  （firewall 適用前）— 個人セットアップの実体はツール取得で、firewall 後では宛先が
-  許可されておらずブロックされる。firewall 前でも、フックを書けるのはホスト側の
-  開発者本人だけで、tracked な devcontainer.json / Dockerfile と信頼水準は同じ。
-  守備範囲は対話体験のみ — toolchain（node や pnpm の別版等）を入れ始めると
-  環境の同一性が崩れる
-  L7 実現層では postCreateCommand の時点で compose の proxy 変数（`http_proxy` 等）が既にコンテナへ入っているため、実行は `personal-setup`（base に焼き込み済み）を経由させ、それらを外してフックを直接経路で走らせる。
+  書ける自動実行フックになり、git に映らない持続化の穴が開くため。実行は postCreate。
+  dev は internal ネットワークだけに載る構成で、この時点で外部へ出られないため、
+  フックは `/personal` に置かれたものを配置・設定するだけにする。取得はホスト側で
+  済ませて `/personal` に置く。フックを書けるのはホスト側の開発者本人だけで、
+  tracked な devcontainer.json / Dockerfile と信頼水準は同じ。守備範囲は対話体験
+  のみ — toolchain（node や pnpm の別版等）を入れ始めると環境の同一性が崩れる
 - npm で入る → D（devDependency）。base に焼くとバージョンがプロジェクトの
   `package.json` と乖離し、ローカルと CI でフォーマット結果が変わる
 - プロジェクト固有 → プロジェクトの Dockerfile
@@ -58,7 +57,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
 - `vim-tiny`（`git commit` / `rebase -i` がエディタ不在で失敗しないための最小保険）
 - egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `dnsutils` / `aggregate`
   （`curl` と `jq` は上の行と `node:24` に含まれる）
-- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`ARG EGRESS_GUARD_VERSION` で pin）と
+- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`packages/egress-guard`、ビルド元コミットのソースそのもの）と
   `/etc/sudoers.d/node-firewall`
 - `crit`（bind は crit 既定の `127.0.0.1` のまま。`CRIT_PORT=4588` をイメージが固定、
   更新チェック無効。根拠と上書き方法は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
@@ -76,7 +75,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
   到達の機構は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
 - `/usr/local/bin/git-identity-setup`（`bin/git-identity-setup` 由来）。対話シェルの起動時に
   呼ばれ、`GH_TOKEN` のアカウントから git の commit 者情報を導出する。詳細は「git identity」節
-- `/usr/local/bin/personal-setup`（`bin/personal-setup` 由来）。`postCreateCommand` から呼ばれ、個人フックを proxy 変数を外した環境で実行する。保証は `docs/guarantees.md` の `images/devcontainer-base/tests/personal-setup.test.sh` の節
+- `/usr/local/bin/personal-setup`（`bin/personal-setup` 由来）。`postCreateCommand` から呼ばれ、個人フックを呼び出し元と同じユーザーで実行する。保証は `docs/guarantees.md` の `images/devcontainer-base/tests/personal-setup.test.sh` の節
 - locale `C.UTF-8`、TZ `Asia/Tokyo`、bash / zsh の履歴永続化設定
 - 作業ユーザー `node`（UID/GID 1000）、`/workspaces` `~/.claude` `~/.codex` を作成済み。
   `WORKDIR` は `/workspaces`（複数形。devcontainer の既定に合わせている）
@@ -143,12 +142,17 @@ gitconfig を暗黙にコピーしており、その分だけ動いて見えて�
 **保証。** [`docs/guarantees.md`](../../docs/guarantees.md) の
 `images/devcontainer-base/tests/git-identity.test.sh` の節。
 
-雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。Compose は
-プロジェクトごとにユーザー定義ネットワーク（`<name>_default`）を自動で作り、その上でだけ
-Docker の埋め込みリゾルバ `127.0.0.11` が使えるため。デフォルトブリッジのままだと
-ホスト側の DNS アドレス宛に外向きの穴が 1 つ開く。根拠と、Compose を使わない場合の代替は
+雛形は **Docker Compose 構成**。egress-guard がこれを第一に推奨している。`examples/docker-compose.yaml`
+はトップレベルの `networks:` に `internal`（`internal: true`）と外向きの 2 本を定義し、`dev` は
+internal 側だけ、`egress-proxy` は両方に載せる。これにより Docker の埋め込みリゾルバ `127.0.0.11`
+が外部名を転送しなくなり、DNS でのデータ持ち出し経路が塞がる。根拠、Docker の版の条件、
+internal と両立しない機能、Compose を使わない場合の代替は
 [`packages/egress-guard/README.md`](../../packages/egress-guard/README.md) の
 「ネットワーク構成（推奨）」。
+
+**internal の構成には `devcontainer-base:2.7.0` 以降（`0048-firewall-l7-without-external-dns` 入りの版）が要る。** それより前の base
+で internal に載せると、`init-project-firewall.sh` が anchor を引けずに panic テーブルへ落ちる。
+雛形の Dockerfile は浮動タグ `devcontainer-base:2` を参照するため、通常は版を明示する必要はない。
 
 ### 忘れると時間を溶かす設定
 
@@ -185,14 +189,22 @@ build:
 egress-guard は「正しく動くツールが意図しない宛先へ通信するのを防ぐ」ためのもので、
 悪意あるコードを封じ込めるサンドボックスではない。以下は保護されない。
 
-- **コンテナ作成中の通信**。devcontainer の lifecycle は
-  `initializeCommand`（ホスト側）→ **Feature の導入** → `postCreateCommand` →
-  `postStartCommand` の順。firewall を適用するのは `postStartCommand` なので、
-  Feature の取得も `postCreateCommand`（個人フック含む）の取得系コマンドも
-  制限なしで実行される。
-  この時点で復号キーは既にコンテナ内にある。Feature を使うと版は
-  `devcontainer-lock.json` に固定されるが、**固定されるのは取得物であって通信ではない**
-  L7 実現層では compose の `environment` に proxy 変数がコンテナ作成時から入るため、素の `postCreateCommand` は既定で proxy 経由になる（個人フックはこれを避けるため `personal-setup` を経由させている。「収録判定」参照）。
+- **イメージのビルド中の通信（Feature の取得）**。devcontainer の lifecycle は
+  `initializeCommand`（ホスト側）→ **Feature の導入**（イメージのビルド中） →
+  `postCreateCommand` → `postStartCommand` の順。雛形の `build:`
+  （`examples/docker-compose.yaml`）に `network:` の指定が無く、Feature の取得は
+  compose の `internal` ネットワークにも egress-proxy にも載らないため、制限なしで
+  実行される。Feature を使うと版は `devcontainer-lock.json` に固定されるが、
+  **固定されるのは取得物であって通信ではない**。
+  `postCreateCommand`（雛形は `personal-setup` だけ）はこれとは事情が異なる。
+  コンテナが internal ネットワークに載ったあとで走るため、firewall（iptables）を
+  適用するのは `postStartCommand` でも、この時点で dev から外へ出る経路は
+  egress-proxy だけになり、その ACL は `firewall.json` の `allowDomains` から
+  焼き込まれ起動時から常に効くため、取得系コマンドはこの時点で `allowDomains` の
+  ACL の範囲に限られる。この時点で復号キーは既にコンテナ内にある。個人フックは
+  この窓を使わない——`/personal` に置かれたものを配置・設定するだけで、取得のための
+  通信を行わない（dev は internal ネットワークだけに載る構成のため、試みても届かない。
+  「収録判定」参照）。
 - **`waitFor` は待機指定であって境界ではない**。エディタが接続を報告するタイミングを
   制御するだけで、先行する lifecycle command の通信は止めない
 - **コンテナ内で root を取ったプロセス**。雛形は egress-guard の実装上
@@ -202,11 +214,9 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 - **ホストや Docker デーモンへの攻撃**
 
 前提として、ワークスペースの内容と lifecycle command が悪意を持たないこと、
-`firewall.json` と egress-guard パッケージのバージョンが管理下にあることを要求する。
-runtime-base の Dockerfile が `ARG EGRESS_GUARD_VERSION` でバージョンを固定するのは
-このため。
-dist-tag のまま追従させると、パッケージ側の更新がそのままコンテナ内 root での
-コード実行になる。
+`firewall.json` が管理下にあることを要求する。egress-guard のスクリプト自体は
+runtime-base がビルド元コミットの `packages/egress-guard` から直接焼くため、
+外部パッケージの更新が黙ってコンテナ内 root でのコード実行に化ける経路は無い。
 
 厳密に保護したい場合は、lifecycle command の実行前（コンテナの entrypoint 段階）で
 firewall を張る設計が必要になる。現状はそこまで踏み込んでいない。
@@ -379,11 +389,6 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   ビルド時に落とせる。追従漏れの検知は
   [monitor.yml](../../.github/workflows/monitor.yml) が毎日 GitHub releases と照合して
   Slack に出す（導入済み）
-- **`ARG EGRESS_GUARD_VERSION` の更新運用**。この ARG は runtime-base 側にあるので、
-  egress-guard を上げるには runtime-base を再ビルドしてタグを出し直し、こちらを
-  `RUNTIME_BASE_VERSION` の指すタグで取り直す必要がある。Renovate は入れていないので、
-  上げる操作自体は手動のまま。上げ忘れは
-  [monitor.yml](../../.github/workflows/monitor.yml) が毎日 npm と照合して Slack に出す
 
 ### 判断済み（再検討するときに読む）
 

@@ -145,6 +145,26 @@ apply_firewall() {
 	return 1
 }
 
+# dev は internal ネットワークだけに乗る。埋め込みリゾルバが外部名を転送しなく
+# なることが、DNS による持ち出し経路を塞ぐという束の主張そのもの
+# (docs/conventions.md「発見しにくい事実」)。dig は NXDOMAIN / SERVFAIL の
+# いずれでも exit 0 を返すため (init-project-firewall.sh の dns_answers と同じ
+# 理由)、答えに実際の IPv4 アドレスが含まれるかで見る。
+check_dns_no_external_resolution() {
+	echo "== dev の埋め込みリゾルバが外部名 (nodejs.org) を解決しないか =="
+	local out
+	out="$(dc exec -T dev dig +short +time=3 +tries=1 A nodejs.org 2>&1)"
+	if printf '%s\n' "$out" | grep -qE 'executable file not found|OCI runtime exec failed|is not running'; then
+		skip "DNS外部転送" "dev で dig を実行できなかった"
+		return
+	fi
+	if printf '%s\n' "$out" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+		ng "dev の埋め込みリゾルバが外部名 (nodejs.org) を解決してしまった ($out)"
+	else
+		ok "dev の埋め込みリゾルバは外部名 (nodejs.org) を解決しない"
+	fi
+}
+
 # egress-proxy のアクセスログはファイル (/var/log/squid/access.log) にあり、
 # dev からは同じ named volume を :ro でマウントした /var/log/egress-proxy 越しに
 # 読む (README.md「proxy のログを読む」)。dev から読めることは、イメージが
@@ -154,6 +174,23 @@ proxy_log_has() { # <status> <host> — 例: "TCP_TUNNEL/200" "github.com"
 	# 許可/拒否のどちらの証拠にもならない (0021a の否定対照で、接続が
 	# 失敗した FAIL とログ検査の ok が両立した実例がある)。
 	dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -q -- "$1 .*CONNECT $2:"
+}
+
+# squid.conf の logformat karakuri (0049) は組み込み squid 形式 (10列) に対して
+# 11列になる (%un が `-` のとき)。列数だけでは `%ts.%03tu` が `%ts` に戻って
+# ミリ秒が落ちる、`%>st` が別の項目に替わるといった退行を拾えない (I-a が関わる)。
+# そのため列数に加えて、先頭のミリ秒時刻・接続時間・上り下りのバイト数の4項目が
+# 数値であることも見る。各項目の値の正しさ (実際の転送量・接続時間と一致するか)
+# は見ない (チケット「やらないこと」の検査の深さ)。
+proxy_log_line_shape_ok() { # <status> <host> <expected NF>
+	local line nf
+	line="$(dc exec -T dev sh -c "cat /var/log/egress-proxy/access.log 2>/dev/null" | grep -- "$1 .*CONNECT $2:" | tail -n1)"
+	nf="$(printf '%s\n' "$line" | awk '{print NF}')"
+	[ "$nf" = "$3" ] || return 1
+	# mawk 1.3.4 20200120 (Debian/Ubuntu の既定 awk) は `{3}` を区間指定として
+	# 読まない ("a{3}" という文字列として literal 一致を試みる) ため、代わりに
+	# [0-9] を3回並べる (実測済み)。
+	printf '%s\n' "$line" | awk '$1 ~ /^[0-9]+\.[0-9][0-9][0-9]$/ && $2 ~ /^[0-9]+$/ && $5 ~ /^[0-9]+$/ && $6 ~ /^[0-9]+$/' | grep -q .
 }
 
 # proxy_log_has は `dc exec -T dev` で読んでおり、これは docker exec 経路。
@@ -207,6 +244,11 @@ check_leading_dot_domains() {
 		esac
 		if proxy_log_has "TCP_TUNNEL/200" "$target"; then
 			ok "$target への接続が許可 (TCP_TUNNEL/200) として proxy のログに残る (allowDomainsに書いていない具体名。サフィックスマッチの証拠)"
+			if proxy_log_line_shape_ok "TCP_TUNNEL/200" "$target" 11; then
+				ok "$target の許可された行が新しい logformat の列数 (11) と、時刻・接続時間・上り下りのバイト数が数値であることを満たす"
+			else
+				ng "$target の許可された行が新しい logformat の列数 (11)、または時刻・接続時間・上り下りのバイト数が数値であることを満たさない"
+			fi
 		else
 			ng "$target への接続が許可 (TCP_TUNNEL/200) として proxy のログに残っていない"
 		fi
@@ -225,6 +267,11 @@ check_denied_domain() {
 	esac
 	if proxy_log_has "TCP_DENIED/403" "$target"; then
 		ok "$target への接続が拒否 (TCP_DENIED/403) として proxy のログに残る"
+		if proxy_log_line_shape_ok "TCP_DENIED/403" "$target" 11; then
+			ok "$target の拒否された行が新しい logformat の列数 (11) と、時刻・接続時間・上り下りのバイト数が数値であることを満たす"
+		else
+			ng "$target の拒否された行が新しい logformat の列数 (11)、または時刻・接続時間・上り下りのバイト数が数値であることを満たさない"
+		fi
 	else
 		ng "$target への接続が拒否 (TCP_DENIED/403) として proxy のログに残っていない"
 	fi
@@ -269,9 +316,10 @@ check_proxy_stop_breaks_egress() {
 
 check_acl_absent_in_dev() {
 	# squid.conf 自体は探さない。squid.conf と allowed-domains.txt はどちらも
-	# images/egress-proxy/ 発のファイルで、egress-guard の npm パッケージの
-	# files (templates 配下は *.json だけ) には含まれないため、dev の
-	# $(npm root -g) 配下には元から現れない。ここで確認したいのは、
+	# images/egress-proxy/ 発のファイルで、runtime-base が packages/egress-guard
+	# から焼くのは scripts/init-project-firewall.sh だけ (images/runtime-base/
+	# Dockerfile 参照。templates/ は焼かない) のため、dev には元から現れない。
+	# ここで確認したいのは、
 	# firewall.json から egress-proxy-bake (images/egress-proxy/bin/
 	# egress-proxy-bake) が焼く allowed-domains.txt —— egress-proxy のイメージ
 	# ビルド時にしか作られない生成物 —— が、別コンテナである dev から見えない
@@ -422,7 +470,7 @@ check_config_fail_closed() {
 	rm -f "$broken"
 }
 
-# dev の default network 上に、dev とは別の使い捨てコンテナを立てて curl を
+# dev と同じ internal network 上に、dev とは別の使い捨てコンテナを立てて curl を
 # 実行する。dev 自身は最終テーブルで縛られているため、dev から出すと
 # egress-proxy 以外への接続を試す判定 (PTR 偽装など) が dev の firewall に
 # 先に落とされてしまう。同じネットワーク上の別コンテナは dev の iptables の
@@ -438,7 +486,7 @@ probe_curl() {
 		return 2
 	fi
 	local out rc
-	out="$(docker run --rm --network "${PROJECT}_default" "$image" curl "$@" 2>&1)"
+	out="$(docker run --rm --network "${PROJECT}_internal" "$image" curl "$@" 2>&1)"
 	rc=$?
 	case "$rc" in
 	125 | 126 | 127) return 2 ;;
@@ -504,7 +552,7 @@ services:
     depends_on:
       - ptr-spoof-harness
     networks:
-      default: {}
+      internal: {}
       v6-test-net: {}
   ptr-spoof-harness:
     image: python:3-alpine
@@ -534,7 +582,7 @@ EOF
 		wait_for_proxy_v6
 		local wait_rc=$?
 		if [ "$wait_rc" -eq 2 ]; then
-			skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
+			skip "PTR偽装" "internal network 上の使い捨てコンテナで curl を実行できなかった"
 		elif [ "$wait_rc" -ne 0 ]; then
 			skip "PTR偽装" "egress-proxy-v6 が待ち時間内に接続を受け付けなかった"
 			dcv6 logs --no-log-prefix --tail 40 egress-proxy-v6 >&2 2>&1 || true
@@ -544,7 +592,7 @@ EOF
 			probe_curl -sS -o /dev/null --max-time 8 -x "http://egress-proxy-v6:3128" "https://$harness_ip/" >/dev/null 2>&1
 			local rc=$?
 			if [ "$rc" -eq 2 ]; then
-				skip "PTR偽装" "default network 上の使い捨てコンテナで curl を実行できなかった"
+				skip "PTR偽装" "internal network 上の使い捨てコンテナで curl を実行できなかった"
 			elif ! dcv6 exec -T egress-proxy-v6 sh -c "cat /var/log/squid/access.log 2>/dev/null" | grep -q "$harness_ip"; then
 				# 前提条件: リクエストが proxy まで届いたことを先に確かめる。届いて
 				# いなければ「victim へ接続しなかった」のが -n の効果なのか、そもそも
@@ -605,6 +653,7 @@ main() {
 		exit 1
 	fi
 
+	check_dns_no_external_resolution
 	check_proxy_log_readable_via_login
 	check_apt_first_pass
 	check_apt_second_pass
