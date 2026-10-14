@@ -82,6 +82,7 @@ karakuri 自身の pin の更新は、人間が runtime-base → devcontainer-ba
 ### やらないこと
 
 - `npm deprecate` の実行。公開済みの版（〜0.4.0）への告知は、karakuri の pin 更新が着地してから、人間が egress-guard と enclave-env の両方について行う。外へ出る操作なので、このチケットの実装者は行わない
+- 公開済みの版（〜0.4.0）の unpublish。この枚が止めるのは今後の公開だけで、registry に残る版はそのまま取得できる。`npm install -g @himorogy/egress-guard@0.4.0` を書いた既存の Dockerfile も、それで焼いた既存のイメージも、変更の前と同じく動く
 - `packages/egress-guard` ディレクトリの移動・改名
 - `docs/archive/` の egress-guard 設計文書の書き換え。履歴として残す
 - release workflow の汎用ロジックの変更。egress-guard 固有の分岐は元から無い
