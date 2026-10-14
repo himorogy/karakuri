@@ -35,7 +35,7 @@ egress-guard と egress-proxy の配布・記録・経路を見直す束で、3�
 
 - egress-guard の配布をイメージだけにする（0046 / 0047）。各イメージが npm を経由せず、このリポジトリのソースから焼く
 - egress-proxy のアクセスログを、LLM を通らない経路（パッケージのインストールスクリプト、git hooks、エディタ拡張、常駐プロセスなど）の通信を後から照会できる記録にする（0052 / 0049）。拒否された宛先の判定はこのリポジトリの外の監査側が持ち、ここでは保管庫とその契約までを提供する
-- dev から DNS で外へデータを持ち出す経路を、dev を internal ネットワークだけに載せて塞ぐ（0048 / 0050 / 0051）。issue `#83` が起点で、`#83` は 0051 の close で閉じる
+- dev から DNS で外へデータを持ち出す経路を、dev を internal ネットワークだけに載せて塞ぐ（0048 / 0050 / 0051）。issue `#83` が起点で、`#83` は 0051 の検収の後に閉じた
 
 順序の依存は次のとおり。
 0052 は他に依存しない。
@@ -63,16 +63,18 @@ karakuri 自身の pin の更新は、人間が runtime-base → devcontainer-ba
    誤ってタグ `@himorogy/egress-guard@<version>` を打っても、release workflow の publish の段で失敗する状態にする。
    `name` は残す（pnpm workspace とテストのスクリプトが使う）。
    changesets はこの変更の後も private パッケージの版を上げうるが、タグは打たないので公開には繋がらない。版上げを止めるかどうかは実装時に判断してよい。
-2. **CHANGELOG**: 最終項として、npm への公開を終了したこと、最後に公開した版が 0.4.0 であること（0.5.0 は公開していない）、以後の入手経路（runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/`）を書く。
+2. **CHANGELOG**: 最終項として、npm への公開を終了したこと、最後に公開した版が 0.4.0 であること、以後の入手経路（runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/`）を書く。
+   `package.json` の `version` は既に 0.5.0 で、CHANGELOG の先頭には `## 0.5.0` の節（L7 sidecar の雛形の削除）がある。この節の内容はイメージにだけ届き、npm には公開していないことが読み手に分かる形にする（節の見出しに注記するか、公開終了の項で触れるかは実装時に決めてよい）。
 3. **パッケージ README**（`packages/egress-guard/README.md`）:
-   - セットアップの「Dockerfile に追記するもの」の `npm install -g @himorogy/egress-guard@0.4.0` と `npm root -g` からの `cp` を、egress-proxy イメージからの `COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> ...` に書き換える。雛形も同じイメージから取り出せることを書く
+   - セットアップの「Dockerfile に追記するもの」の `npm install -g @himorogy/egress-guard@0.4.0` と `npm root -g` からの `cp` を、egress-proxy イメージからの `COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> ...` に書き換える。雛形も同じイメージから取り出せることを書く。取り出しの例は `images/egress-proxy/README.md` に既にあるので、書き方（パス・digest の固定）をそちらと揃える
+   - npm の導入を前提にした `NPM_CONFIG_PREFIX` の注意書きを削る。末尾付近のエージェント向けの指示文にある `read agent-brief.md from @himorogy/egress-guard` も、npm から取得する前提にならない書き方に直す
    - runtime-base（devcontainer-base）を使う場合はスクリプトが既に焼かれているので、この手順が要らないことを書く
    - 冒頭の見出しなど、npm パッケージであることを前提にした記述を直す
 4. **`packages/egress-guard/docs/agent-brief.md`**: npmjs.com へのリンクを、リポジトリ内のパッケージ README へのリンクに替える。
 5. **リポジトリ全体の文書**:
-   - ルートの `README.md`: 「パッケージ」節の `@himorogy/egress-guard` を、npm パッケージとしてではなく、イメージに焼かれるコンポーネントとして紹介し直す。「三者の関係」の図のうち、egress-guard の取得経路に関わる部分は 0046 で直しているので、整合だけ確かめる
+   - ルートの `README.md`: 「パッケージ」節の `@himorogy/egress-guard` を、npm パッケージとしてではなく、イメージに焼かれるコンポーネントとして紹介し直す。pin（`EGRESS_GUARD_VERSION`）と取得経路の記述は 0046 で直してあるので、整合だけ確かめる
    - `SECURITY.md`: 冒頭の、npm パッケージとして提供していることを前提にした記述を直す
-   - `docs/secure-publish.md`: タグ付けの手順例に `@himorogy/egress-guard@0.1.0` を使っている箇所（§4.4 付近）を `@himorogy/env-guard` の例に替える。公開後の照会の遅延について、egress-guard 0.1.1 で観測した事実を述べている行は過去の観測なので残す
+   - `docs/secure-publish.md`: タグ付けの手順例に `@himorogy/egress-guard@...` を使っている箇所（3箇所）を `@himorogy/env-guard` の例に替える。公開後の照会の遅延について egress-guard 0.1.1 で観測した事実を述べている行と、公開履歴の表（0.1.0 / 0.1.1）は過去の記録なので残す
    - `images/devcontainer-base/README.md`: タグ形式の比較で `@himorogy/egress-guard@0.1.0` を例に挙げている箇所を、`@himorogy/env-guard` の例に替える
    - `.github/workflows/release.yml`: 冒頭コメントのタグ例を `@himorogy/env-guard@...` に替える。過去の観測を述べているコメント（0.1.1 の 404）は残す
 6. **台帳**: 下の保証節のとおり。
@@ -83,6 +85,9 @@ karakuri 自身の pin の更新は、人間が runtime-base → devcontainer-ba
 - `packages/egress-guard` ディレクトリの移動・改名
 - `docs/archive/` の egress-guard 設計文書の書き換え。履歴として残す
 - release workflow の汎用ロジックの変更。egress-guard 固有の分岐は元から無い
+- npm を前提にせず、名前 `@himorogy/egress-guard` だけを使っている記述の書き換え（`images/egress-proxy/README.md` の冒頭、`.github/workflows/egress-proxy.yml` のイメージの description など）。`name` は残るので、コンポーネント名として正しい
+- 配布物の file mode の検査（`images/runtime-base/tests/distributed-file-modes.test.sh`）の対象から `packages/egress-guard` を外すこと。ソースはイメージへ焼かれ続けるので、検査は残す
+- 過去の版の手順を述べた CHANGELOG の既存の節
 
 ## 保証
 
