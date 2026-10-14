@@ -20,8 +20,9 @@ egress-guard 本体を収録している。各プロジェクトは `FROM` で�
 
 ### パッケージ
 
-- [**`@himorogy/egress-guard`**](./packages/egress-guard) — allowlist に無い宛先への
-外向き通信を遮断する egress ファイアウォール。**漏洩先を限定する**
+- [**`egress-guard`**](./packages/egress-guard) — allowlist に無い宛先への
+外向き通信を遮断する egress ファイアウォール。npm には公開せず、イメージに焼かれる。
+**漏洩先を限定する**
 - [**`@himorogy/env-guard`**](./packages/env-guard) — 平文のまま書かれた env ファイルが
 git に入るのを止める検査。pre-commit hook と CI が**同じ 1 本のスクリプト**を呼びます。
 **秘密がリポジトリに残らないようにする**

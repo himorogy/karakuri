@@ -442,7 +442,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 - ホストと利用側リポジトリへ配るテンプレート一式のうち、実行して使うスクリプトは、clone した先でそのまま実行できる。受け取った側が mode を直す手順を要求されることはない
 - 逆に、読み込んで使うファイル（source される関数集・compose・plist・Windows 用ラッパー）は実行可能にならない。PATH 上の `shims/` から誤って起動される経路を作らない
-- npm パッケージとして配られる面（`@himorogy/env-guard` の `bin` と `hooks`、`@himorogy/egress-guard` の `scripts` と `templates`）でも同じく、実行して使うスクリプトはそのまま実行でき、読み込んで使うファイルは実行可能にならない。受け取った側が mode を直す手順を要求されることはない（起源: `0014b-public-surface-file-modes`）
+- npm パッケージとして配られる面（`@himorogy/env-guard` の `bin` と `hooks`）でも同じく、実行して使うスクリプトはそのまま実行でき、読み込んで使うファイルは実行可能にならない。受け取った側が mode を直す手順を要求されることはない（起源: `0014b-public-surface-file-modes`）
 
 ### 24. `images/devcontainer-base/tests/personal-setup.test.sh` — `images/devcontainer-base/bin/personal-setup`
 
@@ -590,10 +590,6 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `env-guard`（`bin/env-guard.js`）— 導入 CLI
 - `env-guard-scan`（`bin/env-guard-scan`）— スキャナ本体
 - `hooks/pre-commit` — 配布される commit 前フック
-
-**B. `@himorogy/egress-guard`（npm パッケージ）**
-- `scripts/init-project-firewall.sh` — egress firewall の適用 CLI
-- `templates/firewall.json` / `firewall.audit.json` / `firewall.example.json` — 利用者がコピーする設定テンプレート
 
 **C-1. `runtime-base` イメージへ焼かれたコードの振る舞い**
 - `/usr/local/bin/prod-entrypoint.sh`、`secrets-ingest.sh`、`git-askpass`、`git-auth-check`、`git-credential-gh-token`、`karakuri-context`、`env-guard-scan`、`init-project-firewall.sh`
