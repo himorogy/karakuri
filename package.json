@@ -2,7 +2,7 @@
 	"name": "karakuri",
 	"private": true,
 	"description": "Common",
-	"packageManager": "pnpm@11.25.0",
+	"packageManager": "pnpm@12.11.2",
 	"scripts": {
 		"format": "biome check --write .",
 		"lint": "biome ci .",
