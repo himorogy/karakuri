@@ -253,7 +253,7 @@ git push origin devcontainer-base-v2.0.0
 検証で落ちる。プレリリース（`-rc.1` など）も弾かれる。試作は `workflow_dispatch` の
 `:edge` を使う。
 
-npm パッケージのリリースタグ（`@himorogy/egress-guard@0.1.0`、
+npm パッケージのリリースタグ（`@himorogy/env-guard@0.1.0`、
 [secure-publish.md](../../docs/secure-publish.md) §4.4）と形式を分けているのは、
 **公開先のレジストリが違う**ため。npm への公開は実質取り消せないが、GHCR は版の削除も
 タグの付け替えもできる。取り消し可能性が違うものを、タグ名の時点で区別している。

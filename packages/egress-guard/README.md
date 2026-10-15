@@ -1,4 +1,4 @@
-# @himorogy/egress-guard
+# egress-guard
 
 **LLM エージェントが動く devcontainer から、意図しない通信先へ出て行けなくする**ための egress 制御スクリプトです。
 
@@ -100,14 +100,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       aggregate  `# 任意。GitHub CIDR の集約。無ければ警告だけ出て続行する` \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 2. スクリプトを /usr/local/bin へコピー（パッケージから取得する場合）
-#    バージョンは必ず固定する。このスクリプトは root 所有の /usr/local/bin に置かれ、
-#    4 のパスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の
+# 2. スクリプトを /usr/local/bin へコピー（egress-proxy イメージから取り出す）
+#    digest まで固定する。このスクリプトは root 所有の /usr/local/bin に置かれ、
+#    4 のパスワードなし sudo の対象になる。タグのまま追従させると、イメージ側の
 #    更新がそのままコンテナ内 root でのコード実行になる。
-RUN npm install -g @himorogy/egress-guard@0.4.0 \
-  && cp "$(npm root -g)/@himorogy/egress-guard/scripts/init-project-firewall.sh" \
-        /usr/local/bin/init-project-firewall.sh \
-  && chown root:root /usr/local/bin/init-project-firewall.sh \
+COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> \
+     /usr/local/bin/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh
+RUN chown root:root /usr/local/bin/init-project-firewall.sh \
   && chmod 755 /usr/local/bin/init-project-firewall.sh
 
 # 3. firewall.json を /etc/egress-guard へコピー（ビルドコンテキストに応じてパスを調整）
@@ -124,11 +123,13 @@ RUN printf 'node ALL=(root) NOPASSWD: /usr/local/bin/init-project-firewall.sh ""
 USER node
 ```
 
-> **`NPM_CONFIG_PREFIX` を `node` 所有のディレクトリへ移しているイメージでは、2 の
-> `npm install` だけを `node` として実行してください。** root で入れると root 所有の
-> ファイルがグローバル領域に混ざり、以後 `node` での `-g install` が権限で失敗します。
-> `cp` 以降は root のままで構いません。`node:24` の既定（`/usr/local/lib/node_modules`、
-> root 所有）を使っている場合は上のとおり全部 root で問題ありません。
+雛形（`firewall.json` / `firewall.audit.json` / `firewall.example.json`）も同じイメージの `/usr/share/egress-guard/templates/` から取り出せます。
+
+```dockerfile
+COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> /usr/share/egress-guard/templates/ /usr/share/egress-guard/templates/
+```
+
+**runtime-base（devcontainer-base）を使う場合、スクリプトは既に焼かれているので 2 は要りません。**
 
 ## devcontainer.json に追記するもの
 
@@ -500,7 +501,7 @@ This container runs behind an allowlist-based egress firewall (`@himorogy/egress
 - What is allowed: `init-project-firewall.sh --print-allowlist`
 - An allowed host that starts failing means stale addresses (resolved at startup; CDNs move). Re-apply once: `sudo init-project-firewall.sh` — it only re-resolves, so do not retry it.
 - Editing `.devcontainer/firewall.json` does nothing until the image is rebuilt. Never report a blocked host as fixed because you edited it.
-- Anything else: stop and ask a human. Before changing the allowlist, read `agent-brief.md` from `@himorogy/egress-guard`.
+- Anything else: stop and ask a human. Before changing the allowlist, read `packages/egress-guard/docs/agent-brief.md` in the karakuri repository.
 ```
 
 **5 行のうち 1 行を再適用に使っているのは、これがエージェントに自力で直せる唯一の失敗だからです。** allowlist は起動時に解決した IP の集合なので、長い作業の途中で CDN のアドレスが動くと、許可してあるはずのホストに落ちます。**「once」と「do not retry」は意図的です。** 効かないなら人間の操作が要る状況であり、繰り返させても意味がありません。

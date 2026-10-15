@@ -1,6 +1,10 @@
 # @himorogy/egress-guard
 
-## 0.5.0
+## npm への公開を終了した
+
+npm への公開をやめた。最後に公開した版は 0.4.0 で、registry に残る版はそのまま取得できる。以後の入手経路はイメージだけで、runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/` を使う。この変更の後に版が上がっても npm には出ない。
+
+## 0.5.0（npm 未公開。イメージにのみ届く）
 
 ### Minor Changes
 

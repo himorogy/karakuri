@@ -4,7 +4,7 @@ name: Release
 # 設計の根拠は docs/secure-publish.md を参照。
 #
 # タグの形式: <パッケージ名>@<バージョン>
-#   例) @himorogy/egress-guard@0.1.0
+#   例) @himorogy/env-guard@0.1.0
 #
 # 注意: このワークフローのファイル名は npm 側の信頼された公開元として
 # 登録されている。リネームすると公開が失敗する。
