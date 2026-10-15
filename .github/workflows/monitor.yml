@@ -44,6 +44,11 @@ jobs:
           # 対象を明示的に列挙する。
           LEGACY_TAGGED="@himorogy/enclave-env@0.2.0 @himorogy/enclave-env@0.2.1"
 
+          # trusted publisher を登録する前に手で公開した初版。タグも
+          # provenance も後から付けられない。出典は docs/secure-publish.md §7.4。
+          # LEGACY_TAGGED と違い、当たった版はタグ照合の対象から外す。
+          MANUAL_FIRST="@himorogy/env-guard@0.1.0"
+
           STATUS="ok"
           TEXT=""
 
@@ -186,6 +191,10 @@ jobs:
                 continue
               fi
 
+              case " ${MANUAL_FIRST} " in
+                *" ${PACKAGE}@${v} "*) continue ;;
+              esac
+
               case " ${LEGACY_TAGGED} " in
                 *" ${PACKAGE}@${v} "*)
                   if git rev-parse -q --verify "refs/tags/v${v}" >/dev/null; then
@@ -217,6 +226,8 @@ jobs:
 
             if [ -n "$ATTESTATION" ]; then
               TEXT="${TEXT}✅ 最新版 ${LATEST} に provenance あり\n\n"
+            elif case " ${MANUAL_FIRST} " in *" ${PACKAGE}@${LATEST} "*) true ;; *) false ;; esac; then
+              TEXT="${TEXT}ℹ️ 最新版 ${LATEST} は手で公開した初版で provenance なし（既知）\n\n"
             else
               TEXT="${TEXT}⚠️ 最新版 ${LATEST} に provenance なし\n\n"
               escalate warn
@@ -241,7 +252,7 @@ jobs:
             # advisory 照会には乗らない（README 参照）。上げる判断は
             # GitHub issue が持ち、ここでは maintenance / EOL までの
             # 残り日数を出すだけで、日数の大小で escalate はしない。
-            NODE_PINNED=$(sed -n 's/^FROM node:\(.*\)/\1/p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
+            NODE_PINNED=$(sed -n 's/^FROM node:\([0-9]*\).*/\1/p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
             NODE_SCHEDULE=$(curl -fsS https://raw.githubusercontent.com/nodejs/Release/main/schedule.json 2>/dev/null) || NODE_SCHEDULE=""
 
             if [ -z "$NODE_PINNED" ]; then
@@ -281,7 +292,7 @@ jobs:
               "$CRIT_PINNED" "$CRIT_LATEST"
 
             # golang builder の pin は major.minor までで、Debian の変種
-            # (-bookworm) を伴う。粒度を揃えるため、上流の最新も
+            # （-<codename>）を伴う。粒度を揃えるため、上流の最新も
             # major.minor に切り詰めてから比較する。
             GOLANG_PINNED=$(sed -n 's/^FROM --platform=\$BUILDPLATFORM golang:\([^-]*\)-.*/\1/p' "$DEVCONTAINER_BASE_DOCKERFILE" | head -1)
             GOLANG_LATEST=$(curl -fsS "https://go.dev/dl/?mode=json" 2>/dev/null \
