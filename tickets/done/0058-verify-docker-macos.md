@@ -1,5 +1,5 @@
 ---
-status: open
+status: close
 type: fix
 base: main
 targets:
@@ -53,6 +53,20 @@ macOS で引数なしに走らせると、`sed: invalid command code f` で止�
   - 失敗しても、スクリプト全体の合否は変えない。後始末の失敗であって、検証項目の失敗ではないため。
   - 黙らせない理由は、今回の漏れが表に出ず、アドレス帯を使い切るまで気づけなかったことにある。
 
+### 3. A17 がネットワークを残す（PR レビューで追加）
+
+macOS での検収で、問題2 を直した後も、実行のたびにネットワークが1本残った。名前は `tmp<scratch のディレクトリ名>_default` の形（例: `tmpokxcfut2me_default`）だった。
+
+- A17（`a17_prod_run_pipefail`、2808 行付近）は `host-tools/prod-run.sh` を経由して compose を動かす。
+- `prod-run.sh` は `-p` を付けずに `docker compose -f "$PROD_COMPOSE_FILE" run -T --rm prod` を打つ。そのため project 名は compose ファイルのあるディレクトリ（SCRATCH）から決まる。
+- `run --rm` が消すのはコンテナだけで、ネットワークは残る。A17 は後で `compose_down` を呼ばない。
+
+変えること:
+
+- A17 が作った compose のリソースを、A17 自身が片付けるようにする。
+- A17 の表明の意図（broker が失敗したとき、`prod-run.sh` 経由でパイプ全体が非ゼロ終了すること）は変えない。
+- `host-tools/prod-run.sh` は変えない。
+
 ### 付随して直すもの
 
 ヘッダ（11〜12 行）は「jq のような macOS に既定で入っていないツールには依存しない」と書いている。一方で、342〜345 行は jq を必須にし、無ければ exit 1 する。ヘッダの記述を実態に合わせる。
@@ -76,7 +90,7 @@ A11（2714 行付近）と A32・A33（3011・3019 行付近）は、`env -u GIT
 確かめること（検収で人間が見る）:
 
 - macOS ホストで、GNU sed を PATH に置かず、`GIT_REPO` / `GIT_REF` も環境に置かずに `bash images/runtime-base/tests/verify-docker.sh ghcr.io/himorogy/runtime-base:2` が完走し、0 failed になる。
-- 実行の前後で `docker network ls` を比べ、`verify-` で始まる project のネットワークが増えていない。
+- 実行の前後で `docker network ls` を比べ、このスクリプトが作ったネットワーク（`verify-` で始まるものと、`tmp` で始まり `_default` で終わるもの）が増えていない。
 
 ## 保証
 

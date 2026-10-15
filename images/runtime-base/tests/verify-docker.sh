@@ -2819,6 +2819,12 @@ EOS
 		GIT_REPO="file://$TEST_BARE_DIR" \
 		GIT_REF="$TEST_COMMIT" \
 		bash "$REPO_ROOT/host-tools/prod-run.sh" true >/dev/null 2>&1 || rc=$?
+	# prod-run.sh は -p を付けず、project 名は compose ファイルのあるディレクトリ
+	# から決まる。run --rm はネットワークを消さないので、同じ形で down する。
+	if ! GIT_REPO=unused GIT_REF=unused \
+		docker compose -f "$SCRATCH/compose-current.yaml" down -v >/dev/null 2>&1; then
+		echo "verify-docker: A17 の compose down が失敗した。ネットワークが残っている可能性がある。" >&2
+	fi
 	[ "$rc" -ne 0 ]
 }
 assert A17 "broker (フェイク) が非ゼロ終了したとき、prod-run.sh 経由でパイプ全体が非ゼロ終了する [compose-current.yaml 経由 prod-run.sh。broker が secrets を一切渡さず失敗する経路のため harness preflight とは無関係]" a17_prod_run_pipefail
