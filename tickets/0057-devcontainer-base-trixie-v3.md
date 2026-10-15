@@ -32,6 +32,8 @@ verify:
 
 **着手の前提: GHCR に `ghcr.io/himorogy/runtime-base:2` があること。**
 このチケットの PR の検証ビルドは `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` を pull する。`:2` が無いと 403 で落ちる（`.github/workflows/devcontainer-base.yml` 冒頭のコメント）。
+前提は成立している。`runtime-base-v2.0.0` は打たれ、2026-10-15 時点で `:2` は `sha256:3332fe838fc9c459b254c0c7c7b3df0c0f1df0a7d7ee8d04a55738fd1135b816` を指す（人間が GHCR で確認。起草の devcontainer からは GHCR に届かず未照合）。
+この digest は記録であって pin ではない。`FROM` は浮動タグ `runtime-base:${RUNTIME_BASE_VERSION}` の追随のまま変えない（`images/runtime-base/README.md` の参照の仕方の表）。
 
 node は 24 のまま据え置く。26 への移行は issue `#36` で扱う。
 
