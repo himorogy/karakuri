@@ -6,7 +6,7 @@
 # TARGETARCH 向けにクロスコンパイルする。ビルドは常に BUILDPLATFORM 上で行い、
 # arm64 ビルド時の QEMU エミュレーションを回避する。
 # =============================================================================
-ARG CRIT_VERSION=v0.19.1
+ARG CRIT_VERSION=v0.22.0
 
 # 下段の `FROM ghcr.io/himorogy/runtime-base:${RUNTIME_BASE_VERSION}` が使う。
 # **ここから動かさないこと。** FROM の中で参照する ARG は、最初の FROM より前
@@ -15,9 +15,9 @@ ARG CRIT_VERSION=v0.19.1
 # `ghcr.io/himorogy/runtime-base:` という壊れた参照になり、pull を試みる前に
 # 「invalid reference format」で落ちる。イメージが取得できないのとは別の失敗で、
 # エラーだけを読むと取り違えやすい。
-ARG RUNTIME_BASE_VERSION=1
+ARG RUNTIME_BASE_VERSION=2
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS crit-builder
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS crit-builder
 
 ARG CRIT_VERSION
 ARG TARGETOS
@@ -63,7 +63,7 @@ USER root
 # vim-tiny は git commit / rebase -i がエディタ不在で失敗しないための最小保険。
 # 実際に使うエディタ (micro 等) は個人フックが入れて EDITOR を上書きする。
 #
-# git / gh / sudo / jq / iptables / ipset / iproute2 / dnsutils / aggregate は
+# git / gh / sudo / jq / iptables / ipset / iproute2 / bind9-dnsutils / aggregate は
 # prod container でも使うため images/runtime-base 側で既に入っている。ここで
 # 追加するのは対話体験・エージェント運用にしか効かないものだけ。
 RUN apt-get update && apt-get install -y --no-install-recommends \

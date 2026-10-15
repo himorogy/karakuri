@@ -30,7 +30,7 @@ git に入るのを止める検査。pre-commit hook と CI が**同じ 1 本の
 ### 三者の関係
 
 ```
-ghcr.io/himorogy/devcontainer-base:1     ← images/devcontainer-base
+ghcr.io/himorogy/devcontainer-base:3     ← images/devcontainer-base
   ├─ Node / pnpm / git / gh / ripgrep / crit …
   ├─ egress-guard 本体（スクリプトと sudoers）
   │     ↑ packages/egress-guard（このリポジトリ）のソースをビルド時に焼く
@@ -38,7 +38,7 @@ ghcr.io/himorogy/devcontainer-base:1     ← images/devcontainer-base
         ↑ core.hooksPath をイメージに焼いてあるので全リポジトリに効く
 
 プロジェクトの .devcontainer/Dockerfile
-  ├─ FROM ghcr.io/himorogy/devcontainer-base:1
+  ├─ FROM ghcr.io/himorogy/devcontainer-base:3
   └─ firewall.json（許可ドメイン。プロジェクトごとに異なる）
 
 プロジェクトの package.json
@@ -77,7 +77,7 @@ allowlist の変更をエージェントに頼むときは
 - **新しいプロジェクトに入れる** — [`images/devcontainer-base/examples/`](./images/devcontainer-base/examples)  
 の 4 ファイルを `.devcontainer/` にコピーし、`firewall.json` を書く
 - **既存の devcontainer を載せ替える** — [`docs/archive/devcontainer-base-migration.md`](./docs/archive/devcontainer-base-migration.md)。
-ベースイメージは pnpm 11 なので、pnpm 10 のプロジェクトは先に読むこと
+ベースイメージは pnpm 12 なので、pnpm 10 のプロジェクトは先に読むこと
 - **パッケージだけ使う** — 各パッケージの README に単体での導入手順があります。
 ベースイメージを使わなくても入れられます
 

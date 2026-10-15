@@ -7,7 +7,7 @@
 ベースイメージに集約し、各プロジェクトは `FROM` で参照する。
 
 ```
-ghcr.io/himorogy/devcontainer-base:2
+ghcr.io/himorogy/devcontainer-base:3
 ```
 
 本 README は運用手順を扱う。個々の判断の根拠は、それが効いている場所（`Dockerfile` の
@@ -29,7 +29,7 @@ ghcr.io/himorogy/devcontainer-base:2
 base に入れる条件は次のいずれか。
 
 - npm では入らない（OS パッケージ、root 権限が要る）
-- エージェントが直接使う（`ripgrep`, `jq`, `git`, `gh`, `dnsutils` 等）
+- エージェントが直接使う（`ripgrep`, `jq`, `git`, `gh`, `bind9-dnsutils` 等）
 
 入れない条件。
 
@@ -51,12 +51,12 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
 持つのは `CRIT_VERSION` と `RUNTIME_BASE_VERSION` だけで、残りは runtime-base 側に
 ある（そちらを上げてから `RUNTIME_BASE_VERSION` の指すタグを取り直す）。
 
-- Node 24（`node:24` 由来）、pnpm（`ARG PNPM_VERSION` で pin）
+- Node 24（`node:24-trixie` 由来）、pnpm（`ARG PNPM_VERSION` で pin）
 - `git` / `gh` / `sudo` / `zsh` / `less` / `procps` / `man-db` / `unzip` / `gnupg2`
 - `jq` / `ripgrep` / `fd-find`（`fd` として PATH に露出）
 - `vim-tiny`（`git commit` / `rebase -i` がエディタ不在で失敗しないための最小保険）
-- egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `dnsutils` / `aggregate`
-  （`curl` と `jq` は上の行と `node:24` に含まれる）
+- egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `bind9-dnsutils` / `aggregate`
+  （`curl` と `jq` は上の行と `node:24-trixie` に含まれる）
 - egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`packages/egress-guard`、ビルド元コミットのソースそのもの）と
   `/etc/sudoers.d/node-firewall`
 - `crit`（bind は crit 既定の `127.0.0.1` のまま。`CRIT_PORT=4588` をイメージが固定、
@@ -150,9 +150,9 @@ internal と両立しない機能、Compose を使わない場合の代替は
 [`packages/egress-guard/README.md`](../../packages/egress-guard/README.md) の
 「ネットワーク構成（推奨）」。
 
-**internal の構成には `devcontainer-base:2.7.0` 以降（`0048-firewall-l7-without-external-dns` 入りの版）が要る。** それより前の base
+**internal の構成には `devcontainer-base:2.7.0` 以降（`0048-firewall-l7-without-external-dns` 入りの版。v3 を含む）が要る。** それより前の base
 で internal に載せると、`init-project-firewall.sh` が anchor を引けずに panic テーブルへ落ちる。
-雛形の Dockerfile は浮動タグ `devcontainer-base:2` を参照するため、通常は版を明示する必要はない。
+雛形の Dockerfile は浮動タグ `devcontainer-base:3` を参照するため、通常は版を明示する必要はない。
 
 ### 忘れると時間を溶かす設定
 
@@ -163,7 +163,7 @@ build:
   pull: true
 ```
 
-浮動タグ `:1` を参照する運用では、ローカルに古い base が残っているとリビルドしても
+浮動タグ `:3` を参照する運用では、ローカルに古い base が残っているとリビルドしても
 更新されない。「更新したのに反映されない」で嵌る。
 
 **`devcontainer.json` の `"build": { "options": ["--pull"] }` は `dockerComposeFile` を
@@ -178,7 +178,7 @@ build:
 ### 既存プロジェクトを載せ替える場合
 
 新規ではなく pnpm 10 の devcontainer を移す場合は [devcontainer-base-migration.md](../../docs/archive/devcontainer-base-migration.md) を先に
-読むこと。base は pnpm 11 を焼いており、`strictDepBuilds` の既定変更で `pnpm install` が
+読むこと。base は pnpm 12 を焼いており、`strictDepBuilds` の既定変更で `pnpm install` が
 失敗する、`.npmrc` の設定が読まれなくなる、`pnpm/action-setup` が v6 以上でないと動かない、
 といった当たりがある。
 
@@ -232,21 +232,21 @@ firewall を張る設計が必要になる。現状はそこまで踏み込ん�
 
 | タグ | 内容 |
 |---|---|
-| `:2` | メジャー内の最新。**利用側が参照するのはこれ** |
-| `:2.4` | マイナー内の最新 |
-| `:2.4.2` | 特定バージョン |
+| `:3` | メジャー内の最新。**利用側が参照するのはこれ** |
+| `:3.4` | マイナー内の最新 |
+| `:3.4.2` | 特定バージョン |
 | `sha-<commit>` | ビルド元コミット |
 | `:edge` | `workflow_dispatch` からの任意ビルド |
 
 `:latest` は生成しない（ワークフローで `flavor: latest=false` を指定）。
-参照先を `:1` に一本化し、メジャーを跨いだ破壊的変更が黙って降ってこないようにするため。
+参照先を `:3` に一本化し、メジャーを跨いだ破壊的変更が黙って降ってこないようにするため。
 
 ### 手順
 
 ```sh
 # images/devcontainer-base/ の変更を main にマージしたあと
-git tag -a devcontainer-base-v2.0.0 -m "devcontainer-base 2.0.0"
-git push origin devcontainer-base-v2.0.0
+git tag -a devcontainer-base-v3.0.0 -m "devcontainer-base 3.0.0"
+git push origin devcontainer-base-v3.0.0
 ```
 
 タグ名は `devcontainer-base-v<MAJOR>.<MINOR>.<PATCH>`。形式が違うとワークフローが
@@ -261,7 +261,7 @@ npm パッケージのリリースタグ（`@himorogy/env-guard@0.1.0`、
 `@himorogy/devcontainer-base@1.0.0` のように npm 側の形式へ寄せないのは、npm に存在
 しないパッケージ名を騙ることになるため。タグ名を見て npm を探す人が出る。
 
-push すると `:2` / `:2.0` / `:2.0.0` / `sha-xxxxxxx` が同時に更新される。
+push すると `:3` / `:3.0` / `:3.0.0` / `sha-xxxxxxx` が同時に更新される。
 
 ### トリガーの使い分け
 
@@ -297,7 +297,7 @@ public にしておくと利用側の `docker pull` に認証が不要になる�
 確認する。手元でより詳しく見る場合は以下。
 
 ```sh
-IMAGE=ghcr.io/himorogy/devcontainer-base:2
+IMAGE=ghcr.io/himorogy/devcontainer-base:3
 
 # 1. vi が使えるか（vim-tiny が alternatives を登録しているか）
 docker run --rm "$IMAGE" vi --version
@@ -340,7 +340,7 @@ docker run --rm -u node "$IMAGE" sudo /usr/local/bin/init-project-firewall.sh
 
 **digest pin をしない。** 規制対応（510(k) / ISO 13485）の文脈では「いつビルドしても
 同じ成果物」が求められるため、本来は digest 固定が望ましい。現状は運用負荷を優先して
-浮動タグ `:1` を選択している。再現性の要求が強まったプロジェクトのみ digest pin +
+浮動タグ `:3` を選択している。再現性の要求が強まったプロジェクトのみ digest pin +
 Renovate（`pinDigests: true`）へ切り替える。この変更は base に手を入れずに後付けできる。
 
 **Node バージョンは base に単一固定。** `mise` 等の切替機構は採用していない。理由は
@@ -399,11 +399,11 @@ fork からの PR では `GITHUB_TOKEN` が read-only に制限され、login / 
   循環が生じるのは**自分の最新版**を参照する場合で、実証済みの前版への固定なら
   「N は N-1 でビルドする」というコンパイラの標準的な bootstrap 解と同型になる。
   成立条件は 3 つ:
-  1. **浮動タグ `:1` を使わない**。完全版指定（必要なら digest pin）。浮動だと
+  1. **浮動タグ `:3` を使わない**。完全版指定（必要なら digest pin）。浮動だと
      最新の故障が修理環境へ波及して循環が復活する
   2. **pin の昇格は、その版が base を利用する別のリポジトリで実運用に耐えたことを
      確認してから**（N-1 規律）
-  3. 最終避難路はホスト + 素の `node:24`。ハードロックは元々存在しない
+  3. 最終避難路はホスト + 素の `node:24-trixie`。ハードロックは元々存在しない
 
   得たもの: `examples/` の雛形（Compose 起動・`cap_add`・埋め込みリゾルバ・
   `workspaceFolder` 一致）の実地検証を、前版に対してこのリポジトリ自身が回すこと。
