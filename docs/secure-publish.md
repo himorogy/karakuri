@@ -104,8 +104,8 @@ GitHub organization 側で二要素認証を必須化し、パスキー・セキ
      → 各パッケージの version と CHANGELOG が生成される
 3. その差分を PR としてレビュー・マージ
 4. タグを打って push
-     git tag -a @himorogy/egress-guard@0.1.0 -m "egress-guard 0.1.0"
-     git push origin @himorogy/egress-guard@0.1.0
+     git tag -a @himorogy/env-guard@0.1.0 -m "env-guard 0.1.0"
+     git push origin @himorogy/env-guard@0.1.0
 5. ワークフローが起動し、environment の承認待ちで停止
 6. 承認者が内容を確認して承認
 7. OIDC で短命の資格情報を取得し、公開
@@ -159,7 +159,7 @@ changesets には、バージョン更新用の PR を自動生成し、それ�
 
 ```
 @himorogy/enclave-env@0.2.2
-@himorogy/egress-guard@0.1.0
+@himorogy/env-guard@0.1.0
 ```
 
 monorepo では、どのパッケージのどのバージョンかがタグ名だけで一意に定まる必要があります。
