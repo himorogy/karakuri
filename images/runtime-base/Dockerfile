@@ -10,11 +10,11 @@
 # 超えないようにする (設計書 docs/prod-secret-isolation-design.md §4.5
 # の配置規約 「能力は最小に、制約は最大に」)。
 # =============================================================================
-FROM node:24
+FROM node:24-trixie
 
 ARG USERNAME=node
 ARG TZ=Asia/Tokyo
-ARG PNPM_VERSION=11.25.0
+ARG PNPM_VERSION=12.11.2
 # 復号ランナーをアプリ依存グラフから切り離すのが本層の存在理由であり
 # (§4.5)、prod container 内での動的インストールは禁止しているため、
 # ここで固定した版だけが使われる。
@@ -34,8 +34,8 @@ ARG PNPM_VERSION=11.25.0
 # dotenvx をアプリの依存グラフとは別系統に置くのが §4.5 の主旨なので、
 # ここでは揃えていない。1.x で暗号化した .env.* を 2.x が復号できることも
 # §10 の実測項目に含める。
-ARG DOTENVX_VERSION=2.23.0
-ARG WRANGLER_VERSION=4.128.0
+ARG DOTENVX_VERSION=2.35.0
+ARG WRANGLER_VERSION=4.151.0
 
 # --- ロケール / タイムゾーン --------------------------------------------------
 # LANG 未設定だと locale=POSIX になり、日本語の入出力とソート順が不安定に
@@ -55,8 +55,8 @@ RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
 # 対話体験専用パッケージは devcontainer-base 側に積む。
 #
 # init-project-firewall.sh の require_commands() が要求するのは iptables /
-# iptables-restore / ipset / jq / curl / dig / ip。curl は node:24 に同梱の
-# ため並べていない (上流が外したら追加すること)。dig は dnsutils が、ip は
+# iptables-restore / ipset / jq / curl / dig / ip。curl は node:24-trixie に同梱の
+# ため並べていない (上流が外したら追加すること)。dig は bind9-dnsutils が (trixie に dnsutils は無い)、ip は
 # iproute2 が提供する。aggregate は必須ではなく欠けても警告に留まるが
 # (GitHub meta API の CIDR を圧縮しないまま ipset へ積むだけになる)、常に
 # 入れておく。
@@ -68,7 +68,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       iptables \
       ipset \
       iproute2 \
-      dnsutils \
+      bind9-dnsutils \
       aggregate \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -76,7 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PNPM_HOME=/usr/local/share/pnpm \
     NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 # PATH に載せるのは ${PNPM_HOME}/bin であって ${PNPM_HOME} ではない。
-# pnpm 10 は PNPM_HOME 直下に global bin を置いていたが、11 は bin/ の下に
+# pnpm 10 は PNPM_HOME 直下に global bin を置いていたが、11 以降は bin/ の下に
 # 置く。古いレイアウトのままだと pnpm add -g したものが PATH に載らず、
 # pnpm bin -g が "global bin directory is not in PATH" で失敗する。
 #
