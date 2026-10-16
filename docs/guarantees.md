@@ -48,7 +48,7 @@
 - `.env.keys` が一つも無ければ、平文でない `.env` 系ファイルが存在していても 0 で通る
 - 走査を完走できなかったときは「0件だった」と取り違えて 0 を返さず、理由が読み取れる形で非ゼロ終了する（テスト: "find が失敗したら理由 (検査を完走できなかった) が読み取れる形で非ゼロ終了する"）
 
-### 4. `packages/egress-guard/tests/firewall-config.test.sh` — `packages/egress-guard/scripts/init-project-firewall.sh`（設定の検証）
+### 4. `images/shared/egress-guard/tests/firewall-config.test.sh` — `images/shared/egress-guard/scripts/init-project-firewall.sh`（設定の検証）
 
 起源: `0007-ledger-egress-guard`
 
@@ -72,7 +72,7 @@
 - `--print-allowlist` は、適用が拒否する設定からは一覧を作らず同じ検証で非ゼロ終了する。また sudo 経由の起動を拒否する（テスト: "--print-allowlist is refused when invoked through sudo"）
 - 同梱テンプレート3種と、README および `docs/` のフェンス内に書かれた設定例のうち版を宣言しているものは、すべて検証を通る。コメント付きの例はコメントを残したままでは拒否される。既定のテンプレートは enforce モード、audit テンプレートは audit モードを選ぶ
 
-### 5. `packages/egress-guard/tests/firewall-rules.test.sh` — `packages/egress-guard/scripts/init-project-firewall.sh`（規則の適用）
+### 5. `images/shared/egress-guard/tests/firewall-rules.test.sh` — `images/shared/egress-guard/scripts/init-project-firewall.sh`（規則の適用）
 
 起源: `0007-ledger-egress-guard`
 
@@ -571,7 +571,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 
 起源: `0046-egress-guard-from-source`
 
-- egress-proxy イメージは、`/usr/local/bin/init-project-firewall.sh` と、`/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` を含む。どれもビルド元コミットの `packages/egress-guard` と同一の内容で、スクリプトは実行可能、雛形は実行可能でない。runtime-base を使わない利用者は、このパスからスクリプトと雛形を取り出せる
+- egress-proxy イメージは、`/usr/local/bin/init-project-firewall.sh` と、`/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` を含む。どれもビルド元コミットの `images/shared/egress-guard` と同一の内容で、スクリプトは実行可能、雛形は実行可能でない。runtime-base を使わない利用者は、このパスからスクリプトと雛形を取り出せる
 
 ### I-a — `未検証の約束 (テスト困難: 稼働中の egress-proxy と外向きの到達性が要り、pnpm test からは走らせられない。verify-l7.sh で常設化し、検収で走らせる。漏れうるのは squid の版上げで項目の意味が変わることで、許可と拒否の両方の行を目で読む)`
 

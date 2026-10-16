@@ -869,7 +869,7 @@ fi
 
 echo "documented examples"
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 PKG_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BLOCK_DIR="$TMPDIR_TEST/blocks"
 STRIPPED_DIR="$TMPDIR_TEST/blocks-stripped"

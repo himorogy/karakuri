@@ -26,12 +26,12 @@ on:
     paths:
       - "images/egress-proxy/**"
       - "!images/egress-proxy/**/*.md"
-      # イメージは packages/egress-guard のスクリプトと雛形を named build
+      # イメージは images/shared/egress-guard のスクリプトと雛形を named build
       # context 経由で焼き込む。ここを見ていないと、スクリプトだけを変えた
       # PR に対してイメージの検証が黙って飛ぶ。*.md だけ外すのは、paths を
       # 狭めるより広い側へずらすため。
-      - "packages/egress-guard/**"
-      - "!packages/egress-guard/**/*.md"
+      - "images/shared/egress-guard/**"
+      - "!images/shared/egress-guard/**/*.md"
       - ".github/workflows/egress-proxy.yml"
   workflow_dispatch:
     inputs:
@@ -136,12 +136,12 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ env.CONTEXT }}
-          # init-project-firewall.sh と雛形の実体は packages/egress-guard にあり、
+          # init-project-firewall.sh と雛形の実体は images/shared/egress-guard にあり、
           # ビルドコンテキストの外にある。コンテキストを広げる代わりに、
           # 必要なディレクトリだけを named build context として追加で供給する。
           # Dockerfile 側は `COPY --from=egress-guard ...` で受ける。
           build-contexts: |
-            egress-guard=packages/egress-guard
+            egress-guard=images/shared/egress-guard
           platforms: linux/amd64,linux/arm64
           push: ${{ steps.cond.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -173,17 +173,17 @@ jobs:
           for platform in linux/amd64 linux/arm64; do
             echo "--- ${platform} ---"
             docker run --rm --platform "${platform}" \
-              -v "${{ github.workspace }}/packages/egress-guard/templates/firewall.json:/firewall.json:ro" \
+              -v "${{ github.workspace }}/images/shared/egress-guard/templates/firewall.json:/firewall.json:ro" \
               --entrypoint sh "${tag}" -c \
               'egress-proxy-bake /firewall.json && squid -k parse -f /etc/squid/squid.conf'
 
             docker run --rm --platform "${platform}" --entrypoint cat "${tag}" \
               /usr/local/bin/init-project-firewall.sh \
-              | diff - "${{ github.workspace }}/packages/egress-guard/scripts/init-project-firewall.sh"
+              | diff - "${{ github.workspace }}/images/shared/egress-guard/scripts/init-project-firewall.sh"
             for f in firewall.json firewall.audit.json firewall.example.json; do
               docker run --rm --platform "${platform}" --entrypoint cat "${tag}" \
                 "/usr/share/egress-guard/templates/${f}" \
-                | diff - "${{ github.workspace }}/packages/egress-guard/templates/${f}"
+                | diff - "${{ github.workspace }}/images/shared/egress-guard/templates/${f}"
             done
             docker run --rm --platform "${platform}" --entrypoint sh "${tag}" -c \
               'test -x /usr/local/bin/init-project-firewall.sh &&

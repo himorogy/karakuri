@@ -2,7 +2,7 @@
 # .devcontainer/docker-compose.yaml としてコピーし、<your-project> を差し替える。
 #
 # egress-guard が第一に推奨する構成が Compose。理由はネットワークにある
-# (packages/egress-guard/README.md「ネットワーク構成（推奨）」)。internal / outward の
+# (images/shared/egress-guard/README.md「ネットワーク構成（推奨）」)。internal / outward の
 # 使い分けで埋め込みリゾルバが外部名を転送しなくなる理由は docs/conventions.md
 # 「発見しにくい事実」。
 #
@@ -54,7 +54,7 @@ services:
 
     # **dev を outward 側にも乗せると塞がったことにならない**——1 本でも外向きの
     # ネットワークに乗っていると、埋め込みリゾルバの外部名転送が戻る
-    # (packages/egress-guard/README.md「ネットワーク構成（推奨）」)。
+    # (images/shared/egress-guard/README.md「ネットワーク構成（推奨）」)。
     networks:
       - internal
 
@@ -171,7 +171,7 @@ services:
     command: sleep infinity
 
   # L7 egress proxy sidecar（images/egress-proxy/ が実体、据え方は
-  # packages/egress-guard/README.md の実現層の節）。firewall.json が
+  # images/shared/egress-guard/README.md の実現層の節）。firewall.json が
   # 実現層 l7（既定）を選んでいる限り必須 — init-project-firewall.sh は
   # このサービス名を DNS で解決できることを前提に最終テーブルを組む。
   egress-proxy:

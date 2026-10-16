@@ -3,7 +3,7 @@
 # images/egress-proxy/bin/egress-proxy-bake を docker なしで検証する。
 #
 # egress-proxy-bake は PATH 上の init-project-firewall.sh を呼ぶだけなので、
-# PATH の先頭に packages/egress-guard/scripts/ を置いて本物を使う。出力先
+# PATH の先頭に images/shared/egress-guard/scripts/ を置いて本物を使う。出力先
 # 2ファイルはテストごとに一意な tmpdir へ EGRESS_PROXY_SQUID_DIR で向ける。
 set -uo pipefail
 
@@ -12,7 +12,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 BAKE="$SCRIPT_DIR/bin/egress-proxy-bake"
 SQUID_CONF_SRC="$SCRIPT_DIR/squid.conf"
-FIREWALL_SCRIPTS="$REPO_ROOT/packages/egress-guard/scripts"
+FIREWALL_SCRIPTS="$REPO_ROOT/images/shared/egress-guard/scripts"
 
 export PATH="$FIREWALL_SCRIPTS:$PATH"
 
@@ -40,9 +40,9 @@ make_squid_dir() {
 # --- (a) enforce: ACL が --print-proxy-acl の出力と一致し、squid.conf は deny のまま ---
 t="$(mktemp -d)"
 make_squid_dir "$t"
-out="$(EGRESS_PROXY_SQUID_DIR="$t" "$BAKE" "$REPO_ROOT/packages/egress-guard/templates/firewall.json" 2>&1)"
+out="$(EGRESS_PROXY_SQUID_DIR="$t" "$BAKE" "$REPO_ROOT/images/shared/egress-guard/templates/firewall.json" 2>&1)"
 rc=$?
-expected_acl="$(init-project-firewall.sh --print-proxy-acl --config "$REPO_ROOT/packages/egress-guard/templates/firewall.json" 2>/dev/null)"
+expected_acl="$(init-project-firewall.sh --print-proxy-acl --config "$REPO_ROOT/images/shared/egress-guard/templates/firewall.json" 2>/dev/null)"
 if [ "$rc" -eq 0 ] &&
     [ "$(cat "$t/allowed-domains.txt" 2>/dev/null)" = "$expected_acl" ] &&
     grep -q '^http_access deny !allowed$' "$t/squid.conf" &&
@@ -61,7 +61,7 @@ rm -rf "$t"
 # --- (b) audit: allowlist 外の宛先を通す設定になる (deny !allowed -> allow !allowed) ---
 t="$(mktemp -d)"
 make_squid_dir "$t"
-out="$(EGRESS_PROXY_SQUID_DIR="$t" "$BAKE" "$REPO_ROOT/packages/egress-guard/templates/firewall.audit.json" 2>&1)"
+out="$(EGRESS_PROXY_SQUID_DIR="$t" "$BAKE" "$REPO_ROOT/images/shared/egress-guard/templates/firewall.audit.json" 2>&1)"
 rc=$?
 if [ "$rc" -eq 0 ] && grep -q '^http_access allow !allowed$' "$t/squid.conf" &&
     ! grep -q '^http_access deny !allowed$' "$t/squid.conf"; then

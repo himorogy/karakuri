@@ -2,7 +2,7 @@
 #
 # init-project-firewall.sh - allowlist based egress firewall for devcontainers
 #
-# Spec: packages/egress-guard/docs/spec.md
+# Spec: images/shared/egress-guard/docs/spec.md
 #
 # Design notes that are easy to get wrong when editing this file:
 #

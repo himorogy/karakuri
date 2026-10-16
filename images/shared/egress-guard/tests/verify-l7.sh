@@ -15,7 +15,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/.devcontainer/docker-compose.yaml"
 PTR_HARNESS_SCRIPT="$SCRIPT_DIR/ptr-spoof-harness.py"
 
@@ -316,7 +316,7 @@ check_proxy_stop_breaks_egress() {
 
 check_acl_absent_in_dev() {
 	# squid.conf 自体は探さない。squid.conf と allowed-domains.txt はどちらも
-	# images/egress-proxy/ 発のファイルで、runtime-base が packages/egress-guard
+	# images/egress-proxy/ 発のファイルで、runtime-base が images/shared/egress-guard
 	# から焼くのは scripts/init-project-firewall.sh だけ (images/runtime-base/
 	# Dockerfile 参照。templates/ は焼かない) のため、dev には元から現れない。
 	# ここで確認したいのは、
