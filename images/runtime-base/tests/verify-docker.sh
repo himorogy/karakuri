@@ -9,7 +9,7 @@
 # (dev container は Docker socket を持たない)、外さない。そのためこの
 # スクリプトは docker のあるホストで実行する前提で書く。CI (ubuntu-latest)
 # でも手元の macOS ホストでも同じスクリプトが走ることを狙っており、
-# jq のような macOS に既定で入っていないツールには依存しない。
+# jq 以外に macOS に既定で入っていないツールには依存しない。
 #
 # 測定 (MEASURE) と表明 (ASSERT) を明確に分ける:
 #
@@ -401,10 +401,17 @@ tmpfs_entries_or_fail() {
 COMPOSE_SHIPPED="$SCRATCH/compose-shipped.yaml"
 cp "$COMPOSE_PROD_YAML" "$COMPOSE_SHIPPED"
 
+# sed_inplace <script> <file>
+# BSD sed の -i は拡張子を必須引数にとり、GNU sed と書き方が合わない。
+# 一時ファイルへ出力して置き換える形ならどちらの sed でも同じ結果になる。
+sed_inplace() {
+	sed "$1" "$2" >"$2.sedtmp" && mv "$2.sedtmp" "$2"
+}
+
 # 変更 1/3: image:
 # 出荷ファイルの image: 行は単独行 (`    image: ghcr.io/...`) なので行全体を
 # 置換する。$IMG 自体は展開させたいので二重引用符の sed スクリプトを使う。
-sed -i "s#^\(    image:\).*#\1 $IMG#" "$COMPOSE_SHIPPED"
+sed_inplace "s#^\(    image:\).*#\1 $IMG#" "$COMPOSE_SHIPPED"
 if grep -q 'REPLACE_WITH_ACTUAL_DIGEST' "$COMPOSE_SHIPPED"; then
 	echo "verify-docker: compose-shipped.yaml の image: 置換が効いていない (プレースホルダが残っている)。B の派生セットアップが壊れている。" >&2
 	exit 1
@@ -424,7 +431,7 @@ fi
 # SC2016: 単引用符は意図的。${SAFE_GITCONFIG} はこのスクリプトのシェルではなく
 # docker compose に展開させたい。
 # shellcheck disable=SC2016
-sed -i 's/^\(      GIT_REF: .*\)$/\1\
+sed_inplace 's/^\(      GIT_REF: .*\)$/\1\
       GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}/' "$COMPOSE_SHIPPED"
 # shellcheck disable=SC2016
 if ! grep -qF '      GIT_CONFIG_GLOBAL: ${SAFE_GITCONFIG}' "$COMPOSE_SHIPPED"; then
@@ -437,7 +444,7 @@ fi
 # レベルキーと同じ 4-space インデント)。${SCRATCH_DIR} も同様に展開させない。
 # SC2016: 単引用符は意図的 (上と同じ理由)。
 # shellcheck disable=SC2016
-sed -i 's/^\(    read_only: true\)$/    volumes:\
+sed_inplace 's/^\(    read_only: true\)$/    volumes:\
       - ${SCRATCH_DIR}:${SCRATCH_DIR}:ro\
 \1/' "$COMPOSE_SHIPPED"
 # shellcheck disable=SC2016
@@ -488,7 +495,7 @@ services:
     logging:
       driver: "none"
 EOS
-sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-current.yaml"
+sed_inplace "s#__IMAGE__#$IMG#" "$SCRATCH/compose-current.yaml"
 
 # compose-flat.yaml: 設計書 §4.2 が書いている「素の短縮形」
 # (`tmpfs: ["/run", "/tmp", "/out", "/home/node"]`)。M1 の本題。tmpfs の
@@ -523,7 +530,7 @@ services:
     logging:
       driver: "none"
 EOS
-sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-flat.yaml"
+sed_inplace "s#__IMAGE__#$IMG#" "$SCRATCH/compose-flat.yaml"
 
 # compose-src-tmpfs.yaml: M9-a/M9-b 専用 (bugfix で用途を絞った。旧: M2 も
 # これを使っていた)。/src の tmpfs に `exec` を明示しない「現状形」で、M9-e
@@ -564,7 +571,7 @@ services:
     logging:
       driver: "none"
 EOS
-sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs.yaml"
+sed_inplace "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs.yaml"
 
 # compose-src-tmpfs-exec.yaml: M9-e 用。compose-src-tmpfs.yaml と全く同じだが
 # /src の tmpfs オプションに `exec` を明示している点だけが違う。CI 5 回目で
@@ -604,7 +611,7 @@ services:
     logging:
       driver: "none"
 EOS
-sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs-exec.yaml"
+sed_inplace "s#__IMAGE__#$IMG#" "$SCRATCH/compose-src-tmpfs-exec.yaml"
 
 # compose-anon.yaml: M7 (匿名 volume の削除) 用の最小構成。GIT_REPO / GIT_REF
 # も entrypoint も不要 (entrypoint を上書きして prod-entrypoint.sh を経由
@@ -617,7 +624,7 @@ services:
     volumes:
       - /anon-data
 EOS
-sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
+sed_inplace "s#__IMAGE__#$IMG#" "$SCRATCH/compose-anon.yaml"
 
 # compose-run-volume.yaml: A36 用。secret の置き場 (/run) だけを tmpfs から
 # 外し、ホスト側ディレクトリの bind mount に差し替えた構成。/src は tmpfs
@@ -656,7 +663,7 @@ services:
     logging:
       driver: "none"
 EOS
-sed -i "s#__IMAGE__#$IMG#" "$SCRATCH/compose-run-volume.yaml"
+sed_inplace "s#__IMAGE__#$IMG#" "$SCRATCH/compose-run-volume.yaml"
 
 # --- tmpfs 自己検査を無効化した entrypoint のコピー (M1 の uid= 形 / M6 用) ----
 #
@@ -691,7 +698,7 @@ if ! docker run --rm --entrypoint cat "$IMG" /usr/local/bin/prod-entrypoint.sh >
 	exit 1
 fi
 cp "$ENTRYPOINT_IMAGE_COPY" "$ENTRYPOINT_NO_TMPFS_CHECK"
-sed -i 's#^\([[:space:]]*\)for mnt_target in .*#\1for mnt_target in /verify-tmpfs-self-check-disabled; do#' \
+sed_inplace 's#^\([[:space:]]*\)for mnt_target in .*#\1for mnt_target in /verify-tmpfs-self-check-disabled; do#' \
 	"$ENTRYPOINT_NO_TMPFS_CHECK"
 if grep -q 'for mnt_target in' "$ENTRYPOINT_IMAGE_COPY" &&
 	! grep -q '/verify-tmpfs-self-check-disabled' "$ENTRYPOINT_NO_TMPFS_CHECK"; then
@@ -768,8 +775,13 @@ compose_run() {
 }
 
 # compose_down <compose-file> <project>
+# GIT_REPO / GIT_REF は compose のパース時に必須なので、down でも要る。
+# down はコンテナを作らないため値の中身は使われない。
 compose_down() {
-	docker compose -f "$1" -p "$2" down -v >/dev/null 2>&1 || true
+	if ! GIT_REPO=unused GIT_REF=unused \
+		docker compose -f "$1" -p "$2" down -v >/dev/null 2>&1; then
+		echo "verify-docker: compose down が失敗した (project: $2)。ネットワークや volume が残っている可能性がある。" >&2
+	fi
 }
 
 # =============================================================================
@@ -2807,6 +2819,12 @@ EOS
 		GIT_REPO="file://$TEST_BARE_DIR" \
 		GIT_REF="$TEST_COMMIT" \
 		bash "$REPO_ROOT/host-tools/prod-run.sh" true >/dev/null 2>&1 || rc=$?
+	# prod-run.sh は -p を付けず、project 名は compose ファイルのあるディレクトリ
+	# から決まる。run --rm はネットワークを消さないので、同じ形で down する。
+	if ! GIT_REPO=unused GIT_REF=unused \
+		docker compose -f "$SCRATCH/compose-current.yaml" down -v >/dev/null 2>&1; then
+		echo "verify-docker: A17 の compose down が失敗した。ネットワークが残っている可能性がある。" >&2
+	fi
 	[ "$rc" -ne 0 ]
 }
 assert A17 "broker (フェイク) が非ゼロ終了したとき、prod-run.sh 経由でパイプ全体が非ゼロ終了する [compose-current.yaml 経由 prod-run.sh。broker が secrets を一切渡さず失敗する経路のため harness preflight とは無関係]" a17_prod_run_pipefail
