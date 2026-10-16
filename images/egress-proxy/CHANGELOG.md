@@ -1,32 +1,36 @@
-# @himorogy/egress-guard
+# egress-proxy の変更記録
 
-## npm への公開を終了した
+この記録は、egress-proxy イメージに同梱する `init-project-firewall.sh` と雛形（`/usr/share/egress-guard/templates/`）の変更を含む。
+見出しは `egress-proxy-v*` のタグである。
 
-npm への公開をやめた。最後に公開した版は 0.4.0 で、registry に残る版はそのまま取得できる。以後の入手経路はイメージだけで、runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/` を使う。この変更の後に版が上がっても npm には出ない。
+runtime-base を使わない利用者は、スクリプトと雛形を自分のコンテナへ `COPY --from` で取り込んでいる。
+版を上げるときは、sidecar とそのコンテナの両方を同じ digest で建て直す必要がある。
+手順は [egress-guard の README](../shared/egress-guard/README.md#セットアップ) の「セットアップ」を参照。
 
-## 0.5.1（npm 未公開。イメージにのみ届く）
+## 未リリース
 
-### Patch Changes
-
+- **egress-guard の npm への公開を終了した。** 最後に公開した版は 0.4.0 で、registry に残る版はそのまま取得できる。以後の入手経路はイメージだけで、runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/` を使う。
 - **L7 の anchor 検査が、起動中の proxy を最大 30 秒待つようにした。** 以前は dev と egress-proxy をほぼ同時に起動すると、squid が listen する前に検査が走って panic テーブルへ落ちていた。proxy が接続を受け付けない間（`000`）だけ約 1 秒間隔で繰り返し、上限に達したら従来どおり非ゼロで終わる。proxy が `403` などで拒んだときは待たない。
 
-## 0.5.0（npm 未公開。イメージにのみ届く）
+## egress-proxy-v1.1.0
 
-### Minor Changes
-
-- **L7 sidecar の雛形 `templates/proxy/Dockerfile` と `templates/proxy/squid.conf` を削除した。** sidecar は配布イメージ `ghcr.io/himorogy/egress-proxy` になり、利用側は雛形をコピーする代わりに `dockerfile_inline` で `FROM ghcr.io/himorogy/egress-proxy:1` を書いて `egress-proxy-bake` を呼ぶ。配布物が減るため Minor とする。
+- **L7 sidecar の雛形 `templates/proxy/Dockerfile` と `templates/proxy/squid.conf` を削除した。** sidecar は配布イメージ `ghcr.io/himorogy/egress-proxy` になり、利用側は雛形をコピーする代わりに `dockerfile_inline` で `FROM ghcr.io/himorogy/egress-proxy:1` を書いて `egress-proxy-bake` を呼ぶ。
 
   **移行手順:** `templates/proxy/` をコピーして使っている場合、README の「L7 sidecar を用意する」節を参照して `dockerfile_inline` へ切り替える。
 
-## 0.4.0
+## npm で公開していた版
 
-### Minor Changes
+npm の `@himorogy/egress-guard` として公開していた版（〜0.4.0）の記録。npm から移ってくる利用者が、自分の使っていた版からの差分を読むためのもの。
+
+### 0.4.0
+
+#### Minor Changes
 
 - **`anthropic` バンドルに `platform.claude.com` を足した。** Claude Code（v2.1.274 で実測）のログインとアクセストークン更新は `api.anthropic.com` ではなく `platform.claude.com/v1/oauth/token` へ送られる。`enforce` を選んだ構成では、0.3.0 まではこの端点が拒否され、トークン更新の失敗と再ログインの失敗という形で現れていた。enforce で許可される宛先が増えるため Patch ではなく Minor とする。
 
-## 0.3.0
+### 0.3.0
 
-### Minor Changes
+#### Minor Changes
 
 - **設定スキーマ version 2 と実現層（`layer`）を追加した。** `version` は `1` と `2` を受理する（省略は従来どおり拒否）。`layer` を書けるのは version 2 の設定だけで、`l7`（既定。省略時）と `l3` を選べる。
 
@@ -43,14 +47,14 @@ npm への公開をやめた。最後に公開した版は 0.4.0 で、registry 
 
 - **先頭ドットのワイルドカードを追加した。** version 2 の `allowDomains` は `.example.com`（そのドメイン自身とすべてのサブドメイン）を受理する。`*` を含む値は従来どおり拒否し、メッセージが先頭ドットの形を示す。`layer: l3` の設定に先頭ドットがあれば拒否する（L3 はサブドメインを列挙できない）。先頭ドットのドメインは DNS 解決の対象にせず、`WARNING: failed to resolve` を出さない。
 
-### Patch Changes
+#### Patch Changes
 
 - 空文字の `allowDomains` / `allowCidrs` エントリを黙って捨てず、理由を述べて拒否するようにした。
 - npm へ公開される tarball で `scripts/init-project-firewall.sh` の実行ビットが落ちていた（0.1.1 / 0.2.0）のを止めた。0.3.0 からは実行可能なまま届く。
 
-## 0.2.0
+### 0.2.0
 
-### Minor Changes
+#### Minor Changes
 
 - **`sshdPort` を opt-in にした。既定値 `22` を廃止。**（**破壊的変更**。0.x のため minor で上げている）
 
@@ -69,18 +73,18 @@ npm への公開をやめた。最後に公開した版は 0.4.0 で、registry 
 
   **副次的な変更:** `sshdPort` 未指定時の panic テーブルは loopback の 2 行だけになる。設定の読み込みより前に panic へ倒れた場合（所有権違反・スキーマ違反など）は、`sshdPort` を指定していても値が未確定のため sshd 行は入らない。`docker exec` は iptables を経由しないため、どちらの場合もコンテナには入れる。
 
-## 0.1.1
+### 0.1.1
 
-### Patch Changes
+#### Patch Changes
 
 - README の導入手順で、パッケージのバージョンを固定するよう改めた。
 
   - `npm install -g @himorogy/egress-guard@<version>` と版を明示する。このスクリプトは root 所有の `/usr/local/bin` に置かれ、パスワードなし sudo の対象になる。dist-tag のまま追従させると、パッケージ側の更新がそのままコンテナ内 root でのコード実行になる
   - `NPM_CONFIG_PREFIX` を `node` 所有のディレクトリへ移しているイメージでは、`npm install` だけを `node` として実行する必要があることを注記した。root で入れると root 所有のファイルがグローバル領域に混ざり、以後 `node` での `-g install` が権限で失敗する
 
-## 0.1.0
+### 0.1.0
 
-### Minor Changes
+#### Minor Changes
 
 - 初回リリース。開発コンテナ向けの allowlist ベース egress ファイアウォール。
 

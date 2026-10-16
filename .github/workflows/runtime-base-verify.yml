@@ -31,14 +31,14 @@ on:
     paths:
       - "images/runtime-base/**"
       - "!images/runtime-base/**/*.md"
-      # イメージは packages/env-guard のスキャナと hook、packages/egress-guard
+      # イメージは packages/env-guard のスキャナと hook、images/shared/egress-guard
       # のスクリプトを named build context 経由で焼き込む。ここを見ていないと、
       # スキャナやスクリプトだけを変えた変更に対してイメージの検証が黙って飛ぶ。
       # *.md だけ外すのは、上と同じ理由 (paths を狭めるより広い側へずらす)。
       - "packages/env-guard/**"
       - "!packages/env-guard/**/*.md"
-      - "packages/egress-guard/**"
-      - "!packages/egress-guard/**/*.md"
+      - "images/shared/egress-guard/**"
+      - "!images/shared/egress-guard/**/*.md"
       - ".github/workflows/runtime-base-verify.yml"
   workflow_dispatch:
   push:
@@ -78,7 +78,7 @@ jobs:
         with:
           context: ${{ env.CONTEXT }}
           # スキャナと pre-commit hook の実体は packages/env-guard に、
-          # egress-guard のスクリプトの実体は packages/egress-guard にあり、
+          # egress-guard のスクリプトの実体は images/shared/egress-guard にあり、
           # どちらもビルドコンテキストの外にある。コンテキストを広げる代わりに、
           # 必要なディレクトリだけを named build context として追加で供給する。
           # Dockerfile 側は `COPY --from=env-guard ...` / `COPY --from=egress-guard ...`
@@ -86,7 +86,7 @@ jobs:
           # もう片方のビルドが COPY で落ちる）。
           build-contexts: |
             env-guard=packages/env-guard
-            egress-guard=packages/egress-guard
+            egress-guard=images/shared/egress-guard
           platforms: linux/amd64
           push: false
           load: true

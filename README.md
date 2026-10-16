@@ -20,7 +20,7 @@ egress-guard 本体を収録している。各プロジェクトは `FROM` で�
 
 ### パッケージ
 
-- [**`egress-guard`**](./packages/egress-guard) — allowlist に無い宛先への
+- [**`egress-guard`**](./images/shared/egress-guard) — allowlist に無い宛先への
 外向き通信を遮断する egress ファイアウォール。npm には公開せず、イメージに焼かれる。
 **漏洩先を限定する**
 - [**`@himorogy/env-guard`**](./packages/env-guard) — 平文のまま書かれた env ファイルが
@@ -33,7 +33,7 @@ git に入るのを止める検査。pre-commit hook と CI が**同じ 1 本の
 ghcr.io/himorogy/devcontainer-base:3     ← images/devcontainer-base
   ├─ Node / pnpm / git / gh / ripgrep / crit …
   ├─ egress-guard 本体（スクリプトと sudoers）
-  │     ↑ packages/egress-guard（このリポジトリ）のソースをビルド時に焼く
+  │     ↑ images/shared/egress-guard（このリポジトリ）のソースをビルド時に焼く
   └─ env-guard のスキャナと pre-commit hook
         ↑ core.hooksPath をイメージに焼いてあるので全リポジトリに効く
 
@@ -66,7 +66,7 @@ egress-guard と env-guard は、どちらも同じ前提の上に立ってい�
 **どちらも万能ではありません。**
 
 allowlist の変更をエージェントに頼むときは
-[`packages/egress-guard/docs/agent-brief.md`](./packages/egress-guard/docs/agent-brief.md)
+[`images/shared/egress-guard/docs/agent-brief.md`](./images/shared/egress-guard/docs/agent-brief.md)
 を読ませてください。遮断をネットワーク障害と診断して迂回を試みるのを防ぐためです。
 
 ---

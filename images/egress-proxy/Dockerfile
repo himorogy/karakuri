@@ -6,7 +6,7 @@
 # docs/archive/egress-guard-design.md §2.23、squid.conf 自体の個々の設定行
 # の理由はそのファイルのコメントを参照。
 #
-# 単一ステージ。init-project-firewall.sh と templates/ は packages/egress-guard
+# 単一ステージ。init-project-firewall.sh と templates/ は images/shared/egress-guard
 # (このリポジトリ、ビルド元コミットのソースそのもの) から named build context
 # `egress-guard` で受け取る。
 
@@ -29,10 +29,10 @@ RUN apt-get update \
 RUN mkdir -p /var/spool/squid /var/log/squid /run
 
 # init-project-firewall.sh and the three firewall.json templates come from
-# packages/egress-guard in this repo. The build context is
+# images/shared/egress-guard in this repo. The build context is
 # images/egress-proxy, so they're supplied as a named build context (same
 # shape as runtime-base's env-guard context): pass
-# `--build-context egress-guard=packages/egress-guard` (GitHub Actions:
+# `--build-context egress-guard=images/shared/egress-guard` (GitHub Actions:
 # docker/build-push-action's build-contexts input). Without it, the COPY
 # below fails.
 COPY --from=egress-guard scripts/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh

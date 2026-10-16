@@ -25,8 +25,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 TARGET_DIRS=(
 	packages/env-guard/bin
 	packages/env-guard/hooks
-	packages/egress-guard/scripts
-	packages/egress-guard/templates
+	images/shared/egress-guard/scripts
+	images/shared/egress-guard/templates
 	host-tools
 	images/runtime-base/templates/project
 )

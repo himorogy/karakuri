@@ -11,8 +11,8 @@ ghcr.io/himorogy/egress-proxy:1
 ## 何を焼いてあるか
 
 - `squid`（`/etc/squid/squid.conf`。CONNECT と絶対 URI の HTTP だけを扱い、TLS は終端しない）
-- `/usr/local/bin/init-project-firewall.sh` — `packages/egress-guard`（このリポジトリ、ビルド元コミットのソースそのもの）から named build context 経由で取得
-- `/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` — 同じく `packages/egress-guard` の雛形。実行可能ではない
+- `/usr/local/bin/init-project-firewall.sh` — `images/shared/egress-guard`（このリポジトリ、ビルド元コミットのソースそのもの）から named build context 経由で取得
+- `/usr/share/egress-guard/templates/` 配下の `firewall.json` / `firewall.audit.json` / `firewall.example.json` — 同じく `images/shared/egress-guard` の雛形。実行可能ではない
 - `/usr/local/bin/egress-proxy-bake` — 利用側が呼ぶ焼き込みコマンド
 - `USER proxy`（uid 13）で起動する `ENTRYPOINT`
 
@@ -72,7 +72,8 @@ services:
 ### 手順
 
 ```sh
-# images/egress-proxy/ の変更を main にマージしたあと
+# images/egress-proxy/ と images/shared/egress-guard/ の変更を main にマージしたあと
+# 前回のタグからの変更を CHANGELOG.md に書いてから、タグを打つ
 git tag -a egress-proxy-v1.0.0 -m "egress-proxy 1.0.0"
 git push origin egress-proxy-v1.0.0
 ```

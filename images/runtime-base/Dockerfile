@@ -51,7 +51,7 @@ RUN ln -snf "/usr/share/zoneinfo/${TZ}" /etc/localtime \
 
 # --- OS パッケージ ------------------------------------------------------------
 # ここに置くのは prod container でも使う、または init-project-firewall.sh
-# (packages/egress-guard) が要求するものだけ。zsh / less / man-db 等の
+# (images/shared/egress-guard) が要求するものだけ。zsh / less / man-db 等の
 # 対話体験専用パッケージは devcontainer-base 側に積む。
 #
 # init-project-firewall.sh の require_commands() が要求するのは iptables /
@@ -171,10 +171,10 @@ RUN [ "$(command -v wrangler)" = /usr/local/bin/wrangler ] \
 # 無い。下で root 所有の /usr/local/bin に置かれ、パスワードなし sudo の
 # 対象になる。
 #
-# スクリプトの実体は packages/egress-guard にあり、ビルドコンテキスト
+# スクリプトの実体は images/shared/egress-guard にあり、ビルドコンテキスト
 # (images/runtime-base) の外にある。env-guard (下の git hook セクション) と
 # 同じ型で、named build context `egress-guard` として別に供給する。ビルド
-# する側は `--build-context egress-guard=packages/egress-guard` (GitHub
+# する側は `--build-context egress-guard=images/shared/egress-guard` (GitHub
 # Actions では docker/build-push-action の build-contexts 入力) を渡すこと。
 # 渡さなければ以下の COPY で落ちる。
 COPY --from=egress-guard scripts/init-project-firewall.sh /usr/local/bin/init-project-firewall.sh

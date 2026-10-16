@@ -57,7 +57,7 @@ runtime-base から継承するものを含む。以下で挙げる `ARG` のう
 - `vim-tiny`（`git commit` / `rebase -i` がエディタ不在で失敗しないための最小保険）
 - egress-guard 実行に必要なもの: `iptables` / `ipset` / `iproute2` / `bind9-dnsutils` / `aggregate`
   （`curl` と `jq` は上の行と `node:24-trixie` に含まれる）
-- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`packages/egress-guard`、ビルド元コミットのソースそのもの）と
+- egress-guard 本体: `/usr/local/bin/init-project-firewall.sh`（`images/shared/egress-guard`、ビルド元コミットのソースそのもの）と
   `/etc/sudoers.d/node-firewall`
 - `crit`（bind は crit 既定の `127.0.0.1` のまま。`CRIT_PORT=4588` をイメージが固定、
   更新チェック無効。根拠と上書き方法は [PORT-FORWARDING.md](./PORT-FORWARDING.md)）
@@ -147,7 +147,7 @@ gitconfig を暗黙にコピーしており、その分だけ動いて見えて�
 internal 側だけ、`egress-proxy` は両方に載せる。これにより Docker の埋め込みリゾルバ `127.0.0.11`
 が外部名を転送しなくなり、DNS でのデータ持ち出し経路が塞がる。根拠、Docker の版の条件、
 internal と両立しない機能、Compose を使わない場合の代替は
-[`packages/egress-guard/README.md`](../../packages/egress-guard/README.md) の
+[`images/shared/egress-guard/README.md`](../shared/egress-guard/README.md) の
 「ネットワーク構成（推奨）」。
 
 **internal の構成には `devcontainer-base:2.7.0` 以降（`0048-firewall-l7-without-external-dns` 入りの版。v3 を含む）が要る。** それより前の base
@@ -215,7 +215,7 @@ egress-guard は「正しく動くツールが意図しない宛先へ通信す�
 
 前提として、ワークスペースの内容と lifecycle command が悪意を持たないこと、
 `firewall.json` が管理下にあることを要求する。egress-guard のスクリプト自体は
-runtime-base がビルド元コミットの `packages/egress-guard` から直接焼くため、
+runtime-base がビルド元コミットの `images/shared/egress-guard` から直接焼くため、
 外部パッケージの更新が黙ってコンテナ内 root でのコード実行に化ける経路は無い。
 
 厳密に保護したい場合は、lifecycle command の実行前（コンテナの entrypoint 段階）で
