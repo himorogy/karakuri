@@ -3,11 +3,11 @@ name: devcontainer-base
 # images/devcontainer-base のマルチアーキビルドと GHCR への push。
 #
 # トリガーの使い分け:
-#   tag push (devcontainer-base-v*) … リリース。:1 / :1.4 / :1.4.2 / sha-xxxxxxx を push
+#   tag push (devcontainer-base-v*) … リリース。:3 / :3.4 / :3.4.2 / sha-xxxxxxx を push
 #   pull_request                    … 検証ビルドのみ。push しない
 #   workflow_dispatch               … 任意ビルド。push するかは入力で選択（:edge が付く）
 #
-# main への push はトリガーにしていない。浮動タグ :1 を参照する運用では
+# main への push はトリガーにしていない。浮動タグ :3 を参照する運用では
 # 利用側が引くのはリリースタグだけで、main の各コミットを GHCR に積む必要がないため。
 #
 # action は全て commit SHA で固定する。タグは移動しうるため、上流が侵害されたときに
@@ -32,7 +32,7 @@ name: devcontainer-base
 # 落ちたときは、想定していた理由と実際のエラーが一致しているかを毎回見ること。
 # runtime-base が GHCR に無い場合に実際に出るのは、これである:
 #
-#   [linux/arm64 internal] load metadata for ghcr.io/himorogy/runtime-base:1
+#   [linux/arm64 internal] load metadata for ghcr.io/himorogy/runtime-base:2
 #   ERROR: failed to fetch anonymous token: ... 403 Forbidden
 #
 # タグ名まで解決できたうえで、匿名 pull を拒否されている形。403 であって
@@ -44,7 +44,7 @@ name: devcontainer-base
 # 変更は runtime-base 側の workflow (.github/workflows/runtime-base.yml) が
 # 検証する。ここに足すと、まだ GHCR に push されていない runtime-base の変更に
 # 対して devcontainer-base 側の検証ビルドが走り、既定の RUNTIME_BASE_VERSION
-# (:1 などの既存タグ) を pull するだけで変更内容を反映できないまま無意味に
+# (:2 などの既存タグ) を pull するだけで変更内容を反映できないまま無意味に
 # 走る (最悪、後述の理由で FROM 解決に失敗して落ちる)。
 
 on:
@@ -142,7 +142,7 @@ jobs:
           # :latest も生成する。タグ体系に含めていないので明示的に止める。
           flavor: |
             latest=false
-          # semver の 3 行が :1.4.2 / :1.4 / :1 を生む。
+          # semver の 3 行が :3.4.2 / :3.4 / :3 を生む。
           # value を渡しているのでタグ以外のイベントでは enable が false になり無視される。
           tags: |
             type=semver,pattern={{version}},value=${{ steps.ver.outputs.version }},enable=${{ steps.ver.outputs.version != '' }}
@@ -168,7 +168,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
-          # ベースの node:24 を毎回引き直す。ランナー上の古いレイヤに引きずられないため。
+          # ベースの node:24-trixie を毎回引き直す。ランナー上の古いレイヤに引きずられないため。
           pull: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -180,7 +180,7 @@ jobs:
       # push した内容が実際に両アーキで起動するかを確認する。
       # QEMU 経由でも crit / pnpm は動くので、最低限の実行可能性は検出できる。
       #
-      # pnpm bin -g は PATH の検査を兼ねる。pnpm 11 は global bin を
+      # pnpm bin -g は PATH の検査を兼ねる。pnpm 12 は global bin を
       # ${PNPM_HOME}/bin に置くため、PATH に ${PNPM_HOME} しか載っていない
       # 古いレイアウトへ戻ると "global bin directory is not in PATH" で落ちる。
       # ビルドログには現れない種類の壊れ方なので、ここで検出する。
