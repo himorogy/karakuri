@@ -240,6 +240,11 @@ readonly HOST_INTERNAL_NAME="host.docker.internal"
 # embedded resolver, the same way HOST_INTERNAL_NAME is.
 readonly PROXY_HOST="egress-proxy"
 readonly PROXY_PORT=3128
+# Starting dev and the proxy together leaves squid not yet listening when the
+# anchor check runs; compose depends_on waits for the container, not the port.
+# Each attempt takes at least a second, so the attempt count is capped at the
+# same value; that keeps the limit effective when sleep is stubbed in tests.
+readonly ANCHOR_WAIT_MAX_SECONDS=30
 
 # Ranges a host address may fall in. Anything else means the name was answered
 # by something other than Docker, and opening a port there would be a hole to an
@@ -1590,18 +1595,30 @@ resolve_proxy_target() {
 # apart (a CA bundle problem exits non-zero exactly like a refused CONNECT
 # would), so this reads %{http_connect}, curl's own record of the response
 # code the proxy gave to the CONNECT, instead. "200" is the only passing
-# value; everything else, including "000" for a proxy that never answered at
-# all, is treated the same as the anchor not resolving used to be.
+# value. "000" (no answer at all) is retried for a bounded time, since the
+# proxy may still be starting; every other value is a refusal, which waiting
+# does not change, so it fails at once.
 verify_anchor_reachable() {
-	local anchor connect_code
+	local anchor connect_code attempt=0 started=$SECONDS
 	anchor="$(anchor_domain)"
 	[ -n "$anchor" ] || return 0
 
-	connect_code="$(curl -s -o /dev/null -w '%{http_connect}' \
-		--connect-timeout 5 --max-time 15 \
-		-x "$PROXY_TARGET:$PROXY_PORT" "https://$anchor/" 2>/dev/null)" || true
-	[ "$connect_code" = "200" ] ||
-		die "the anchor domain did not answer through the proxy ($anchor); the container has no working egress"
+	while :; do
+		attempt=$((attempt + 1))
+		connect_code="$(curl -s -o /dev/null -w '%{http_connect}' \
+			--connect-timeout 5 --max-time 15 \
+			-x "$PROXY_TARGET:$PROXY_PORT" "https://$anchor/" 2>/dev/null)" || true
+		[ "$connect_code" = "200" ] && break
+		if [ "$connect_code" != "000" ] ||
+			[ "$attempt" -ge "$ANCHOR_WAIT_MAX_SECONDS" ] ||
+			[ $((SECONDS - started)) -ge "$ANCHOR_WAIT_MAX_SECONDS" ]; then
+			die "the anchor domain did not answer through the proxy ($anchor); the container has no working egress"
+		fi
+		if [ "$attempt" = "1" ]; then
+			info "the proxy is not accepting connections yet; waiting up to ${ANCHOR_WAIT_MAX_SECONDS}s for it"
+		fi
+		sleep 1
+	done
 	info "anchor reachable through the proxy ($anchor)"
 }
 

@@ -4,6 +4,12 @@
 
 npm への公開をやめた。最後に公開した版は 0.4.0 で、registry に残る版はそのまま取得できる。以後の入手経路はイメージだけで、runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/` を使う。この変更の後に版が上がっても npm には出ない。
 
+## 0.5.1（npm 未公開。イメージにのみ届く）
+
+### Patch Changes
+
+- **L7 の anchor 検査が、起動中の proxy を最大 30 秒待つようにした。** 以前は dev と egress-proxy をほぼ同時に起動すると、squid が listen する前に検査が走って panic テーブルへ落ちていた。proxy が接続を受け付けない間（`000`）だけ約 1 秒間隔で繰り返し、上限に達したら従来どおり非ゼロで終わる。proxy が `403` などで拒んだときは待たない。
+
 ## 0.5.0（npm 未公開。イメージにのみ届く）
 
 ### Minor Changes

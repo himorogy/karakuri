@@ -234,7 +234,8 @@ exit 0'
 	# through the proxy (the address is what the dig case below answers for
 	# egress-proxy). It prints what real curl's -w '%{http_connect}' would
 	# have printed rather than honouring -w itself, which this stub does not
-	# implement. FW_PROXY_DENY simulates the proxy ACL refusing the CONNECT
+	# implement. FW_PROXY_COLD=<n> answers 000 (nothing listening) to the
+	# first n tunnels. FW_PROXY_DENY simulates the proxy ACL refusing the CONNECT
 	# (a response code other than 200); unset, the tunnel opens, which is
 	# the common case every other test in this file relies on.
 	make_stub curl '
@@ -244,7 +245,11 @@ case "$*" in
 		exit 0
 		;;
 	*172.20.0.5:3128*)
-		if [ -n "${FW_PROXY_DENY:-}" ]; then
+		n=$(( $(cat "$FW_STATE/proxycalls" 2>/dev/null || echo 0) + 1 ))
+		echo "$n" >"$FW_STATE/proxycalls"
+		if [ "$n" -le "${FW_PROXY_COLD:-0}" ]; then
+			printf "%s" "000"
+		elif [ -n "${FW_PROXY_DENY:-}" ]; then
 			printf "%s" "403"
 		else
 			printf "%s" "200"
@@ -265,7 +270,7 @@ run_firewall() { # <run-tag> [config-json]
 	FW_STATE="$WORK/state"
 	mkdir -p "$FW_STATE"
 	printf '%s' "$tag" >"$FW_STATE/run"
-	rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate"
+	rm -f "$FW_STATE/v4count" "$FW_STATE/entries" "$FW_STATE/rotate" "$FW_STATE/proxycalls"
 	FW_LOG="$WORK/log.$tag"
 	: >"$FW_LOG"
 
@@ -276,6 +281,7 @@ run_firewall() { # <run-tag> [config-json]
 		"FW_NO_HOST_INTERNAL=${FW_NO_HOST_INTERNAL:-}"
 		"FW_HOST_INTERNAL_PUBLIC=${FW_HOST_INTERNAL_PUBLIC:-}"
 		"FW_PROXY_DENY=${FW_PROXY_DENY:-}"
+		"FW_PROXY_COLD=${FW_PROXY_COLD:-}"
 	)
 	local -a opts=("--resolv-conf" "${FW_RESOLV_CONF:-$WORK/resolv.conf}")
 	if [ -n "$config" ]; then
@@ -1843,6 +1849,47 @@ assert_contains "the failure names the anchor and the proxy" "$(cat "$WORK/out.l
 	'the anchor domain did not answer through the proxy (api.anthropic.com)'
 assert_is_panic_table "a denied CONNECT to the anchor falls back to the panic table" \
 	"$(v4_table l7proxydeny)"
+
+# --- l7 anchor check while the proxy is still starting -----------------------
+#
+# sleep is stubbed so the wait takes no real time; the script bounds the wait
+# by attempts as well as by elapsed time for that reason.
+echo "l7 anchor check waits for a starting proxy"
+make_stub sleep 'exit 0'
+proxy_tunnels() { grep -c '^curl .*172\.20\.0\.5:3128' "$WORK/log.$1" || true; }
+
+FW_PROXY_COLD=3
+run_firewall l7cold '{"version":2,"layer":"l7","profile":["anthropic"]}'
+unset FW_PROXY_COLD
+if [ "$(cat "$WORK/rc.l7cold")" = "0" ]; then
+	ok "an anchor check waits for a proxy that is still starting"
+else
+	ng "an anchor check waits for a proxy that is still starting (got $(cat "$WORK/rc.l7cold"))"
+	sed 's/^/    /' "$WORK/out.l7cold" >&2
+fi
+assert_contains "the wait is reported in the apply log" "$(cat "$WORK/out.l7cold")" \
+	'the proxy is not accepting connections yet'
+
+FW_PROXY_COLD=100000
+run_firewall l7never '{"version":2,"layer":"l7","profile":["anthropic"]}'
+unset FW_PROXY_COLD
+if [ "$(cat "$WORK/rc.l7never")" != "0" ]; then
+	ok "a proxy that never accepts exits non-zero"
+else
+	ng "a proxy that never accepts exits non-zero"
+fi
+assert_is_panic_table "a proxy that never accepts falls back to the panic table" \
+	"$(v4_table l7never)"
+
+FW_PROXY_DENY=1
+run_firewall l7noretry '{"version":2,"layer":"l7","profile":["anthropic"]}'
+unset FW_PROXY_DENY
+if [ "$(proxy_tunnels l7noretry)" = "1" ]; then
+	ok "a denied CONNECT to the anchor is not retried"
+else
+	ng "a denied CONNECT to the anchor is not retried ($(proxy_tunnels l7noretry) tunnels attempted)"
+fi
+rm -f "$BIN/sleep"
 
 # The github bundle is the one thing that puts addresses into $SET_V4 without
 # the configuration author having written them down (allowCidrs is the

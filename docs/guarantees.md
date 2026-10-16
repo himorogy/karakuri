@@ -116,6 +116,9 @@
 - L7 実現層では、先頭ドットの記法は DNS 名ではないため解決を試みず、生存確認の anchor にも選ばない。許可としては従来どおり成立し、`--print-proxy-acl` の出力も変わらない（テスト: "a leading dot domain is not resolved" / "a leading dot domain produces no resolution warning" / "a leading dot domain is not taken as the anchor" / "the proxy ACL is unchanged by the leading dot form"）（起源: `0020a-l7-domain-resolve-warning`）
 - L7 実現層では、dev 側の DNS が外部名を解決できない構成でも、proxy 経由で anchor に届く限り、最終テーブルを適用して 0 で終わる（テスト: "an l7 config exits 0 when only the proxy, not the anchor, resolves"）（起源: `0048-firewall-l7-without-external-dns`）
 - L7 実現層で anchor がある場合、proxy 経由で anchor に届かなければ非ゼロ終了し panic テーブルへ落ちる（テスト: "a denied CONNECT to the anchor exits non-zero" / "a denied CONNECT to the anchor falls back to the panic table"）（起源: `0048-firewall-l7-without-external-dns`）
+- L7 実現層で anchor がある場合、proxy がまだ接続を受け付けていない間は有限の時間だけ検査を繰り返し、その間に proxy 経由で anchor へ届けば、最終テーブルを適用して 0 で終わる（テスト: "an anchor check waits for a proxy that is still starting"）（起源: `0059-l7-anchor-wait-for-proxy`）
+- L7 実現層で、待つ上限までに proxy が接続を受け付けなければ、非ゼロ終了し panic テーブルへ落ちる（テスト: "a proxy that never accepts falls back to the panic table"）（起源: `0059-l7-anchor-wait-for-proxy`）
+- L7 実現層で、proxy が応答して CONNECT を拒んだときは、検査を繰り返さずに失敗する（テスト: "a denied CONNECT to the anchor is not retried"）（起源: `0059-l7-anchor-wait-for-proxy`）
 - L7 実現層では、自己検証は許可していない宛先が遮断されるかの検査を行わず、行わなかった旨を述べる。dev 側の DNS が外部名を解決できない構成でも、この検査を理由とする警告を適用ログに出さない（テスト: "self verification skips the unlisted host check under l7 without a warning"）（起源: `0054-l7-self-verify-unlisted-skip`）
 - L7 実現層では、割り当て resolver が外部名を解決できるとき、DNS が外へ転送されている旨の警告を適用ログに出し、実行は失敗にしない（テスト: "self verification warns when the assigned resolver still forwards an external name"）（起源: `0048-firewall-l7-without-external-dns`）
 - 適用時の設定は固定パスからのみ読み、作業ディレクトリを探索しない。ワークスペース側に置かれた設定は読まれず、方針を緩められない（テスト: "the workspace copy cannot relax the policy"）
