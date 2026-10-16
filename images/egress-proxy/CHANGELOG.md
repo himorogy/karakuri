@@ -7,10 +7,12 @@ runtime-base を使わない利用者は、スクリプトと雛形を自分の�
 版を上げるときは、sidecar とそのコンテナの両方を同じ digest で建て直す必要がある。
 手順は [egress-guard の README](../shared/egress-guard/README.md#セットアップ) の「セットアップ」を参照。
 
-## 未リリース
+## egress-proxy-v1.1.1
 
 - **egress-guard の npm への公開を終了した。** 最後に公開した版は 0.4.0 で、registry に残る版はそのまま取得できる。以後の入手経路はイメージだけで、runtime-base に焼かれているもの、または egress-proxy イメージの `/usr/local/bin/init-project-firewall.sh` と `/usr/share/egress-guard/templates/` を使う。
 - **L7 の anchor 検査が、起動中の proxy を最大 30 秒待つようにした。** 以前は dev と egress-proxy をほぼ同時に起動すると、squid が listen する前に検査が走って panic テーブルへ落ちていた。proxy が接続を受け付けない間（`000`）だけ約 1 秒間隔で繰り返し、上限に達したら従来どおり非ゼロで終わる。proxy が `403` などで拒んだときは待たない。
+- **L7 実現層の自己検証が、誤った警告を出さないようにした。** L7 実現層では「許可していない宛先が遮断されるか」の検査を行わず、行わなかった旨を info で出す。dev 側の DNS が外部名を解決できない構成でも、誤った警告が出なくなった。
+- **L3 実現層で probe を選べなかったときの警告文を、原因で分けた。** 解決できた probe がすべて allowlist に入っていた場合と、どの probe も解決できなかった場合で、別の文言を出す。
 
 ## egress-proxy-v1.1.0
 
