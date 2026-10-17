@@ -73,8 +73,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- pnpm ----------------------------------------------------------------------
+# pnpm_config_pm_on_fail はプロジェクト側の pnpm-workspace.yaml / .npmrc /
+# devEngines では覆らない (環境変数が優先される)。
+# npm_config_ 接頭辞は pnpm に読まれない。
 ENV PNPM_HOME=/usr/local/share/pnpm \
-    NPM_CONFIG_PREFIX=/usr/local/share/npm-global
+    NPM_CONFIG_PREFIX=/usr/local/share/npm-global \
+    pnpm_config_pm_on_fail=error
 # PATH に載せるのは ${PNPM_HOME}/bin であって ${PNPM_HOME} ではない。
 # pnpm 10 は PNPM_HOME 直下に global bin を置いていたが、11 以降は bin/ の下に
 # 置く。古いレイアウトのままだと pnpm add -g したものが PATH に載らず、
