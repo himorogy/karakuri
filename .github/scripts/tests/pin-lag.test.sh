@@ -120,7 +120,7 @@ echo "advisory"
 out="$("$PIN_LAG" advisory no 0 "")"
 rc=$?
 if [ "$rc" -eq 0 ] && [ "$out" = "not-checked" ]; then
-	ok "照会に乗らない対象（node / crit / golang builder）は not-checked"
+	ok "照会に乗らない対象（crit / golang builder）は not-checked"
 else
 	ng "照会に乗らない対象は not-checked (rc=$rc out=$out)"
 fi
@@ -237,6 +237,72 @@ if [ "$rc" -ne 0 ] && [ "$out" = "schedule-unavailable" ]; then
 	ok "schedule.json に無い系統は schedule-unavailable"
 else
 	ng "schedule.json に無い系統は schedule-unavailable (rc=$rc out=$out)"
+fi
+
+# --- node-advisory / node-latest ------------------------------------------------
+
+echo "node-advisory"
+
+NODE_INDEX='[{"version":"v26.12.1","security":true},{"version":"v24.22.1","security":true},{"version":"v24.22.0","security":false},{"version":"v24.10.0","security":false},{"version":"v24.9.0","security":true},{"version":"v22.30.0","security":true}]'
+
+out="$("$PIN_LAG" node-advisory "$NODE_INDEX" 24.22.0)"
+rc=$?
+# 焼き込み版より新しい版はあるが security release ではない一覧
+out_nonsec="$("$PIN_LAG" node-advisory '[{"version":"v24.23.0","security":false},{"version":"v24.22.0","security":false},{"version":"v24.9.0","security":true}]' 24.22.0)"
+if [ "$rc" -eq 0 ] && [ "$out" = "checked-alert 24.22.1" ] &&
+	[ "$("$PIN_LAG" severity none "${out%% *}")" = alert ] &&
+	[ "$out_nonsec" = "checked-none" ]; then
+	ok "node-advisory: 焼き込み版より新しい security release があれば checked-alert、焼き込み版以前だけなら checked-none"
+else
+	ng "node-advisory: 焼き込み版より新しい security release があれば checked-alert、焼き込み版以前だけなら checked-none (rc=$rc out=$out out_nonsec=$out_nonsec)"
+fi
+
+out="$("$PIN_LAG" node-advisory "$NODE_INDEX" v24.22.1)"
+rc=$?
+out2="$("$PIN_LAG" node-advisory "$NODE_INDEX" 24.22.2)"
+if [ "$rc" -eq 0 ] && [ "$out" = "checked-none" ] && [ "$out2" = "checked-none" ]; then
+	ok "node-advisory: security release が焼き込み版以前だけなら checked-none（v 前置は同一視）"
+else
+	ng "node-advisory: security release が焼き込み版以前だけなら checked-none (out=$out out2=$out2)"
+fi
+
+out="$("$PIN_LAG" node-advisory '[{"version":"v24.10.0","security":true},{"version":"v24.9.0","security":false}]' 24.9.0)"
+if [ "$out" = "checked-alert 24.10.0" ]; then
+	ok "node-advisory: 版は桁ごとの数値で比べる（24.9.0 < 24.10.0）"
+else
+	ng "node-advisory: 版は桁ごとの数値で比べる (out=$out)"
+fi
+
+check_failed_ok=1
+for args in "not-json|24.22.0" "[]|24.22.0" "$NODE_INDEX|" "$NODE_INDEX|latest" "$NODE_INDEX|18.1.0" "|24.22.0"; do
+	out="$("$PIN_LAG" node-advisory "${args%%|*}" "${args##*|}")"
+	rc=$?
+	[ "$rc" -eq 1 ] && [ "$out" = "check-failed" ] || check_failed_ok=0
+done
+if [ "$check_failed_ok" -eq 1 ]; then
+	ok "否定対照: node-advisory はリリース一覧が読めない・系統が無いとき check-failed を返す"
+else
+	ng "否定対照: node-advisory はリリース一覧が読めない・系統が無いとき check-failed を返す"
+fi
+
+echo "node-latest"
+
+out="$("$PIN_LAG" node-latest "$NODE_INDEX" 24)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "24.22.1" ]; then
+	ok "node-latest: 系統の最新版を返す"
+else
+	ng "node-latest: 系統の最新版を返す (rc=$rc out=$out)"
+fi
+
+out="$("$PIN_LAG" node-latest "$NODE_INDEX" 18)"
+rc=$?
+out2="$("$PIN_LAG" node-latest "not-json" 24)"
+rc2=$?
+if [ "$rc" -eq 1 ] && [ "$out" = "latest-unavailable" ] && [ "$rc2" -eq 1 ] && [ "$out2" = "latest-unavailable" ]; then
+	ok "否定対照: node-latest は系統が無い・一覧が読めないとき latest-unavailable を返す"
+else
+	ng "否定対照: node-latest は系統が無い・一覧が読めないとき latest-unavailable を返す (out=$out out2=$out2)"
 fi
 
 # --- severity -----------------------------------------------------------------
