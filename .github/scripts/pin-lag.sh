@@ -7,10 +7,12 @@
 # 行わない。ネットワークに依存する処理を判定から追い出すことで、判定そのもの
 # を docker もネットワークも無い場所でテストできる形にしている。
 #
-# サブコマンドは4つ。
+# サブコマンド:
 #   lag           <pinned> <latest>              -> 遅れの大きさと種別
 #   advisory      <yes|no> <query_rc> <json>      -> advisory 照会の結果
 #   node-schedule <schedule_json> <version> [today] -> maintenance/EOL までの日数
+#   node-advisory <index_json> <baked_version>    -> security release の照会結果
+#   node-latest   <index_json> <major>            -> 系統の最新版
 #   severity      <lag> <advisory>                -> alert / info（2値のみ）
 set -eu
 
@@ -20,6 +22,8 @@ usage:
   pin-lag.sh lag <pinned> <latest>
   pin-lag.sh advisory <yes|no> <query_rc> <json>
   pin-lag.sh node-schedule <schedule_json> <version> [today]
+  pin-lag.sh node-advisory <index_json> <baked_version>
+  pin-lag.sh node-latest <index_json> <major>
   pin-lag.sh severity <lag> <advisory>
 EOF
 	exit 64
@@ -28,6 +32,86 @@ EOF
 # v0.19.1 と 0.19.1 を同一視するための前置き剥がし。
 strip_v() {
 	printf '%s' "${1#v}"
+}
+
+# ver_gt <a> <b>
+ver_gt() {
+	local IFS=.
+	local -a a b
+	read -r -a a <<<"$(strip_v "$1")"
+	read -r -a b <<<"$(strip_v "$2")"
+	local i
+	for i in 0 1 2; do
+		if [ "${a[$i]}" -ne "${b[$i]}" ]; then
+			[ "${a[$i]}" -gt "${b[$i]}" ]
+			return
+		fi
+	done
+	return 1
+}
+
+# series_versions <index_json> <major> [security_only]: その系統の版を v 抜きで1行ずつ。
+series_versions() {
+	printf '%s' "$1" | jq -r --arg m "$2" --argjson sec "${3:-false}" '
+		.[] | select(type == "object" and (.version | type == "string")
+			and (.version | test("^v?[0-9]+\\.[0-9]+\\.[0-9]+$")))
+		| select(($sec | not) or .security == true)
+		| .version | ltrimstr("v")
+		| select(split(".")[0] == $m)'
+}
+
+max_version() {
+	local best="" v
+	while IFS= read -r v; do
+		[ -n "$v" ] || continue
+		if [ -z "$best" ] || ver_gt "$v" "$best"; then
+			best="$v"
+		fi
+	done
+	printf '%s' "$best"
+}
+
+cmd_node_advisory() {
+	local index_json="${1-}" baked
+	baked="$(strip_v "${2-}")"
+
+	if ! printf '%s' "$baked" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
+		! printf '%s' "$index_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+		printf 'check-failed\n'
+		return 1
+	fi
+
+	local major="${baked%%.*}"
+	if [ -z "$(series_versions "$index_json" "$major")" ]; then
+		printf 'check-failed\n'
+		return 1
+	fi
+
+	local newest
+	newest="$(series_versions "$index_json" "$major" true | max_version)"
+	if [ -n "$newest" ] && ver_gt "$newest" "$baked"; then
+		printf 'checked-alert %s\n' "$newest"
+		return 0
+	fi
+	printf 'checked-none\n'
+	return 0
+}
+
+cmd_node_latest() {
+	local index_json="${1-}" major="${2-}"
+	major="$(strip_v "$major")"
+
+	local latest=""
+	if printf '%s' "$index_json" | jq -e 'type == "array"' >/dev/null 2>&1 &&
+		printf '%s' "$major" | grep -Eq '^[0-9]+$'; then
+		latest="$(series_versions "$index_json" "$major" | max_version)"
+	fi
+	if [ -z "$latest" ]; then
+		printf 'latest-unavailable\n'
+		return 1
+	fi
+	printf '%s\n' "$latest"
+	return 0
 }
 
 cmd_lag() {
@@ -173,6 +257,8 @@ main() {
 		lag) cmd_lag "$@" ;;
 		advisory) cmd_advisory "$@" ;;
 		node-schedule) cmd_node_schedule "$@" ;;
+		node-advisory) cmd_node_advisory "$@" ;;
+		node-latest) cmd_node_latest "$@" ;;
 		severity) cmd_severity "$@" ;;
 		*) usage ;;
 	esac
