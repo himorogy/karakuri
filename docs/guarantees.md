@@ -403,7 +403,9 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - `node-schedule` は `schedule.json` の日付から maintenance 入り・EOL までの残り日数を返す。**残り日数がいくつであっても、`severity` はそれを見ない**（`severity` は `node-schedule` の出力を引数に取らない）
 - 固定値が npm の security advisory の影響範囲に入るとき、`advisory` は `checked-alert` を返す。遅れが `patch 1` でも、遅れが `none` でも、advisory があれば `severity` は `alert` になる
 - **否定対照:** advisory の照会に失敗したとき、`advisory` は該当なしと同じ `checked-none` を返さず `check-failed` を返す（テスト: "否定対照: advisory 照会の失敗は checked-none に化けず check-failed を返す"）
-- `advisory` は深刻度とは別に照会の可否を返す。照会に乗らない対象（node / crit / golang builder）では、遅れの有無にかかわらず `not-checked` を返す
+- `advisory` は深刻度とは別に照会の可否を返す。照会に乗らない対象（crit / golang builder）では、遅れの有無にかかわらず `not-checked` を返す（テスト: "照会に乗らない対象（crit / golang builder）は not-checked"）
+- `node-advisory` は、焼き込み版と同じ major の系統に焼き込み版より新しい security release があるとき `checked-alert` を返し、`severity` は `alert` になる。security release が焼き込み版以前にしか無いときは `checked-alert` を返さない（テスト: "node-advisory: 焼き込み版より新しい security release があれば checked-alert、焼き込み版以前だけなら checked-none"）
+- **否定対照:** リリース一覧を読めないとき、または焼き込み版の系統が一覧に無いとき、`node-advisory` は `checked-none` に化けず `check-failed` を返す（テスト: "否定対照: node-advisory はリリース一覧が読めない・系統が無いとき check-failed を返す"）
 - **否定対照:** `checked-none`（照会して該当なし）・`not-checked`（照会に乗らない）・`check-failed`（照会に失敗）・`checked-alert`（該当あり）は互いに異なる値である（テスト: "否定対照: not-checked / checked-none / check-failed / checked-alert は互いに異なる値"）
 
 ### 22. `images/devcontainer-base/tests/git-identity.test.sh` — `images/devcontainer-base/bin/git-identity-setup`

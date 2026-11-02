@@ -160,6 +160,87 @@ jobs:
             fi
           }
 
+          # check_node_image <表示名> <イメージ名> <タグの接頭辞> <index.json の本文>
+          #
+          # ソースの FROM は major しか持たず patch が書かれていないため、
+          # 露出は配布中のイメージを見ないと分からない。
+          check_node_image() {
+            local label="$1" image="$2" tag_prefix="$3" index_json="$4"
+            local repo accept latest_tag major token manifest digest config baked
+            local adv adv_rc fixed latest lag
+
+            latest_tag=$(git tag -l "${tag_prefix}-v*" | sort -V | tail -1)
+            major=$(printf '%s' "$latest_tag" | sed -n "s/^${tag_prefix}-v\([0-9][0-9]*\)\..*/\1/p")
+            if [ -z "$major" ]; then
+              TEXT="${TEXT}⚠️ ${label} イメージの node を確認できない（${tag_prefix}-v* のタグが無い）\n\n"
+              escalate warn
+              return
+            fi
+
+            repo="${GITHUB_REPOSITORY_OWNER,,}/${image}"
+            accept="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+
+            token=$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull" 2>/dev/null | jq -r '.token // empty' 2>/dev/null) || token=""
+            if [ -z "$token" ]; then
+              TEXT="${TEXT}⚠️ ${label} イメージの node を確認できない（ghcr.io の pull token を取得できない）\n\n"
+              escalate warn
+              return
+            fi
+
+            manifest=$(curl -fsSL -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+              "https://ghcr.io/v2/${repo}/manifests/${major}" 2>/dev/null) || manifest=""
+            digest=$(printf '%s' "$manifest" | jq -r '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty' 2>/dev/null) || digest=""
+            if [ -n "$digest" ]; then
+              manifest=$(curl -fsSL -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+                "https://ghcr.io/v2/${repo}/manifests/${digest}" 2>/dev/null) || manifest=""
+            fi
+            config=$(printf '%s' "$manifest" | jq -r '.config.digest // empty' 2>/dev/null) || config=""
+            if [ -z "$config" ]; then
+              TEXT="${TEXT}⚠️ ${label} イメージの node を確認できない（${image}:${major} の manifest に linux/amd64 が無い）\n\n"
+              escalate warn
+              return
+            fi
+
+            baked=$(curl -fsSL -H "Authorization: Bearer ${token}" \
+              "https://ghcr.io/v2/${repo}/blobs/${config}" 2>/dev/null \
+              | jq -r '([.config.Env[]? | select(startswith("NODE_VERSION="))][0] // "") | ltrimstr("NODE_VERSION=")' 2>/dev/null) || baked=""
+            if [ -z "$baked" ]; then
+              TEXT="${TEXT}⚠️ ${label} イメージの node を確認できない（${image}:${major} の image config に NODE_VERSION が無い）\n\n"
+              escalate warn
+              return
+            fi
+
+            if [ -z "$index_json" ]; then
+              TEXT="${TEXT}⚠️ ${label} イメージの node ${baked} を security release と比べられない（nodejs.org の index.json を取得できない）\n\n"
+              escalate warn
+              return
+            fi
+
+            adv=$("$PIN_LAG" node-advisory "$index_json" "$baked") && adv_rc=0 || adv_rc=$?
+            if [ "$adv_rc" -ne 0 ]; then
+              TEXT="${TEXT}⚠️ ${label} イメージの node ${baked} を security release と比べられない（index.json を読めない、または node ${baked%%.*} の系統が無い）\n\n"
+              escalate warn
+              return
+            fi
+
+            latest=$("$PIN_LAG" node-latest "$index_json" "${baked%%.*}") || latest=""
+            [ -n "$latest" ] || latest="取得不可"
+
+            if [ "$("$PIN_LAG" severity none "${adv%% *}")" = alert ]; then
+              fixed="${adv#* }"
+              TEXT="${TEXT}🚨 ${label} イメージの node ${baked} は security release ${fixed} より古い（系統の最新 ${latest}）。イメージを焼き直す\n\n"
+              escalate alert
+              return
+            fi
+
+            lag=$("$PIN_LAG" lag "$baked" "$latest") || lag=""
+            if [ "$lag" = none ]; then
+              TEXT="${TEXT}✅ ${label} イメージの node ${baked} は最新（security release 該当なし）\n\n"
+            else
+              TEXT="${TEXT}ℹ️ ${label} イメージの node ${baked}、系統の最新は ${latest}（${lag:-遅れを算出できない}、security release 該当なし）\n\n"
+            fi
+          }
+
           # 監視対象はワークスペースから引く。パッケージが増えても
           # このファイルを触らなくてよい。
           for manifest in packages/*/package.json; do
@@ -234,6 +315,11 @@ jobs:
             fi
           done
 
+          # 両イメージの node の判定で共有する。本文は引数1個の上限（Linux で
+          # 128KiB）を超えるため、判定に使う項目だけへ絞ってから渡す。
+          NODE_INDEX_JSON=$(curl -fsS https://nodejs.org/dist/index.json 2>/dev/null \
+            | jq -c 'map({version, security})' 2>/dev/null) || NODE_INDEX_JSON=""
+
           # --- 3. runtime-base の固定値 ---
           # pnpm・dotenvx・wrangler・node はいずれも base image に焼かれており、
           # プロジェクト側から差し替えられない。上げるレバーは runtime-base の
@@ -248,10 +334,10 @@ jobs:
             check_npm_pin "$RUNTIME_BASE_DOCKERFILE" DOTENVX_VERSION "@dotenvx/dotenvx"
             check_npm_pin "$RUNTIME_BASE_DOCKERFILE" WRANGLER_VERSION wrangler
 
-            # node は npm ではなく Node.js 自身の security release を持ち、
-            # advisory 照会には乗らない（README 参照）。上げる判断は
-            # GitHub issue が持ち、ここでは maintenance / EOL までの
-            # 残り日数を出すだけで、日数の大小で escalate はしない。
+            # node は npm ではなく Node.js 自身の security release を持つ。
+            # 焼き込み版との比較は check_node_image が配布イメージで行う。
+            # ここでは maintenance / EOL までの残り日数を出すだけで、
+            # 日数の大小で escalate はしない。
             NODE_PINNED=$(sed -n 's/^FROM node:\([0-9]*\).*/\1/p' "$RUNTIME_BASE_DOCKERFILE" | head -1)
             NODE_SCHEDULE=$(curl -fsS https://raw.githubusercontent.com/nodejs/Release/main/schedule.json 2>/dev/null) || NODE_SCHEDULE=""
 
@@ -269,9 +355,11 @@ jobs:
               else
                 NODE_MAINT_DAYS="${NODE_DAYS%% *}"
                 NODE_EOL_DAYS="${NODE_DAYS#* }"
-                TEXT="${TEXT}ℹ️ node ${NODE_PINNED} は maintenance まで ${NODE_MAINT_DAYS} 日、EOL まで ${NODE_EOL_DAYS} 日（advisory は照会対象外）\n\n"
+                TEXT="${TEXT}ℹ️ node ${NODE_PINNED} は maintenance まで ${NODE_MAINT_DAYS} 日、EOL まで ${NODE_EOL_DAYS} 日\n\n"
               fi
             fi
+
+            check_node_image runtime-base runtime-base runtime-base "$NODE_INDEX_JSON"
           fi
 
           # --- 4. devcontainer-base の固定値 ---
@@ -300,6 +388,8 @@ jobs:
               | sed -E 's/^go([0-9]+\.[0-9]+).*/\1/') || GOLANG_LATEST=""
             report_lag_no_advisory "golang (crit builder)" "$DEVCONTAINER_BASE_DOCKERFILE" \
               "FROM golang:" "$GOLANG_PINNED" "$GOLANG_LATEST"
+
+            check_node_image devcontainer-base devcontainer-base devcontainer-base "$NODE_INDEX_JSON"
           fi
 
           # --- Slack 通知 ---
