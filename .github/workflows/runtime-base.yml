@@ -219,4 +219,10 @@ jobs:
             docker run --rm --platform "${platform}" "${tag}" \
               test -x /usr/local/share/git-hooks/pre-commit
             docker run --rm --platform "${platform}" "${tag}" sh -c 'echo "$LANG"'
+            # --network none だけでも取得失敗で非ゼロになるので、エラーの種類で切り分ける
+            docker run --rm --network none --platform "${platform}" "${tag}" sh -c \
+              'cd "$(mktemp -d)" &&
+               printf "{\"packageManager\":\"pnpm@10.9.0\"}" > package.json &&
+               ! out=$(pnpm --version 2>&1) &&
+               printf "%s\n" "$out" | grep -q ERR_PNPM_BAD_PM_VERSION'
           done

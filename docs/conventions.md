@@ -56,6 +56,8 @@ compose の `environment:` も等しく SSH セッションへ届く（機構は
   変えられると認証がホスト側の資格情報へ落ちる。生死は `git-auth-check` が対話シェルの起動ごとに
   報告する
 - `CRIT_NO_UPDATE_CHECK` — 起動の決定性と egress の予測可能性のための設計判断
+- `pnpm_config_pm_on_fail` — 焼いた pnpm と違う版を静かに取得させないための設計判断。
+  外すのは版をあえて固定するプロジェクトだけで、compose の `environment:` で上書きする
 
 compose の `environment:` に置くもの:
 
