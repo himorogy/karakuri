@@ -367,6 +367,20 @@ prod-entrypoint: GIT_REF=main resolved to 4f3a9c2b8e1d7a05...
 commit in the fetched repository: <ref>` として落とす。`GIT_REF` は秘匿情報ではない（通常の
 環境変数で渡す設計）のでメッセージに含めてよい。
 
+### packageManager が焼いた版と違うとき
+
+イメージは `pnpm_config_pm_on_fail=error` を焼いている。cwd の `package.json` の
+`packageManager` が焼いた pnpm と違う版を指すと、pnpm は別の版を取得して切り替えず、
+`ERR_PNPM_BAD_PM_VERSION` で非ゼロ終了する。`packageManager` が無いとき、および一致するときは
+そのまま走る。プロジェクト側の `pnpm-workspace.yaml` の `pmOnFail`、`.npmrc`、`devEngines` では
+覆らない。
+
+base の版上げで pnpm が変わったら、プロジェクトの `packageManager` も直す。直し損ねると、
+古い版を静かに取得し続ける代わりに、このエラーで知らせる。
+
+版をあえて固定するプロジェクトは、compose の `environment:` で `pnpm_config_pm_on_fail` を
+上書きする。`download` にすると従来どおり指定の版へ切り替える。
+
 ### pnpm の store
 
 `read_only: true` の下では既定の `$PNPM_HOME/store`（`/usr/local/share/pnpm/store`）を作れず、

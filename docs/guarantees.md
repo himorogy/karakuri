@@ -489,6 +489,7 @@ Windows 用のラッパーの検査だけは cmd.exe を要するため、この
 - system の git 設定で `core.hooksPath` が `/usr/local/share/git-hooks` を指す
 - `/usr/local/bin/prod-entrypoint.sh` が実行可能である
 - `/usr/local/share/git-hooks/pre-commit` が実行可能である
+- `package.json` の `packageManager` が焼いた pnpm と異なる版を指すディレクトリでは、pnpm がその版を取得して切り替えず、非ゼロで止まる
 
 ### C-2b — `未検証の約束 (テスト未作成)`
 

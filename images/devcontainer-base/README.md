@@ -180,7 +180,9 @@ build:
 新規ではなく pnpm 10 の devcontainer を移す場合は [devcontainer-base-migration.md](../../docs/archive/devcontainer-base-migration.md) を先に
 読むこと。base は pnpm 12 を焼いており、`strictDepBuilds` の既定変更で `pnpm install` が
 失敗する、`.npmrc` の設定が読まれなくなる、`pnpm/action-setup` が v6 以上でないと動かない、
-といった当たりがある。
+といった当たりがある。あわせて、`package.json` の `packageManager` を焼いた pnpm の版に揃えること。
+違う版を指したままだと、pnpm は別の版を取得せず `ERR_PNPM_BAD_PM_VERSION` で止まる
+（版をあえて固定するなら、compose の `environment:` で `pnpm_config_pm_on_fail` を上書きする）。
 
 ---
 
@@ -305,7 +307,8 @@ docker run --rm "$IMAGE" vi --version
 # 2. locale
 docker run --rm "$IMAGE" sh -c 'echo $LANG; locale'          # C.UTF-8
 
-# 3. pnpm が packageManager と一致しているか
+# 3. pnpm が焼いた版を返すか（packageManager が違う版を指すディレクトリでは
+#    ERR_PNPM_BAD_PM_VERSION で止まる。切り替えたいときは pnpm_config_pm_on_fail を上書きする）
 docker run --rm "$IMAGE" pnpm --version
 
 # 4. bash 履歴の永続化
