@@ -1,5 +1,5 @@
 ---
-status: draft
+status: open
 type: chore
 base: main
 targets:
