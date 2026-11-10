@@ -161,6 +161,21 @@ RUN [ -n "${GIT_CONFIG_COUNT}" ] && [ -n "${GIT_CONFIG_KEY_0}" ] \
 
 RUN crit --version
 
+# --- virtiofs 上の作業ツリー向けの git 設定 (system) ----------------------------
+# /workspaces は Docker Desktop の virtiofs で、書き込みの多い操作の直後の約 1 秒
+# (属性キャッシュの期間) だけ所有者が uid 0 に見える。git はこれを拾って
+# "dubious ownership" で止まり、index の stat (uid を含む) との食い違いを「変更あり」
+# と見て rebase を止める。
+# safe.directory は protected configuration (system / global / コマンドライン) からしか
+# 読まれないので、root 所有の /etc/gitconfig に置く。末尾の /* は git 2.46 以降の
+# 前方一致で、/workspaces 自体には一致しない。
+# 守りは下がらない: dev で node 以外の uid の利用者が置けるのは root だけで、root は
+# node の設定も書き換えられる。node 自身が置いたものは所有者が node で検査を素通りする。
+# checkStat=minimal は uid / gid / inode と時刻の秒未満を比べなくなるだけで、mtime・
+# ctime の秒とサイズは比べ続ける。
+RUN git config --system --add safe.directory '/workspaces/*' \
+    && git config --system core.checkStat minimal
+
 # --- git identity ---------------------------------------------------------------
 # commit 者情報 (user.name / user.email) を GH_TOKEN のアカウントから導出する。
 # /run/secrets/GH_TOKEN への注入は postCreateCommand より後 (dev-inject が
