@@ -356,6 +356,22 @@ base digest だけで環境が確定しなくなる ③shim 経由で PATH 解�
 `apt-get` は arm64 側でエミュレーションが走る。ビルド時間が問題になったら
 ネイティブランナー（`ubuntu-24.04-arm`）の matrix ビルド + digest マージに切り替える。
 
+**`/workspaces` 配下では git の所有者の検査を外し、index の stat の比較を緩めている（3.2.0 以降）。**
+Docker Desktop の virtiofs では、書き込みの多い操作の直後の約 1 秒だけ、作業ツリーの所有者が
+uid 0 に見える。git はこれを `detected dubious ownership` で止め、index に記録した stat（uid を含む）との
+食い違いを「変更あり」と見て `rebase` を「ローカルの変更が上書きされる」で止める。これを避けるため、
+`/etc/gitconfig`（root 所有で node は書き換えられない）に `safe.directory = /workspaces/*` と
+`core.checkStat = minimal` を焼いている。
+
+- 所有者の検査が防ぐのは、別の uid の利用者が親ディレクトリに `.git` を仕込む攻撃。dev で node 以外の uid として
+  `/workspaces` 配下に置けるのは root だけで、root は node の設定も書き換えられるので、止める意味がもともと無い。
+  node 自身が置いたリポジトリは所有者が node で、設定の前から検査を素通りする。ホストからの書き込みも
+  virtiofs 上で uid 1000（node）に見える。末尾の `/*` は `/workspaces` 自体に一致しないので、
+  `/workspaces/.git` を仕込む型への検査は残る。
+- `core.checkStat = minimal` は uid / gid / inode と mtime・ctime の秒未満を比べなくなる。比べ続けるのは
+  mtime の秒、ctime の秒、サイズ。見落とし得るのは同じ秒の中で同じサイズのまま書き換えた場合だけで、
+  index と同じ秒の mtime のエントリは git が中身を読み直し、mtime を戻す道具は ctime の秒で捕まる。
+
 **github.com への https 認証は `GH_TOKEN` の注入を要求する（2.2.0 以降）。** イメージが github.com の
 credential helper を自前のものへ固定するため、VS Code が global gitconfig へ書く helper でも、
 VS Code が統合ターミナルの environ へ注入する `GIT_ASKPASS` でも認証されない。

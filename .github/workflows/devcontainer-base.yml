@@ -197,4 +197,6 @@ jobs:
             docker run --rm --platform "${platform}" "${tag}" pnpm --version
             docker run --rm --platform "${platform}" "${tag}" pnpm bin -g
             docker run --rm --platform "${platform}" "${tag}" sh -c 'echo "$LANG"'
+            test "$(docker run --rm --platform "${platform}" "${tag}" git config --system --get safe.directory)" = '/workspaces/*'
+            test "$(docker run --rm --platform "${platform}" "${tag}" git config --system --get core.checkStat)" = minimal
           done
